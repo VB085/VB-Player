@@ -1,0 +1,510 @@
+"""Lightweight i18n module — no QTranslator dependency, instant language switch."""
+import json
+from pathlib import Path
+from PyQt6.QtCore import QObject, pyqtSignal
+
+_translations: dict[str, dict[str, str]] = {}
+_current_lang = "zh_CN"
+
+# Singleton signal emitter so any widget can subscribe
+class _LangNotifier(QObject):
+    languageChanged = pyqtSignal(str)
+
+_lang_notifier = _LangNotifier()
+languageChanged = _lang_notifier.languageChanged
+
+
+def load_translations():
+    """Load all translation JSON files from the i18n directory."""
+    global _translations
+    i18n_dir = Path(__file__).parent / "i18n"
+    if i18n_dir.is_dir():
+        for f in sorted(i18n_dir.glob("*.json")):
+            lang_code = f.stem
+            try:
+                _translations[lang_code] = json.loads(f.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+    if not _translations:
+        _translations = _build_fallback()
+
+
+def _build_fallback() -> dict[str, dict[str, str]]:
+    """Built-in fallback translations bundled in code."""
+    return {
+        "zh_CN": _ZH_CN,
+        "zh_TW": _ZH_TW,
+        "en": _EN,
+        "ja": _JA,
+    }
+
+
+def t(key: str, lang: str | None = None, **kwargs) -> str:
+    """Return the translation for *key* in the given or current language."""
+    lang = lang or _current_lang
+    text = _translations.get(lang, {}).get(key)
+    if text is None:
+        text = _translations.get("zh_CN", {}).get(key, key)
+    if kwargs:
+        try:
+            text = text.format(**kwargs)
+        except (KeyError, ValueError):
+            pass
+    return text
+
+
+_ = t  # shorthand
+
+
+def current_lang() -> str:
+    return _current_lang
+
+
+def set_language(code: str):
+    global _current_lang
+    if code in _translations:
+        _current_lang = code
+        languageChanged.emit(code)
+
+
+# ---------------------------------------------------------------------------
+# Built-in translation data (also written to JSON files on first run)
+# ---------------------------------------------------------------------------
+
+_ZH_CN = {
+    # App
+    "app.title": "VB Player",
+    # Sidebar
+    "nav.all_songs": "全部歌曲",
+    "nav.albums": "专辑",
+    "nav.manage": "管理",
+    "nav.settings": "设置",
+    "sidebar.collapse": "折叠侧栏",
+    "stats.tracks": "{count} 首歌曲",
+    "stats.albums": "{count} 张专辑",
+    # Page labels
+    "page.all_songs": "全部歌曲",
+    "page.albums": "专辑",
+    "page.manage": "音频管理",
+    # Manage page
+    "manage.import_folder": "📂  导入文件夹",
+    "manage.import_files": "📁  导入文件",
+    "manage.reload_albums": "🔄  重新加载专辑",
+    "manage.tracks_loaded": "当前加载: {count} 首歌曲",
+    "manage.albums_found": "识别到: {count} 张专辑",
+    "manage.audio_files_filter": "音频文件 (*.mp3 *.flac *.wav *.ogg *.opus *.m4a *.aac *.wma *.aiff *.ape *.wv *.dsf *.dff);;所有文件 (*)",
+    "manage.load_playlist_title": "加载播放列表",
+    "manage.m3u_filter": "M3U (*.m3u);;所有文件 (*)",
+    "manage.select_folder": "选择音乐文件夹",
+    # Transport
+    "transport.prev": "上一首",
+    "transport.play": "播放",
+    "transport.next": "下一首",
+    # Album view
+    "album.no_albums": "暂无专辑\n请先导入音乐文件夹",
+    "album.view_toggle_grid": "切换网格/列表视图",
+    "album.unknown_album": "未知专辑",
+    "album.unknown_artist": "未知艺术家",
+    "album.track_list": "曲目列表",
+    "album.back": "← 返回",
+    "album.year": "年份",
+    "album.track_count": "歌曲数量",
+    "album.total_duration": "总时长",
+    "album.format": "格式",
+    "album.total_size": "总大小",
+    "album.disc_count": "碟数",
+    "album.tracks_unit": "{count} 首",
+    "album.discs_unit": "{count} 张 (CD1 - CD{count})",
+    # Settings
+    "settings.title": "设置",
+    "settings.general": "通用",
+    "settings.appearance": "外观",
+    "settings.playback": "播放",
+    "settings.advanced": "高级",
+    "settings.about": "关于",
+    "settings.language": "语言 / Language",
+    "settings.theme": "主题模式",
+    "settings.accent": "强调色",
+    "settings.window_radius": "窗口圆角",
+    "settings.radius_label": "圆角半径:",
+    "settings.ui_radius": "UI 圆角",
+    "settings.lyrics_height": "歌词行间距",
+    "settings.album_cover": "专辑封面",
+    "settings.cover_radius": "封面圆角",
+    "settings.visualization": "可视化",
+    "settings.default_volume": "默认音量",
+    "settings.equalizer": "均衡器",
+    "settings.exclusive_mode": "独占模式 (ALSA 硬件直通)",
+    "settings.sidebar_log": "显示运行日志",
+    # Settings values
+    "theme.dark": "深色 (Dark)",
+    "theme.light": "浅色 (Light)",
+    "viz.bars": "柱状图 (Bars)",
+    "viz.line": "折线图 (Line)",
+    "viz.circular": "圆形 (Circular)",
+    # Log messages
+    "log.reloaded": "已重新加载 {tracks} 首歌曲，识别到 {albums} 张专辑",
+    "log.lyrics_loaded": "已加载 {count} 行歌词",
+    "log.lyrics_not_found": "未找到歌词 — 请放置同名 .lrc 文件",
+    "log.now_playing": "正在播放 — {artist} — {title}",
+    "log.now_playing_no_artist": "正在播放 — {title}",
+    "log.error": "错误: {msg}",
+    "log.loaded_folder": "已加载 {count} 首 — {folder}",
+    "log.added_files": "已添加 {count} 首",
+    "log.playlist_saved": "播放列表已保存 — {path}",
+    "log.playlist_loaded": "已加载 {count} 首",
+    "log.settings_saved": "设置已保存",
+    "log.lyrics_on": "歌词: 开",
+    "log.lyrics_off": "歌词: 关",
+    "log.exclusive_mode": "音频输出模式: {mode}",
+    "log.exclusive_alsa": "独占模式 (ALSA)",
+    "log.exclusive_shared": "共享模式 (PipeWire)",
+    "log.no_file": "没有加载音频文件",
+    # Languages
+    "lang.zh_CN": "简体中文",
+    "lang.zh_TW": "繁體中文",
+    "lang.en": "English",
+    "lang.ja": "日本語",
+    # Output
+    "output.alsa": "ALSA (硬件直通)",
+    "output.pipewire": "PipeWire / PulseAudio",
+    "output.exclusive": "独占模式 (Exclusive)",
+    "output.shared": "共享模式 (Shared)",
+    "output.system_default": "系统默认",
+    # EQ
+    "eq.enabled": "启用",
+    "eq.disabled": "关闭",
+    # Lyrics
+    "lyrics.no_lyrics": "暂无歌词",
+    "lyrics.fullscreen_entry": "全屏歌词",
+    # Settings — lyrics
+    "settings.lyrics_group": "歌词",
+    "settings.lyrics_enable": "启用歌词显示",
+    "settings.lyrics_fullscreen_group": "全屏歌词设置",
+    "settings.lyrics_font_size": "歌词字号",
+    "settings.lyrics_letter_spacing": "字间距",
+    "settings.lyrics_audio_spec": "显示音频规格信息",
+    # Settings — lyrics (already existing)
+    # "settings.lyrics_height" already exists for line spacing
+    # Misc
+    "misc.stereo": "立体声",
+    "misc.mono": "单声道",
+    "misc.channels": "{n}声道",
+}
+
+_ZH_TW = {
+    "app.title": "VB Player",
+    "nav.all_songs": "全部歌曲",
+    "nav.albums": "專輯",
+    "nav.manage": "管理",
+    "nav.settings": "設定",
+    "sidebar.collapse": "折疊側欄",
+    "stats.tracks": "{count} 首歌曲",
+    "stats.albums": "{count} 張專輯",
+    "page.all_songs": "全部歌曲",
+    "page.albums": "專輯",
+    "page.manage": "音訊管理",
+    "manage.import_folder": "📂  匯入資料夾",
+    "manage.import_files": "📁  匯入檔案",
+    "manage.reload_albums": "🔄  重新載入專輯",
+    "manage.tracks_loaded": "目前載入: {count} 首歌曲",
+    "manage.albums_found": "識別到: {count} 張專輯",
+    "manage.audio_files_filter": "音訊檔案 (*.mp3 *.flac *.wav *.ogg *.opus *.m4a *.aac *.wma *.aiff *.ape *.wv *.dsf *.dff);;所有檔案 (*)",
+    "manage.load_playlist_title": "載入播放清單",
+    "manage.m3u_filter": "M3U (*.m3u);;所有檔案 (*)",
+    "manage.select_folder": "選擇音樂資料夾",
+    "transport.prev": "上一首",
+    "transport.play": "播放",
+    "transport.next": "下一首",
+    "album.no_albums": "暫無專輯\n請先匯入音樂資料夾",
+    "album.view_toggle_grid": "切換網格/列表檢視",
+    "album.unknown_album": "未知專輯",
+    "album.unknown_artist": "未知藝術家",
+    "album.track_list": "曲目清單",
+    "album.back": "← 返回",
+    "album.year": "年份",
+    "album.track_count": "歌曲數量",
+    "album.total_duration": "總時長",
+    "album.format": "格式",
+    "album.total_size": "總大小",
+    "album.disc_count": "碟數",
+    "album.tracks_unit": "{count} 首",
+    "album.discs_unit": "{count} 張 (CD1 - CD{count})",
+    "settings.title": "設定",
+    "settings.general": "通用",
+    "settings.appearance": "外觀",
+    "settings.playback": "播放",
+    "settings.advanced": "進階",
+    "settings.about": "關於",
+    "settings.language": "語言 / Language",
+    "settings.theme": "主題模式",
+    "settings.accent": "強調色",
+    "settings.window_radius": "視窗圓角",
+    "settings.radius_label": "圓角半徑:",
+    "settings.ui_radius": "UI 圓角",
+    "settings.lyrics_height": "歌詞行間距",
+    "settings.album_cover": "專輯封面",
+    "settings.cover_radius": "封面圓角",
+    "settings.visualization": "視覺化",
+    "settings.default_volume": "預設音量",
+    "settings.equalizer": "等化器",
+    "settings.exclusive_mode": "獨佔模式 (ALSA 硬體直通)",
+    "settings.sidebar_log": "顯示執行記錄",
+    "theme.dark": "深色 (Dark)",
+    "theme.light": "淺色 (Light)",
+    "viz.bars": "長條圖 (Bars)",
+    "viz.line": "折線圖 (Line)",
+    "viz.circular": "圓形 (Circular)",
+    "log.reloaded": "已重新載入 {tracks} 首歌曲，識別到 {albums} 張專輯",
+    "log.lyrics_loaded": "已載入 {count} 行歌詞",
+    "log.lyrics_not_found": "未找到歌詞 — 請放置同名 .lrc 檔案",
+    "log.now_playing": "正在播放 — {artist} — {title}",
+    "log.now_playing_no_artist": "正在播放 — {title}",
+    "log.error": "錯誤: {msg}",
+    "log.loaded_folder": "已載入 {count} 首 — {folder}",
+    "log.added_files": "已新增 {count} 首",
+    "log.playlist_saved": "播放清單已儲存 — {path}",
+    "log.playlist_loaded": "已載入 {count} 首",
+    "log.settings_saved": "設定已儲存",
+    "log.lyrics_on": "歌詞: 開",
+    "log.lyrics_off": "歌詞: 關",
+    "log.exclusive_mode": "音訊輸出模式: {mode}",
+    "log.exclusive_alsa": "獨佔模式 (ALSA)",
+    "log.exclusive_shared": "共享模式 (PipeWire)",
+    "log.no_file": "沒有載入音訊檔案",
+    "lang.zh_CN": "簡體中文",
+    "lang.zh_TW": "繁體中文",
+    "lang.en": "English",
+    "lang.ja": "日本語",
+    "output.alsa": "ALSA (硬體直通)",
+    "output.pipewire": "PipeWire / PulseAudio",
+    "output.exclusive": "獨佔模式 (Exclusive)",
+    "output.shared": "共享模式 (Shared)",
+    "output.system_default": "系統預設",
+    "eq.enabled": "啟用",
+    "eq.disabled": "關閉",
+    "lyrics.no_lyrics": "暫無歌詞",
+    "lyrics.fullscreen_entry": "全螢幕歌詞",
+    "settings.lyrics_group": "歌詞",
+    "settings.lyrics_enable": "啟用歌詞顯示",
+    "settings.lyrics_fullscreen_group": "全螢幕歌詞設定",
+    "settings.lyrics_font_size": "歌詞字型大小",
+    "settings.lyrics_letter_spacing": "字間距",
+    "settings.lyrics_audio_spec": "顯示音訊規格資訊",
+    "misc.stereo": "立體聲",
+    "misc.mono": "單聲道",
+    "misc.channels": "{n}聲道",
+}
+
+_EN = {
+    "app.title": "VB Player",
+    "nav.all_songs": "All Songs",
+    "nav.albums": "Albums",
+    "nav.manage": "Manage",
+    "nav.settings": "Settings",
+    "sidebar.collapse": "Collapse Sidebar",
+    "stats.tracks": "{count} tracks",
+    "stats.albums": "{count} albums",
+    "page.all_songs": "All Songs",
+    "page.albums": "Albums",
+    "page.manage": "Audio Management",
+    "manage.import_folder": "📂  Import Folder",
+    "manage.import_files": "📁  Import Files",
+    "manage.reload_albums": "🔄  Reload Albums",
+    "manage.tracks_loaded": "Loaded: {count} tracks",
+    "manage.albums_found": "Found: {count} albums",
+    "manage.audio_files_filter": "Audio Files (*.mp3 *.flac *.wav *.ogg *.opus *.m4a *.aac *.wma *.aiff *.ape *.wv *.dsf *.dff);;All Files (*)",
+    "manage.load_playlist_title": "Load Playlist",
+    "manage.m3u_filter": "M3U (*.m3u);;All Files (*)",
+    "manage.select_folder": "Select Music Folder",
+    "transport.prev": "Previous",
+    "transport.play": "Play",
+    "transport.next": "Next",
+    "album.no_albums": "No Albums\nImport a music folder first",
+    "album.view_toggle_grid": "Toggle Grid/List View",
+    "album.unknown_album": "Unknown Album",
+    "album.unknown_artist": "Unknown Artist",
+    "album.track_list": "Tracks",
+    "album.back": "← Back",
+    "album.year": "Year",
+    "album.track_count": "Tracks",
+    "album.total_duration": "Duration",
+    "album.format": "Format",
+    "album.total_size": "Size",
+    "album.disc_count": "Discs",
+    "album.tracks_unit": "{count} tracks",
+    "album.discs_unit": "{count} discs (CD1 - CD{count})",
+    "settings.title": "Settings",
+    "settings.general": "General",
+    "settings.appearance": "Appearance",
+    "settings.playback": "Playback",
+    "settings.advanced": "Advanced",
+    "settings.about": "About",
+    "settings.language": "Language",
+    "settings.theme": "Theme",
+    "settings.accent": "Accent Color",
+    "settings.window_radius": "Window Corner Radius",
+    "settings.radius_label": "Radius:",
+    "settings.ui_radius": "UI Corner Radius",
+    "settings.lyrics_height": "Lyrics Line Height",
+    "settings.album_cover": "Album Cover",
+    "settings.cover_radius": "Rounded Corners",
+    "settings.visualization": "Visualization",
+    "settings.default_volume": "Default Volume",
+    "settings.equalizer": "Equalizer",
+    "settings.exclusive_mode": "Exclusive Mode (ALSA Direct)",
+    "settings.sidebar_log": "Show Log Messages",
+    "theme.dark": "Dark",
+    "theme.light": "Light",
+    "viz.bars": "Bars",
+    "viz.line": "Line",
+    "viz.circular": "Circular",
+    "log.reloaded": "Reloaded {tracks} tracks, {albums} albums found",
+    "log.lyrics_loaded": "Loaded {count} lyric lines",
+    "log.lyrics_not_found": "No lyrics found — place a .lrc file with the same name",
+    "log.now_playing": "Now Playing — {artist} — {title}",
+    "log.now_playing_no_artist": "Now Playing — {title}",
+    "log.error": "Error: {msg}",
+    "log.loaded_folder": "Loaded {count} tracks — {folder}",
+    "log.added_files": "Added {count} tracks",
+    "log.playlist_saved": "Playlist saved — {path}",
+    "log.playlist_loaded": "Loaded {count} tracks",
+    "log.settings_saved": "Settings saved",
+    "log.lyrics_on": "Lyrics: On",
+    "log.lyrics_off": "Lyrics: Off",
+    "log.exclusive_mode": "Audio Output: {mode}",
+    "log.exclusive_alsa": "Exclusive Mode (ALSA)",
+    "log.exclusive_shared": "Shared Mode (PipeWire)",
+    "log.no_file": "No audio file loaded",
+    "lang.zh_CN": "Simplified Chinese",
+    "lang.zh_TW": "Traditional Chinese",
+    "lang.en": "English",
+    "lang.ja": "Japanese",
+    "output.alsa": "ALSA (Direct Hardware)",
+    "output.pipewire": "PipeWire / PulseAudio",
+    "output.exclusive": "Exclusive Mode",
+    "output.shared": "Shared Mode",
+    "output.system_default": "System Default",
+    "eq.enabled": "Enabled",
+    "eq.disabled": "Disabled",
+    "lyrics.no_lyrics": "No lyrics",
+    "lyrics.fullscreen_entry": "Fullscreen Lyrics",
+    "settings.lyrics_group": "Lyrics",
+    "settings.lyrics_enable": "Enable Lyrics Display",
+    "settings.lyrics_fullscreen_group": "Fullscreen Lyrics Settings",
+    "settings.lyrics_font_size": "Font Size",
+    "settings.lyrics_letter_spacing": "Letter Spacing",
+    "settings.lyrics_audio_spec": "Show Audio Spec Info",
+    "misc.stereo": "Stereo",
+    "misc.mono": "Mono",
+    "misc.channels": "{n}ch",
+}
+
+_JA = {
+    "app.title": "VB Player",
+    "nav.all_songs": "全ての曲",
+    "nav.albums": "アルバム",
+    "nav.manage": "管理",
+    "nav.settings": "設定",
+    "sidebar.collapse": "サイドバーを折りたたむ",
+    "stats.tracks": "{count} 曲",
+    "stats.albums": "{count} アルバム",
+    "page.all_songs": "全ての曲",
+    "page.albums": "アルバム",
+    "page.manage": "音声管理",
+    "manage.import_folder": "📂  フォルダをインポート",
+    "manage.import_files": "📁  ファイルをインポート",
+    "manage.reload_albums": "🔄  アルバムを再読込",
+    "manage.tracks_loaded": "現在の読込: {count} 曲",
+    "manage.albums_found": "検出: {count} アルバム",
+    "manage.audio_files_filter": "音声ファイル (*.mp3 *.flac *.wav *.ogg *.opus *.m4a *.aac *.wma *.aiff *.ape *.wv *.dsf *.dff);;全てのファイル (*)",
+    "manage.load_playlist_title": "プレイリストを読込",
+    "manage.m3u_filter": "M3U (*.m3u);;全てのファイル (*)",
+    "manage.select_folder": "音楽フォルダを選択",
+    "transport.prev": "前の曲",
+    "transport.play": "再生",
+    "transport.next": "次の曲",
+    "album.no_albums": "アルバムがありません\n音楽フォルダをインポートしてください",
+    "album.view_toggle_grid": "グリッド/リスト表示切替",
+    "album.unknown_album": "不明なアルバム",
+    "album.unknown_artist": "不明なアーティスト",
+    "album.track_list": "トラックリスト",
+    "album.back": "← 戻る",
+    "album.year": "年",
+    "album.track_count": "トラック数",
+    "album.total_duration": "総時間",
+    "album.format": "フォーマット",
+    "album.total_size": "サイズ",
+    "album.disc_count": "ディスク数",
+    "album.tracks_unit": "{count} 曲",
+    "album.discs_unit": "{count} 枚 (CD1 - CD{count})",
+    "settings.title": "設定",
+    "settings.general": "一般",
+    "settings.appearance": "外観",
+    "settings.playback": "再生",
+    "settings.advanced": "詳細",
+    "settings.about": "について",
+    "settings.language": "言語 / Language",
+    "settings.theme": "テーマ",
+    "settings.accent": "アクセントカラー",
+    "settings.window_radius": "ウィンドウ角丸",
+    "settings.radius_label": "半径:",
+    "settings.ui_radius": "UI角丸",
+    "settings.lyrics_height": "歌詞の行間",
+    "settings.album_cover": "アルバムカバー",
+    "settings.cover_radius": "カバー角丸",
+    "settings.visualization": "ビジュアライザ",
+    "settings.default_volume": "デフォルト音量",
+    "settings.equalizer": "イコライザ",
+    "settings.exclusive_mode": "排他モード (ALSA直接)",
+    "settings.sidebar_log": "ログを表示",
+    "theme.dark": "ダーク (Dark)",
+    "theme.light": "ライト (Light)",
+    "viz.bars": "バー (Bars)",
+    "viz.line": "ライン (Line)",
+    "viz.circular": "サーキュラー (Circular)",
+    "log.reloaded": "{tracks} 曲を再読込、{albums} アルバムを検出",
+    "log.lyrics_loaded": "{count} 行の歌詞を読込",
+    "log.lyrics_not_found": "歌詞が見つかりません — 同名の.lrcファイルを配置してください",
+    "log.now_playing": "再生中 — {artist} — {title}",
+    "log.now_playing_no_artist": "再生中 — {title}",
+    "log.error": "エラー: {msg}",
+    "log.loaded_folder": "{count} 曲を読込 — {folder}",
+    "log.added_files": "{count} 曲を追加",
+    "log.playlist_saved": "プレイリストを保存 — {path}",
+    "log.playlist_loaded": "{count} 曲を読込",
+    "log.settings_saved": "設定を保存しました",
+    "log.lyrics_on": "歌詞: オン",
+    "log.lyrics_off": "歌詞: オフ",
+    "log.exclusive_mode": "音声出力: {mode}",
+    "log.exclusive_alsa": "排他モード (ALSA)",
+    "log.exclusive_shared": "共有モード (PipeWire)",
+    "log.no_file": "音声ファイルが読込まれていません",
+    "lang.zh_CN": "簡体中国語",
+    "lang.zh_TW": "繁体中国語",
+    "lang.en": "英語",
+    "lang.ja": "日本語",
+    "output.alsa": "ALSA (ハードウェア直接)",
+    "output.pipewire": "PipeWire / PulseAudio",
+    "output.exclusive": "排他モード (Exclusive)",
+    "output.shared": "共有モード (Shared)",
+    "output.system_default": "システムデフォルト",
+    "eq.enabled": "オン",
+    "eq.disabled": "オフ",
+    "lyrics.no_lyrics": "歌詞なし",
+    "lyrics.fullscreen_entry": "フルスクリーン歌詞",
+    "settings.lyrics_group": "歌詞",
+    "settings.lyrics_enable": "歌詞表示を有効化",
+    "settings.lyrics_fullscreen_group": "フルスクリーン歌詞設定",
+    "settings.lyrics_font_size": "フォントサイズ",
+    "settings.lyrics_letter_spacing": "文字間隔",
+    "settings.lyrics_audio_spec": "音声スペック情報を表示",
+    "misc.stereo": "ステレオ",
+    "misc.mono": "モノラル",
+    "misc.channels": "{n}ch",
+}
+
+# Init on import
+load_translations()
+if not _translations:
+    _translations = _build_fallback()
