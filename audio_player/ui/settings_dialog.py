@@ -654,8 +654,8 @@ class SettingsDialog(QDialog):
         self._album_cover_radius_cb.setChecked(cover_radius)
 
         # Populate ALSA device combo
-        from audio_player.player.engine import enumerate_alsa_hw_devices
-        self._alsa_devices = enumerate_alsa_hw_devices()
+        from audio_player.player.engine import enumerate_hw_devices
+        self._alsa_devices = enumerate_hw_devices()
         self._device_combo.clear()
         for dev in self._alsa_devices:
             self._device_combo.addItem(dev["name"], dev["hw"])
