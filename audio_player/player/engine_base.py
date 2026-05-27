@@ -3,9 +3,9 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
-from enum import IntEnum
 
 from audio_player.player.equalizer import BAND_FREQUENCIES
+from audio_player.player._types import PlaybackState
 
 Gst.init(None)
 
@@ -17,12 +17,6 @@ def _map_gst_state(gst_state) -> int:
         return PlaybackState.Paused
     else:
         return PlaybackState.Stopped
-
-
-class PlaybackState(IntEnum):
-    Stopped = 0
-    Playing = 1
-    Paused = 2
 
 
 class _BaseAudioEngine(QObject):
@@ -44,6 +38,7 @@ class _BaseAudioEngine(QObject):
     errorOccurred = pyqtSignal(str)
     volumeChanged = pyqtSignal(float)
     exclusiveModeChanged = pyqtSignal(bool)
+    outputInfoChanged = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,6 +50,8 @@ class _BaseAudioEngine(QObject):
         self._conv1: Gst.Element | None = None
         self._audio_queue: Gst.Element | None = None
         self._filesrc: Gst.Element | None = None
+        self._decodebin: Gst.Element | None = None
+        self._sink: Gst.Element | None = None
         self._audio_pad_linked = False
         self._stall_ticks = 0
         self._last_position_ms = -1
@@ -70,6 +67,11 @@ class _BaseAudioEngine(QObject):
 
         self._eq_enabled = False
         self._eq_gains = [0.0] * 10
+
+        self._pipeline_sample_rate: int = 0
+        self._pipeline_output_format: str = ""
+        self._source_is_dsd: bool = False
+        self._dsd_decode_mode: str = "pcm"  # "pcm" | "native" | "dop"
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(50)
@@ -89,8 +91,45 @@ class _BaseAudioEngine(QObject):
         raise NotImplementedError
 
     def _output_info_dict(self) -> dict:
-        """Return {name, driver, mode} describing the current output."""
+        """Return {name, driver, mode, sample_rate, format, is_exclusive, api,
+        dsd_decode_mode} describing the current output."""
         raise NotImplementedError
+
+    def _query_output_caps(self) -> tuple[int, str]:
+        """Query negotiated caps — tries sink peer pad first, then sink itself."""
+        if self._pipeline is None:
+            return 0, ""
+        try:
+            # Try the element feeding the sink first (more reliable for ASIO)
+            if self._sink is not None:
+                sink_pad = self._sink.get_static_pad("sink")
+                if sink_pad is not None:
+                    peer = sink_pad.get_peer()
+                    if peer is not None:
+                        caps = peer.get_current_caps()
+                        if caps is None:
+                            caps = peer.get_allowed_caps()
+                        if caps is not None and caps.get_size() > 0:
+                            struct = caps.get_structure(0)
+                            if struct:
+                                rate = struct.get_int("rate").value_current if struct.has_field("rate") else 0
+                                return rate, struct.to_string()
+
+            # Fallback: query sink pad directly
+            if self._sink is not None:
+                sink_pad = self._sink.get_static_pad("sink")
+                if sink_pad is not None:
+                    caps = sink_pad.get_current_caps()
+                    if caps is None:
+                        caps = sink_pad.get_allowed_caps()
+                    if caps is not None and caps.get_size() > 0:
+                        struct = caps.get_structure(0)
+                        if struct:
+                            rate = struct.get_int("rate").value_current if struct.has_field("rate") else 0
+                            return rate, struct.to_string()
+            return 0, ""
+        except Exception:
+            return 0, ""
 
     # ------------------------------------------------------------------
     #  Pipeline construction
@@ -116,6 +155,8 @@ class _BaseAudioEngine(QObject):
 
             conv1 = Gst.ElementFactory.make("audioconvert", None)
             resample1 = Gst.ElementFactory.make("audioresample", None)
+            if resample1 is not None:
+                resample1.set_property("quality", 10)
             volume = Gst.ElementFactory.make("volume", None)
             volume.set_property("volume", self._volume_level)
 
@@ -128,6 +169,8 @@ class _BaseAudioEngine(QObject):
 
             conv2 = Gst.ElementFactory.make("audioconvert", None)
             resample2 = Gst.ElementFactory.make("audioresample", None)
+            if resample2 is not None:
+                resample2.set_property("quality", 10)
 
             sink = self._create_sink()
             if sink is None:
@@ -154,7 +197,17 @@ class _BaseAudioEngine(QObject):
             self._conv1 = conv1
             self._audio_queue = audio_queue
             self._filesrc = filesrc
+            self._decodebin = decodebin
+            self._sink = sink
             self._audio_pad_linked = False
+
+            # Detect DSD source from file extension
+            ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
+            self._source_is_dsd = ext in ("dsf", "dff", "dsd")
+            if self._source_is_dsd:
+                self._dsd_decode_mode = "pcm"  # standard pipeline always soft-decodes
+            self._pipeline_sample_rate = 0
+            self._pipeline_output_format = ""
 
         except Exception as e:
             self._teardown_pipeline()
@@ -169,11 +222,19 @@ class _BaseAudioEngine(QObject):
         self._conv1 = None
         self._audio_queue = None
         self._filesrc = None
+        self._decodebin = None
+        self._sink = None
         self._audio_pad_linked = False
-        self._position_ms = 0
-        self._duration_ms = 0
+        if self._position_ms != 0 or self._duration_ms != 0:
+            self._position_ms = 0
+            self._duration_ms = 0
+            self.positionChanged.emit(0)
+            self.durationChanged.emit(0)
         self._stall_ticks = 0
         self._last_position_ms = -1
+        self._pipeline_sample_rate = 0
+        self._pipeline_output_format = ""
+        self._app_state = PlaybackState.Stopped
 
     def _on_decodebin_pad_added(self, decodebin, pad):
         caps = pad.get_current_caps()
@@ -214,6 +275,9 @@ class _BaseAudioEngine(QObject):
                 if mapped != self._app_state:
                     self._app_state = mapped
                     self.stateChanged.emit(mapped)
+                    if mapped == PlaybackState.Playing:
+                        self._stall_ticks = 0
+                        self._last_position_ms = -1
         elif t == Gst.MessageType.ASYNC_DONE:
             if self._pipeline is not None:
                 ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
@@ -222,6 +286,12 @@ class _BaseAudioEngine(QObject):
                     if ms != self._duration_ms:
                         self._duration_ms = ms
                         self.durationChanged.emit(ms)
+                rate, fmt_str = self._query_output_caps()
+                if rate:
+                    self._pipeline_sample_rate = rate
+                if fmt_str:
+                    self._pipeline_output_format = fmt_str
+                self.outputInfoChanged.emit(self.output_info)
 
     # ------------------------------------------------------------------
     #  Position / duration / bus polling
@@ -245,7 +315,9 @@ class _BaseAudioEngine(QObject):
             if self._app_state == PlaybackState.Playing:
                 if ms == self._last_position_ms:
                     self._stall_ticks += 1
-                    if self._stall_ticks > 60 and ms < 500:
+                    # Allow up to ~8s (160 ticks) before declaring stall; ASIO/WASAPI
+                    # exclusive startup can take several seconds
+                    if self._stall_ticks > 160 and ms < 500:
                         self.errorOccurred.emit("播放引擎卡住 — 请重试或切换输出模式")
                         self._app_state = PlaybackState.Stopped
                         self.stateChanged.emit(PlaybackState.Stopped)
@@ -276,8 +348,13 @@ class _BaseAudioEngine(QObject):
             return
         if self._pipeline is None:
             self._build_pipeline(self._current_file)
-        if self._pipeline is not None and self._app_state != PlaybackState.Playing:
-            self._pipeline.set_state(Gst.State.PLAYING)
+        if self._pipeline is not None:
+            # Check actual pipeline state, not tracked _app_state (may be stale)
+            ok, state, pending = self._pipeline.get_state(0)
+            if ok == Gst.StateChangeReturn.SUCCESS and state != Gst.State.PLAYING:
+                self._pipeline.set_state(Gst.State.PLAYING)
+            elif ok == Gst.StateChangeReturn.FAILURE:
+                pass  # pipeline failed — don't try to play
 
     def pause(self):
         if self._pipeline is not None and self._app_state == PlaybackState.Playing:
@@ -352,7 +429,31 @@ class _BaseAudioEngine(QObject):
 
     @property
     def output_info(self) -> dict:
-        return self._output_info_dict()
+        info = self._output_info_dict()
+        info["sample_rate"] = self._pipeline_sample_rate
+        info["pipeline_format"] = self._pipeline_output_format
+        info["source_is_dsd"] = self._source_is_dsd
+        info["dsd_decode_mode"] = self._dsd_decode_mode
+        return info
+
+    @property
+    def dsd_mode(self) -> str:
+        return self._dsd_decode_mode
+
+    @dsd_mode.setter
+    def dsd_mode(self, mode: str):
+        if mode not in ("pcm", "native", "dop"):
+            raise ValueError(f"Invalid DSD mode: {mode}")
+        if mode == self._dsd_decode_mode:
+            return
+        self._dsd_decode_mode = mode
+        if self._current_file and self._source_is_dsd:
+            pos = self._position_ms
+            self._build_pipeline(self._current_file)
+            if self._pipeline is not None:
+                self._pipeline.set_state(Gst.State.PAUSED)
+                if pos > 0:
+                    self.seek(pos)
 
     # ------------------------------------------------------------------
     #  Exclusive mode

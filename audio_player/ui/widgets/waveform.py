@@ -1,25 +1,12 @@
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QSettings
+from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import (QPainter, QColor, QPen, QLinearGradient, QPainterPath,
                          QRadialGradient, QMouseEvent)
 import numpy as np
 import subprocess
 import struct
 from pathlib import Path
-
-
-def _accent_color() -> QColor:
-    s = QSettings("VBPlayer", "VB Player")
-    name = str(s.value("accent", "purple") or "purple")
-    accents = {
-        "purple": QColor("#7c3aed"),
-        "blue":   QColor("#007AFF"),
-        "green":  QColor("#10b981"),
-        "orange": QColor("#f59e0b"),
-        "pink":   QColor("#ec4899"),
-        "red":    QColor("#ef4444"),
-    }
-    return accents.get(name, QColor("#7c3aed"))
+from audio_player.app import current_accent
 
 
 class WaveformWidget(QWidget):
@@ -29,6 +16,8 @@ class WaveformWidget(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(70)
         self.setMaximumHeight(70)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setStyleSheet("")
         self.setMouseTracking(True)
         self._waveform: np.ndarray | None = None
         self._position_ratio = 0.0
@@ -109,7 +98,7 @@ class WaveformWidget(QWidget):
 
         bar_w = 1.0
         played_idx = int(self._position_ratio * num_bars)
-        accent = _accent_color()
+        accent = current_accent()
 
         for i in range(num_bars):
             amp = data[i]
@@ -140,27 +129,78 @@ class WaveformWidget(QWidget):
 
 
 def _decode_audio_to_pcm(filepath: str) -> np.ndarray | None:
-    """Decode audio file to mono float32 PCM using GStreamer."""
+    """Decode audio to F32LE mono 22.05kHz PCM. Tries gst-launch, then ffmpeg."""
     import shutil
-    if not shutil.which("gst-launch-1.0"):
-        return None
-    try:
-        result = subprocess.run(
-            ["gst-launch-1.0", "-q",
-             "filesrc", f"location={filepath}",
-             "!", "decodebin",
-             "!", "audioconvert",
-             "!", "audioresample",
-             "!", "audio/x-raw,format=F32LE,rate=22050,channels=1",
-             "!", "fdsink"],
-            capture_output=True, timeout=120
-        )
-        if result.returncode != 0 or len(result.stdout) == 0:
-            return None
-        samples = np.frombuffer(result.stdout, dtype=np.float32)
-        return samples if len(samples) > 0 else None
-    except Exception:
-        return None
+    import os
+
+    # Try GStreamer first
+    gst_launch = shutil.which("gst-launch-1.0")
+    if gst_launch:
+        env = os.environ.copy()
+        env["GST_REGISTRY_FORK_DISABLE"] = "1"
+        env["GST_DEBUG"] = "1"
+        gst_root = os.path.dirname(os.path.dirname(gst_launch))
+        env["GST_PLUGIN_SCANNER"] = os.path.join(gst_root, "libexec", "gstreamer-1.0", "gst-plugin-scanner.exe")
+        env["PATH"] = os.path.join(gst_root, "bin") + os.pathsep + env.get("PATH", "")
+        try:
+            import tempfile
+            tmp_path = os.path.join(tempfile.gettempdir(),
+                                    f"vbplayer_pcm_{os.path.basename(filepath)}.pcm")
+            file_uri = filepath.replace("\\", "/")
+            tmp_uri = tmp_path.replace("\\", "/")
+            result = subprocess.run(
+                [gst_launch, "-q",
+                 "filesrc", f'location="{file_uri}"',
+                 "!", "decodebin",
+                 "!", "audioconvert",
+                 "!", "audioresample",
+                 "!", "audio/x-raw,format=F32LE,rate=22050,channels=1",
+                 "!", "filesink", f'location="{tmp_uri}"'],
+                capture_output=True, timeout=120, env=env,
+            )
+            if result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                with open(tmp_path, "rb") as f:
+                    data = f.read()
+                os.unlink(tmp_path)
+                samples = np.frombuffer(data, dtype=np.float32)
+                if len(samples) > 0:
+                    return samples
+            if result.stderr:
+                import sys
+                sys.stderr.write(f"[gst-launch] {result.stderr.decode(errors='ignore')[:500]}\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+
+    # Fall back to ffmpeg
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        # Search common locations
+        for p in [
+            os.path.join("C:", os.sep, "msys64", "mingw64", "bin", "ffmpeg.exe"),
+            os.path.join(os.environ.get("APPDATA", ""), "bilibili", "ffmpeg", "ffmpeg.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "bilibili", "ffmpeg", "ffmpeg.exe"),
+            os.path.join(os.environ.get("ProgramFiles", ""), "ffmpeg", "bin", "ffmpeg.exe"),
+        ]:
+            if os.path.isfile(p):
+                ffmpeg = p
+                break
+    if ffmpeg:
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-i", filepath,
+                 "-f", "f32le", "-ac", "1", "-ar", "22050",
+                 "-loglevel", "quiet", "pipe:1"],
+                capture_output=True, timeout=120,
+            )
+            if result.returncode == 0 and len(result.stdout) > 0:
+                samples = np.frombuffer(result.stdout, dtype=np.float32)
+                if len(samples) > 0:
+                    return samples
+        except Exception:
+            pass
+
+    return None
 
 
 def _compute_waveform(filepath: str, num_bars: int = 2000) -> np.ndarray | None:

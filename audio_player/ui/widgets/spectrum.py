@@ -20,6 +20,8 @@ class SpectrumWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(140)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setStyleSheet("")
         self._mode = SpectrumMode.Bars
         self._levels = np.zeros(self.BAR_COUNT, dtype=np.float64)
         self._peaks = np.zeros(self.BAR_COUNT, dtype=np.float64)
@@ -86,6 +88,10 @@ class SpectrumWidget(QWidget):
     def set_audio_data(self, spectrum_cache: np.ndarray, sample_rate: int):
         self._spectrum_cache = spectrum_cache
         self._sample_rate = sample_rate
+        if spectrum_cache is not None and len(spectrum_cache) > 0:
+            self._levels = spectrum_cache[0].copy()
+            self._peaks = spectrum_cache[0].copy()
+            self.update()
 
     def clear(self):
         self._levels = np.zeros(self.BAR_COUNT, dtype=np.float64)

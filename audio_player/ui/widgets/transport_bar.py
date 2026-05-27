@@ -1,21 +1,7 @@
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton
-from PyQt6.QtCore import Qt, pyqtSignal, QSettings
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, pyqtSignal
+from audio_player.app import current_accent
 from audio_player.i18n import _
-
-
-def _accent_color() -> QColor:
-    s = QSettings("VBPlayer", "VB Player")
-    name = str(s.value("accent", "purple") or "purple")
-    accents = {
-        "purple": QColor("#7c3aed"),
-        "blue":   QColor("#007AFF"),
-        "green":  QColor("#10b981"),
-        "orange": QColor("#f59e0b"),
-        "pink":   QColor("#ec4899"),
-        "red":    QColor("#ef4444"),
-    }
-    return accents.get(name, QColor("#7c3aed"))
 
 
 class TransportBar(QWidget):
@@ -59,7 +45,7 @@ class TransportBar(QWidget):
         scale = max(0.8, min(1.5, ref_h / 600))
         play_sz = int(72 * scale)
         side_sz = int(56 * scale)
-        accent = _accent_color()
+        accent = current_accent()
         accent_hex = accent.name()
         accent_hover = accent.lighter(115).name()
         accent_pressed = accent.darker(120).name()
@@ -77,12 +63,12 @@ class TransportBar(QWidget):
         )
         self._prev_btn.setFixedSize(side_sz, side_sz)
         self._next_btn.setFixedSize(side_sz, side_sz)
-        accent_rgba = f"rgba({accent.red()},{accent.green()},{accent.blue()},0.2)"
+        accent_rgba = accent.darker(180).name()
         side_radius = side_sz * 2 // 5
         side_style = (
             f"QPushButton{{background:transparent;border:none;color:#bbbbbb;"
             f"font-size:{int(side_sz*0.42)}px;border-radius:{side_radius}px;}}"
-            f"QPushButton:hover{{background:rgba(255,255,255,0.08);color:#fff;}}"
+            f"QPushButton:hover{{background:#1a1a2e;color:#fff;}}"
             f"QPushButton:pressed{{background:{accent_rgba};color:#fff;}}"
         )
         self._prev_btn.setStyleSheet(side_style)

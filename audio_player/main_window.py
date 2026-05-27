@@ -23,6 +23,7 @@ from audio_player.ui.widgets.transport_bar import TransportBar
 from audio_player.ui.widgets.seek_slider import SeekSlider
 from audio_player.ui.widgets.output_spec_bar import OutputSpecBar
 from audio_player.ui.widgets.volume_control import VolumeControl
+from audio_player.ui.widgets.playback_mode import PlaybackModeControl
 from audio_player.ui.widgets.playlist_view import PlaylistView
 from audio_player.ui.widgets.spectrum import SpectrumWidget, SpectrumMode
 from audio_player.ui.widgets.waveform import WaveformWidget
@@ -126,6 +127,7 @@ class MainWindow(QMainWindow):
         self._sidebar.refresh_theme_mode(is_light)
         self._album_view.refresh_theme_mode(is_light)
         self._output_spec_bar.refresh_theme_mode(is_light)
+        self._playback_mode.refresh_theme_mode(is_light)
 
         # React to language changes
         languageChanged.connect(self._refresh_language)
@@ -169,7 +171,10 @@ class MainWindow(QMainWindow):
         pl_header = QHBoxLayout()
         pl_header.setContentsMargins(8, 8, 8, 4)
         self._pl_label = QLabel(_("page.all_songs"))
-        self._pl_label.setStyleSheet("color:#94a3b8;font-size:10px;font-weight:bold;letter-spacing:2px;")
+        self._pl_label.setStyleSheet(
+            "color:#94a3b8;font-size:12px;font-weight:bold;"
+            "letter-spacing:2px;padding:6px 12px;"
+        )
         pl_header.addWidget(self._pl_label)
         pl_header.addStretch()
         pl_layout.addLayout(pl_header)
@@ -189,7 +194,10 @@ class MainWindow(QMainWindow):
         album_header = QHBoxLayout()
         album_header.setContentsMargins(8, 8, 8, 4)
         self._album_lbl = QLabel(_("page.albums"))
-        self._album_lbl.setStyleSheet("color:#94a3b8;font-size:10px;font-weight:bold;letter-spacing:2px;")
+        self._album_lbl.setStyleSheet(
+            "color:#94a3b8;font-size:12px;font-weight:bold;"
+            "letter-spacing:2px;padding:6px 12px;"
+        )
         album_header.addWidget(self._album_lbl)
         album_header.addSpacing(8)
         # Grid/list toggle
@@ -197,9 +205,9 @@ class MainWindow(QMainWindow):
         self._album_view_btn.setFixedSize(28, 22)
         self._album_view_btn.setToolTip(_("album.view_toggle_grid"))
         self._album_view_btn.setStyleSheet(
-            "QPushButton{background:rgba(255,255,255,0.06);color:#94a3b8;border:none;"
+            "QPushButton{background:#1a1a2e;color:#94a3b8;border:none;"
             "border-radius:3px;font-size:12px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
+            "QPushButton:hover{background:#2a2a4a;color:#e2e8f0;}"
         )
         self._album_view_btn.clicked.connect(self._toggle_album_view_mode)
         album_header.addWidget(self._album_view_btn)
@@ -271,10 +279,11 @@ class MainWindow(QMainWindow):
         self._transport_bar.prevClicked.connect(self._prev_track)
         transport_layout.addWidget(self._transport_bar, 0, Qt.AlignmentFlag.AlignVCenter)
         transport_layout.addStretch(1)
-        # Right spacer matching volume control width to keep transport centered
-        self._transport_right_spacer = QWidget()
-        self._transport_right_spacer.setFixedWidth(52)
-        transport_layout.addWidget(self._transport_right_spacer, 0)
+        # Right side: playback mode control (symmetric with volume)
+        self._playback_mode = PlaybackModeControl()
+        self._playback_mode.repeatModeChanged.connect(self._on_repeat_mode_changed)
+        self._playback_mode.shuffleChanged.connect(self._on_shuffle_changed)
+        transport_layout.addWidget(self._playback_mode, 0, Qt.AlignmentFlag.AlignVCenter)
         controls_layout.addLayout(transport_layout)
         self._center_splitter.addWidget(controls_container)
 
@@ -315,10 +324,14 @@ class MainWindow(QMainWindow):
         self._manage_title.setStyleSheet(f"color:{title_color};font-size:15px;font-weight:bold;")
         layout.addWidget(self._manage_title)
 
+        _a12 = f"{int(0.12 * 255):02x}"
+        _a22 = f"{int(0.22 * 255):02x}"
+        _bg12 = f"#{_a12}{r:02x}{g:02x}{b:02x}"
+        _bg22 = f"#{_a22}{r:02x}{g:02x}{b:02x}"
         self._manage_btn_style_template = (
-            f"QPushButton{{background:rgba({r},{g},{b},0.12);color:{accent.lighter(130).name()};border:none;"
+            f"QPushButton{{background:{_bg12};color:{accent.lighter(130).name()};border:none;"
             "border-radius:6px;padding:12px;font-size:13px;text-align:left;}"
-            f"QPushButton:hover{{background:rgba({r},{g},{b},0.22);}}"
+            f"QPushButton:hover{{background:{_bg22};}}"
         )
 
         self._manage_import_folder_btn = QPushButton(_("manage.import_folder"))
@@ -373,6 +386,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Right"), self, self._next_track)
         QShortcut(QKeySequence("Ctrl+Left"), self, self._prev_track)
         QShortcut(QKeySequence("Delete"), self, self._remove_selected)
+        QShortcut(QKeySequence("R"), self, self._cycle_playback_mode_shortcut)
 
     def _restore_settings(self):
         s = QSettings("VBPlayer", "VB Player")
@@ -421,6 +435,7 @@ class MainWindow(QMainWindow):
         self._engine.errorOccurred.connect(self._on_error)
         self._engine.volumeChanged.connect(lambda v: self._volume_control.set_value(v))
         self._engine.exclusiveModeChanged.connect(self._on_exclusive_mode_changed)
+        self._engine.outputInfoChanged.connect(lambda info: self._output_spec_bar.set_audio_device(info))
         self._playlist.currentIndexChanged.connect(self._on_playlist_index_changed)
         self._album_view.albumClicked.connect(self._on_album_clicked)
         self._album_view.trackDoubleClicked.connect(self._play_track_at)
@@ -538,6 +553,7 @@ class MainWindow(QMainWindow):
         self._output_spec_bar.set_audio_device(self._engine.output_info)
         self._fullscreen_lyrics.set_meta(meta)
         self._analyzer.analyze(filepath)
+        self._album_detail_page.set_current_playlist_index(self._playlist.current_index)
 
     def _on_track_finished(self):
         if self._playlist.advance():
@@ -561,13 +577,18 @@ class MainWindow(QMainWindow):
             self._playlist.index(idx, 0),
             self._playlist_view.ScrollHint.EnsureVisible
         )
+        self._album_detail_page.set_current_playlist_index(idx)
 
     # ================================================================
     #  Playlist Actions
     # ================================================================
 
     def _play_track_at(self, idx):
-        self._playlist.current_index = idx
+        if idx == self._playlist.current_index and self._playlist.current_track_path:
+            self._engine.seek(0)
+            self._engine.play()
+        else:
+            self._playlist.current_index = idx
 
     def _next_track(self):
         if self._playlist.advance():
@@ -589,6 +610,17 @@ class MainWindow(QMainWindow):
         indices = [idx.row() for idx in self._playlist_view.selectedIndexes()]
         if indices:
             self._playlist.remove_indices(indices)
+
+    def _on_repeat_mode_changed(self, mode: int):
+        from audio_player.player.playlist import RepeatMode
+        self._playlist.repeat = RepeatMode(mode)
+
+    def _on_shuffle_changed(self, enabled: bool):
+        self._playlist.shuffle = enabled
+
+    def _cycle_playback_mode_shortcut(self):
+        """Advance playback mode: sequential → repeat all → repeat one → shuffle."""
+        self._playback_mode.cycle_mode()
 
     # ================================================================
     #  File Operations
@@ -692,6 +724,9 @@ class MainWindow(QMainWindow):
         dlg.set_exclusive_state(self._engine.exclusive_mode, self._engine.exclusive_device)
         dlg.exclusiveModeToggled.connect(lambda v: setattr(self._engine, 'exclusive_mode', v))
         dlg.exclusiveDeviceChanged.connect(lambda v: setattr(self._engine, 'exclusive_device', v))
+        # DSD decode mode
+        dlg.set_dsd_mode(self._engine.dsd_mode)
+        dlg.dsdModeChanged.connect(lambda v: setattr(self._engine, 'dsd_mode', v))
         # Language
         dlg.languageChanged.connect(lambda lang: set_language(lang))
 
@@ -704,16 +739,27 @@ class MainWindow(QMainWindow):
         self._sidebar.refresh_theme_mode(is_light)
         self._album_view.refresh_theme_mode(is_light)
         self._output_spec_bar.refresh_theme_mode(is_light)
+        self._playback_mode.refresh_theme_mode(is_light)
         self._refresh_accent_colors()
-        # Album header label + toggle
+        # Page header labels (match back-button position)
         hdr_color = "#666666" if is_light else "#94a3b8"
-        self._album_lbl.setStyleSheet(f"color:{hdr_color};font-size:10px;font-weight:bold;letter-spacing:2px;")
+        self._pl_label.setStyleSheet(
+            f"color:{hdr_color};font-size:12px;font-weight:bold;"
+            "letter-spacing:2px;padding:6px 12px;"
+        )
+        self._album_lbl.setStyleSheet(
+            f"color:{hdr_color};font-size:12px;font-weight:bold;"
+            "letter-spacing:2px;padding:6px 12px;"
+        )
+        # Album toggle button
         btn_color = "#888888" if is_light else "#94a3b8"
         btn_hover_color = "#333333" if is_light else "#e2e8f0"
+        btn_bg = "#e0e0e0" if is_light else "#1a1a2e"
+        btn_hover_bg = "#d0d0d0" if is_light else "#2a2a4a"
         self._album_view_btn.setStyleSheet(
-            f"QPushButton{{background:rgba(0,0,0,0.06);color:{btn_color};border:none;"
+            f"QPushButton{{background:{btn_bg};color:{btn_color};border:none;"
             f"border-radius:3px;font-size:12px;}}"
-            f"QPushButton:hover{{background:rgba(0,0,0,0.10);color:{btn_hover_color};}}"
+            f"QPushButton:hover{{background:{btn_hover_bg};color:{btn_hover_color};}}"
         )
 
     def _refresh_accent_colors(self):
@@ -723,6 +769,7 @@ class MainWindow(QMainWindow):
         self._seek_slider._apply_sizing()
         self._volume_control._refresh_style()
         self._transport_bar._apply_sizing()
+        self._playback_mode.refresh_accent()
 
     def _refresh_language(self, _code: str = ""):
         """Refresh all translatable UI text after language change."""
@@ -742,6 +789,7 @@ class MainWindow(QMainWindow):
             reload_btn.setText(_("manage.reload_albums"))
         # Sidebar
         self._sidebar.refresh_language()
+        self._playback_mode.refresh_language()
         # Album view
         self._album_view.refresh_language()
         self._album_detail_page.refresh_language()
@@ -761,10 +809,14 @@ class MainWindow(QMainWindow):
         muted = "#555" if is_light else "#94a3b8"
 
         if hasattr(self, '_manage_import_folder_btn'):
+            _a12 = f"{int(0.12 * 255):02x}"
+            _a22 = f"{int(0.22 * 255):02x}"
+            _bg12 = f"#{_a12}{r:02x}{g:02x}{b:02x}"
+            _bg22 = f"#{_a22}{r:02x}{g:02x}{b:02x}"
             self._manage_btn_style_template = (
-                f"QPushButton{{background:rgba({r},{g},{b},0.12);color:{accent.lighter(130).name()};border:none;"
+                f"QPushButton{{background:{_bg12};color:{accent.lighter(130).name()};border:none;"
                 "border-radius:6px;padding:12px;font-size:13px;text-align:left;}"
-                f"QPushButton:hover{{background:rgba({r},{g},{b},0.22);}}"
+                f"QPushButton:hover{{background:{_bg22};}}"
             )
             self._manage_import_folder_btn.setStyleSheet(self._manage_btn_style_template)
             self._manage_import_files_btn.setStyleSheet(self._manage_btn_style_template)

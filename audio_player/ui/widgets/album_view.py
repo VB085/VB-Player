@@ -7,6 +7,7 @@ from PyQt6.QtCore import (Qt, pyqtSignal, QSettings, QSize, QRect,
                          QModelIndex, QAbstractListModel, QTimer)
 from PyQt6.QtGui import (QPainter, QColor, QFont, QPen, QPixmap, QFontMetrics,
                          QPainterPath)
+from audio_player.app import current_accent, current_theme_mode
 import os
 
 from audio_player.player.album_manager import AlbumInfo
@@ -14,22 +15,8 @@ from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.i18n import _
 
 
-def _accent_color() -> QColor:
-    s = QSettings("VBPlayer", "VB Player")
-    name = str(s.value("accent", "purple") or "purple")
-    accents = {
-        "purple": QColor("#7c3aed"),
-        "blue":   QColor("#007AFF"),
-        "green":  QColor("#10b981"),
-        "orange": QColor("#f59e0b"),
-        "pink":   QColor("#ec4899"),
-        "red":    QColor("#ef4444"),
-    }
-    return accents.get(name, QColor("#7c3aed"))
-
-
 def _is_light_mode() -> bool:
-    return str(QSettings("VBPlayer", "VB Player").value("theme_mode", "dark") or "dark") == "light"
+    return current_theme_mode() == "light"
 
 
 # ---------------------------------------------------------------------------
@@ -65,22 +52,26 @@ class AlbumCardWidget(QFrame):
         cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
         if album.cover_data:
             pix = QPixmap()
-            pix.loadFromData(album.cover_data)
-            scaled_pix = pix.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation)
-            if cover_radius:
-                rounded = QPixmap(142, 142)
-                rounded.fill(Qt.GlobalColor.transparent)
-                pt = QPainter(rounded)
-                pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(0, 0, 142, 142, 12, 12)
-                pt.setClipPath(path)
-                pt.drawPixmap(0, 0, scaled_pix)
-                pt.end()
-                cover.setPixmap(rounded)
+            ok = pix.loadFromData(album.cover_data)
+            if ok and not pix.isNull():
+                scaled_pix = pix.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)
+                if cover_radius:
+                    rounded = QPixmap(142, 142)
+                    rounded.fill(Qt.GlobalColor.transparent)
+                    pt = QPainter(rounded)
+                    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    path = QPainterPath()
+                    path.addRoundedRect(0, 0, 142, 142, 12, 12)
+                    pt.setClipPath(path)
+                    pt.drawPixmap(0, 0, scaled_pix)
+                    pt.end()
+                    cover.setPixmap(rounded)
+                else:
+                    cover.setPixmap(scaled_pix)
             else:
-                cover.setPixmap(scaled_pix)
+                cover.setText("💿")
+                cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};font-size:48px;")
         else:
             cover.setText("💿")
             cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};font-size:48px;")
@@ -171,7 +162,7 @@ class AlbumListDelegate(QStyledItemDelegate):
 
         rect = option.rect.adjusted(self.MARGIN, 2, -self.MARGIN, -2)
         is_selected = option.state & QStyle.StateFlag.State_Selected
-        accent = _accent_color()
+        accent = current_accent()
         is_light = _is_light_mode()
 
         # Background
@@ -191,18 +182,18 @@ class AlbumListDelegate(QStyledItemDelegate):
         cover_drawn = False
         if album and album.cover_data:
             pix = QPixmap()
-            pix.loadFromData(album.cover_data)
-            scaled = pix.scaled(cover_size, cover_size, Qt.AspectRatioMode.KeepAspectRatio,
-                               Qt.TransformationMode.SmoothTransformation)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            # Clip to rounded rect
-            clip_path = QPainterPath()
-            clip_path.addRoundedRect(cover_x, cover_y, cover_size, cover_size, 4, 4)
-            painter.setClipPath(clip_path)
-            painter.drawPixmap(cover_x, cover_y, scaled)
-            painter.setClipping(False)
-            cover_drawn = True
+            ok = pix.loadFromData(album.cover_data)
+            if ok and not pix.isNull():
+                scaled = pix.scaled(cover_size, cover_size, Qt.AspectRatioMode.KeepAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                clip_path = QPainterPath()
+                clip_path.addRoundedRect(cover_x, cover_y, cover_size, cover_size, 4, 4)
+                painter.setClipPath(clip_path)
+                painter.drawPixmap(cover_x, cover_y, scaled)
+                painter.setClipping(False)
+                cover_drawn = True
 
         if not cover_drawn:
             painter.setPen(Qt.PenStyle.NoPen)
@@ -576,10 +567,32 @@ class _AlbumTrackModel(QAbstractListModel):
     TitleRole = Qt.ItemDataRole.UserRole + 3
     ArtistRole = Qt.ItemDataRole.UserRole + 4
     DurationRole = Qt.ItemDataRole.UserRole + 5
+    FilePathRole = Qt.ItemDataRole.UserRole + 6
+    IsCurrentRole = Qt.ItemDataRole.UserRole + 7
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._items: list[dict] = []
+        self._current_playlist_idx: int | None = None
+
+    @property
+    def current_index(self):
+        """Return model row index of the currently playing track, or -1."""
+        if self._current_playlist_idx is None:
+            return -1
+        for r, item in enumerate(self._items):
+            if item.get("playlist_idx") == self._current_playlist_idx:
+                return r
+        return -1
+
+    def set_current_playlist_idx(self, idx: int | None):
+        old = self._current_playlist_idx
+        self._current_playlist_idx = idx
+        if old != idx:
+            # Refresh rows for old and new current track
+            for r, item in enumerate(self._items):
+                if item.get("playlist_idx") in (old, idx):
+                    self.dataChanged.emit(self.index(r, 0), self.index(r, 0))
 
     def rowCount(self, parent=QModelIndex()):
         return len(self._items)
@@ -592,6 +605,8 @@ class _AlbumTrackModel(QAbstractListModel):
             return item.get("playlist_idx")
         if role == self.HeaderRole:
             return item.get("type") == "header"
+        if role == self.IsCurrentRole:
+            return item.get("playlist_idx") == self._current_playlist_idx
         if role == self.TrackNumRole:
             return item.get("track_num", 0)
         if role == self.TitleRole:
@@ -600,6 +615,8 @@ class _AlbumTrackModel(QAbstractListModel):
             return item.get("artist", "")
         if role == self.DurationRole:
             return item.get("duration_sec", 0)
+        if role == self.FilePathRole:
+            return item.get("filepath", "")
         if role == Qt.ItemDataRole.DisplayRole:
             return item.get("disc_label", "") if item.get("type") == "header" else item.get("title", "")
         return None
@@ -656,7 +673,7 @@ class _AlbumTrackDelegate(QStyledItemDelegate):
         rect = option.rect.adjusted(self.MARGIN, 2, -self.MARGIN, -2)
         is_selected = option.state & QStyle.StateFlag.State_Selected
         is_light = _is_light_mode()
-        accent = _accent_color()
+        accent = current_accent()
 
         # Selection background
         if is_selected:
@@ -666,63 +683,57 @@ class _AlbumTrackDelegate(QStyledItemDelegate):
             painter.setBrush(c)
             painter.drawRoundedRect(rect, 6, 6)
 
+        # Current playing indicator
+        is_current = bool(model.data(index, _AlbumTrackModel.IsCurrentRole))
+        if is_current:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(accent)
+            painter.drawRoundedRect(
+                QRect(rect.x() + 4, rect.y() + 8, 3, rect.height() - 16), 1.5, 1.5)
+
         # Track number
         track_num = model.data(index, _AlbumTrackModel.TrackNumRole) or 0
         num_font = QFont(painter.font())
         num_font.setPointSize(9)
         painter.setFont(num_font)
-        painter.setPen(QColor("#64748b"))
+        painter.setPen(accent if is_current else QColor("#64748b"))
         tn_str = f"{track_num:02d}" if track_num else "??"
-        painter.drawText(QRect(rect.x() + 4, rect.y(), 28, rect.height()),
-                        Qt.AlignmentFlag.AlignVCenter, tn_str)
+        painter.drawText(QRect(rect.x() + 14, rect.y(), 28, rect.height()),
+                         Qt.AlignmentFlag.AlignVCenter, tn_str)
 
-        # Duration (right side — measure first, reserve space)
-        dur_sec = model.data(index, _AlbumTrackModel.DurationRole) or 0
-        dur_text = ""
-        dur_w = 0
-        if dur_sec:
-            dur_font = QFont(painter.font())
-            dur_font.setPointSize(9)
-            painter.setFont(dur_font)
-            m, s = divmod(int(dur_sec), 60)
-            dur_text = f"{m}:{s:02d}"
-            dur_w = painter.fontMetrics().horizontalAdvance(dur_text) + 8
-
-        # Text area — leave room for duration on right
-        text_x = rect.x() + 36
-        text_w = rect.width() - 36 - 8 - dur_w
+        # Text area
+        text_x = rect.x() + 44
+        text_w = rect.width() - 44 - 8
 
         title = model.data(index, _AlbumTrackModel.TitleRole) or "Unknown"
         artist = model.data(index, _AlbumTrackModel.ArtistRole) or ""
+        dur_sec = model.data(index, _AlbumTrackModel.DurationRole) or 0
 
         # Title
         title_font = QFont(painter.font())
         title_font.setPointSize(10)
+        title_font.setBold(is_current)
         painter.setFont(title_font)
         title_color = QColor("#333333") if is_light else QColor("#e2e8f0")
-        painter.setPen(title_color)
-        title_text = painter.fontMetrics().elidedText(title, Qt.TextElideMode.ElideRight, max(40, text_w))
-        painter.drawText(text_x, rect.y() + 4, max(40, text_w), 20,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, title_text)
+        painter.setPen(accent.lighter(130) if is_current else title_color)
+        title_text = painter.fontMetrics().elidedText(
+            title, Qt.TextElideMode.ElideRight, text_w)
+        painter.drawText(text_x, rect.y() + 4, text_w, 20,
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, title_text)
 
-        # Duration (right-aligned, only if there's room)
-        if dur_text and dur_w > 0:
-            dur_font = QFont(painter.font())
-            dur_font.setPointSize(9)
-            painter.setFont(dur_font)
-            painter.setPen(QColor("#888888") if is_light else QColor("#64748b"))
-            dur_rect = QRect(rect.right() - dur_w - 2, rect.y() + 4, dur_w, 20)
-            painter.drawText(dur_rect,
-                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, dur_text)
-
-        # Artist (below title)
+        # Artist + Duration (same line, matching main playlist)
         sub_font = QFont(painter.font())
         sub_font.setPointSize(9)
         painter.setFont(sub_font)
         painter.setPen(QColor("#888888") if is_light else QColor("#64748b"))
-        sub_text = painter.fontMetrics().elidedText(artist, Qt.TextElideMode.ElideRight, max(40, text_w + dur_w))
-        painter.drawText(text_x, rect.y() + 22, max(40, text_w + dur_w), 20,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, sub_text)
+        sub_text = artist
+        if dur_sec:
+            m, s = divmod(int(dur_sec), 60)
+            sub_text = f"{artist}  ·  {m}:{s:02d}" if artist else f"{m}:{s:02d}"
+        sub_text = painter.fontMetrics().elidedText(
+            sub_text, Qt.TextElideMode.ElideRight, text_w)
+        painter.drawText(text_x, rect.y() + 22, text_w, 20,
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, sub_text)
 
         painter.restore()
 
@@ -764,7 +775,7 @@ class AlbumDetailPage(QWidget):
     def _setup_ui(self):
         is_light = self._is_light
         back_color = "#666666" if is_light else "#94a3b8"
-        back_hover_bg = "rgba(0,0,0,0.08)" if is_light else "rgba(255,255,255,0.08)"
+        back_hover_bg = "#e0e0e0" if is_light else "#1a1a2e"
         back_hover_color = "#333333" if is_light else "#fff"
 
         layout = QVBoxLayout(self)
@@ -862,12 +873,12 @@ class AlbumDetailPage(QWidget):
         return f"font-size:20px;font-weight:bold;color:{c};"
 
     def _artist_style(self):
-        c = "#7c3aed" if self._is_light else "#a78bfa"
+        c = current_accent().name()
         return f"font-size:14px;color:{c};"
 
     def _meta_chip_style(self):
         is_light = self._is_light
-        bg = "rgba(0,0,0,0.04)" if is_light else "rgba(255,255,255,0.05)"
+        bg = "#f0f0f0" if is_light else "#141418"
         c = "#555555" if is_light else "#94a3b8"
         return f"background:{bg};color:{c};font-size:10px;padding:3px 8px;border-radius:3px;"
 
@@ -886,22 +897,26 @@ class AlbumDetailPage(QWidget):
         self._cover_label.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
         if album.cover_data:
             pix = QPixmap()
-            pix.loadFromData(album.cover_data)
-            scaled = pix.scaled(170, 170, Qt.AspectRatioMode.KeepAspectRatio,
-                               Qt.TransformationMode.SmoothTransformation)
-            if cover_radius:
-                rounded = QPixmap(170, 170)
-                rounded.fill(Qt.GlobalColor.transparent)
-                pt = QPainter(rounded)
-                pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(0, 0, 170, 170, 12, 12)
-                pt.setClipPath(path)
-                pt.drawPixmap(0, 0, scaled)
-                pt.end()
-                self._cover_label.setPixmap(rounded)
+            ok = pix.loadFromData(album.cover_data)
+            if ok and not pix.isNull():
+                scaled = pix.scaled(170, 170, Qt.AspectRatioMode.KeepAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+                if cover_radius:
+                    rounded = QPixmap(170, 170)
+                    rounded.fill(Qt.GlobalColor.transparent)
+                    pt = QPainter(rounded)
+                    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    path = QPainterPath()
+                    path.addRoundedRect(0, 0, 170, 170, 12, 12)
+                    pt.setClipPath(path)
+                    pt.drawPixmap(0, 0, scaled)
+                    pt.end()
+                    self._cover_label.setPixmap(rounded)
+                else:
+                    self._cover_label.setPixmap(scaled)
             else:
-                self._cover_label.setPixmap(scaled)
+                self._cover_label.setText("💿")
+                self._cover_label.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};font-size:48px;")
         else:
             self._cover_label.setText("💿")
             self._cover_label.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};font-size:48px;")
@@ -922,6 +937,16 @@ class AlbumDetailPage(QWidget):
             if dn not in disc_groups:
                 disc_groups[dn] = []
             disc_groups[dn].append((idx, tn, title, artist, dur))
+        # Fill missing track numbers with sequential numbering per disc
+        for disc, tracks in disc_groups.items():
+            tracks.sort(key=lambda x: x[1] if x[1] else 9999)
+            next_num = 1
+            for i, (idx, tn, title, artist, dur) in enumerate(tracks):
+                if not tn:
+                    while any(t[1] == next_num for t in tracks):
+                        next_num += 1
+                    tracks[i] = (idx, next_num, title, artist, dur)
+                    next_num += 1
 
         self._track_model.set_tracks(disc_groups)
 
@@ -929,6 +954,9 @@ class AlbumDetailPage(QWidget):
         val = idx.data(Qt.ItemDataRole.UserRole)
         if val is not None:
             self.trackDoubleClicked.emit(int(val))
+
+    def set_current_playlist_index(self, playlist_idx: int | None):
+        self._track_model.set_current_playlist_idx(playlist_idx)
 
     def refresh_theme_mode(self, is_light: bool):
         self._is_light = is_light
@@ -1035,7 +1063,7 @@ class AlbumDetailDialog(QDialog):
         is_light = _is_light_mode()
         cover_bg = "#e0e0e0" if is_light else "#141414"
         name_color = "#333333" if is_light else "#e2e8f0"
-        artist_color = "#7c3aed" if is_light else "#a78bfa"
+        artist_color = current_accent().name()
 
         main = QHBoxLayout(self)
         main.setContentsMargins(20, 20, 20, 20)
@@ -1048,9 +1076,13 @@ class AlbumDetailDialog(QDialog):
         cover.setStyleSheet(f"background:{cover_bg};border-radius:10px;")
         if album.cover_data:
             pix = QPixmap()
-            pix.loadFromData(album.cover_data)
-            cover.setPixmap(pix.scaled(210, 210, Qt.AspectRatioMode.KeepAspectRatio,
-                                        Qt.TransformationMode.SmoothTransformation))
+            ok = pix.loadFromData(album.cover_data)
+            if ok and not pix.isNull():
+                cover.setPixmap(pix.scaled(210, 210, Qt.AspectRatioMode.KeepAspectRatio,
+                                            Qt.TransformationMode.SmoothTransformation))
+            else:
+                cover.setText("💿")
+                cover.setStyleSheet(f"background:{cover_bg};border-radius:10px;font-size:60px;")
         else:
             cover.setText("💿")
             cover.setStyleSheet(f"background:{cover_bg};border-radius:10px;font-size:60px;")
@@ -1104,6 +1136,9 @@ class AlbumDetailDialog(QDialog):
         track_label.setStyleSheet(f"color:{info_color};font-size:10px;font-weight:bold;letter-spacing:2px;")
         right.addWidget(track_label)
 
+        accent = current_accent()
+        accent_rgba = accent.darker(180).name()
+
         track_bg = "#fafafa" if is_light else "#080808"
         track_border = "#e0e0e0" if is_light else "#1a1a1a"
         track_color = "#333333" if is_light else "#d0d0d0"
@@ -1115,7 +1150,7 @@ class AlbumDetailDialog(QDialog):
             f"color:{track_color};font-size:11px;}}"
             f"QListWidget::item{{padding:4px 8px;}}"
             f"QListWidget::item:hover{{background:{track_hover};}}"
-            f"QListWidget::item:selected{{background:rgba(124,58,237,0.2);}}"
+            f"QListWidget::item:selected{{background:{accent_rgba};}}"
         )
 
         disc_groups: dict[int, list[tuple[int, str]]] = {}
@@ -1129,6 +1164,16 @@ class AlbumDetailDialog(QDialog):
             if dn not in disc_groups:
                 disc_groups[dn] = []
             disc_groups[dn].append((idx, tn, title, dur))
+        # Fill missing track numbers with sequential numbering per disc
+        for disc, tracks in disc_groups.items():
+            tracks.sort(key=lambda x: x[1] if x[1] else 9999)
+            next_num = 1
+            for i, (idx, tn, title, dur) in enumerate(tracks):
+                if not tn:
+                    while any(t[1] == next_num for t in tracks):
+                        next_num += 1
+                    tracks[i] = (idx, next_num, title, dur)
+                    next_num += 1
 
         for disc in sorted(disc_groups.keys()):
             if len(disc_groups) > 1:
@@ -1163,13 +1208,15 @@ class AlbumDetailDialog(QDialog):
     def refresh_theme_mode(self, is_light: bool):
         cover_bg = "#e0e0e0" if is_light else "#141414"
         name_color = "#333333" if is_light else "#e2e8f0"
-        artist_color = "#7c3aed" if is_light else "#a78bfa"
+        artist_color = current_accent().name()
         info_color = "#666666" if is_light else "#64748b"
         info_value_color = "#333333" if is_light else "#e2e8f0"
         track_bg = "#fafafa" if is_light else "#080808"
         track_border = "#e0e0e0" if is_light else "#1a1a1a"
         track_color = "#333333" if is_light else "#d0d0d0"
         track_hover = "#f0f0f0" if is_light else "#141414"
+        accent = current_accent()
+        accent_rgba = accent.darker(180).name()
 
         for child in self.findChildren(QLabel):
             if child.pixmap() and not child.pixmap().isNull():
@@ -1200,5 +1247,5 @@ class AlbumDetailDialog(QDialog):
                 f"color:{track_color};font-size:11px;}}"
                 f"QListWidget::item{{padding:4px 8px;}}"
                 f"QListWidget::item:hover{{background:{track_hover};}}"
-                f"QListWidget::item:selected{{background:rgba(124,58,237,0.2);}}"
+                f"QListWidget::item:selected{{background:{accent_rgba};}}"
             )

@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSlider,
                              QLabel, QComboBox, QPushButton, QFrame, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
-
+_EQ_ACCENT_03 = "#2e185e"
 
 STYLE = """
 QSlider::groove:vertical {
@@ -50,7 +50,7 @@ QComboBox QAbstractItemView {
     background: #1a1a2e;
     color: #e2e8f0;
     border: 1px solid #252540;
-    selection-background-color: rgba(124, 58, 237, 0.3);
+    selection-background-color: """ + _EQ_ACCENT_03 + """;
 }
 QLabel#bandLabel {
     color: #94a3b8;

@@ -29,6 +29,8 @@ class LyricsOverlay(QWidget):
         self._line_height = 40
         self._translation_gap = 6
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setStyleSheet("")
 
         # Scroll animation
         self._anim_offset_y = 0.0
@@ -38,9 +40,9 @@ class LyricsOverlay(QWidget):
 
         # Top-right buttons (hidden until hover)
         btn_style = (
-            "QPushButton { background: rgba(0,0,0,0.5); color: #999; border: none; "
+            "QPushButton { background: #1a1a2e; color: #999; border: none; "
             "border-radius: 12px; font-size: 12px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.2); color: #fff; }"
+            "QPushButton:hover { background: #2a2a4a; color: #fff; }"
         )
         self._fullscreen_btn = QPushButton("⛶", self)
         self._fullscreen_btn.setFixedSize(24, 24)

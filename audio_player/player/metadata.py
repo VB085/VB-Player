@@ -26,22 +26,44 @@ class TrackMetadata:
 def read_metadata(filepath: str) -> TrackMetadata:
     path = Path(filepath)
     meta = TrackMetadata()
-    meta.file_size = path.stat().st_size
-    meta.title = path.stem  # fallback
-
+    try:
+        meta.file_size = path.stat().st_size
+    except OSError:
+        meta.file_size = 0
+    meta.title = path.stem
     suffix = path.suffix.lower()
 
+    _mutagen_ok = False
     try:
         import mutagen
-        mf = mutagen.File(filepath)
-        if mf is not None:
-            _read_mutagen_meta(mf, meta, suffix)
-    except Exception:
-        pass
+        _mutagen_ok = True
+    except ImportError:
+        import sys
+        print("[metadata] mutagen not installed — metadata will be limited", file=sys.stderr)
+
+    if _mutagen_ok:
+        try:
+            mf = mutagen.File(filepath)
+            if mf is not None:
+                _read_mutagen_meta(mf, meta, suffix)
+        except ValueError as e:
+            # Python 3.14 incompatibility — mutagen uses APIs that changed
+            import sys
+            if not getattr(read_metadata, '_warned_valueerror', False):
+                print(f"[metadata] mutagen ValueError (Python 3.14 compat issue), "
+                      f"using extension-based fallback: {e}", file=sys.stderr)
+                read_metadata._warned_valueerror = True  # type: ignore
+        except Exception as e:
+            import sys
+            print(f"[metadata] mutagen error for {filepath}: {type(e).__name__}: {e}", file=sys.stderr)
 
     # Fallback for WAV header
     if meta.duration_seconds == 0 and suffix == ".wav":
         _read_wav_header(filepath, meta)
+
+    # External cover image fallback
+    if not meta.cover_data:
+        meta.cover_data = _find_cover_in_dir(path.parent)
 
     if not meta.title:
         meta.title = path.stem
@@ -142,6 +164,31 @@ def _tag_bytes(tags, *keys) -> bytes | None:
             return val.data
         if isinstance(val, bytes):
             return val
+    return None
+
+
+_COVER_NAMES = (
+    "cover.jpg", "cover.png", "cover.jpeg", "cover.webp", "cover.bmp",
+    "folder.jpg", "folder.png", "Folder.jpg", "Folder.png",
+    "front.jpg", "front.png", "Front.jpg", "Front.png",
+    "album.jpg", "album.png", "Album.jpg", "Album.png",
+    "albumart.jpg", "albumart.png",
+    "artwork.jpg", "artwork.png",
+)
+
+
+def _find_cover_in_dir(directory: Path) -> bytes | None:
+    """Look for external cover image files in the given directory."""
+    try:
+        for name in _COVER_NAMES:
+            p = directory / name
+            try:
+                if p.is_file():
+                    return p.read_bytes()
+            except OSError:
+                continue
+    except Exception:
+        pass
     return None
 
 

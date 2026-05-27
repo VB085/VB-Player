@@ -73,10 +73,10 @@ def apply_theme(app: QApplication, mode: str = "dark", accent_name: str = "purpl
     accent = ACCENTS.get(accent_name, ACCENTS["purple"])
     if mode == "light":
         app.setPalette(_build_light_palette(accent))
-        qss = (THEME_DIR / "light.qss").read_text()
+        qss = (THEME_DIR / "light.qss").read_text(encoding="utf-8")
     else:
         app.setPalette(_build_dark_palette(accent))
-        qss = (THEME_DIR / "dark_purple.qss").read_text()
+        qss = (THEME_DIR / "dark_purple.qss").read_text(encoding="utf-8")
     # Inject accent into QSS
     accent_hex = accent.name()
     qss = qss.replace("#7c3aed", accent_hex)
@@ -92,6 +92,10 @@ def current_accent_name() -> str:
 
 def current_theme_mode() -> str:
     return _theme_mode or "dark"
+
+def rgba_hex(r: int, g: int, b: int, a: float) -> str:
+    """rgba(r, g, b, a) → #AARRGGBB for Qt QSS compatibility."""
+    return f"#{int(a * 255):02x}{r:02x}{g:02x}{b:02x}"
 
 def create_app() -> QApplication:
     app = QApplication(sys.argv)

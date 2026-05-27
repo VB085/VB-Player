@@ -133,7 +133,9 @@ class Sidebar(QWidget):
         icon_inactive = "#555" if is_light else "#888"
         lbl_inactive = "#555" if is_light else "#94a3b8"
         lbl_active = "#333" if is_light else "#e2e8f0"
-        hover_bg = "rgba(0,0,0,0.06)" if is_light else "rgba(255,255,255,0.06)"
+        hover_bg = "#e8e8e8" if is_light else "#1a1a2e"
+        cur_bg = accent.darker(160).name()
+        cur_hover_bg = accent.darker(140).name()
 
         for row in self._nav_rows:
             is_current = row["key"] == self._current_nav
@@ -142,12 +144,12 @@ class Sidebar(QWidget):
 
             btn.setStyleSheet(
                 f"QPushButton{{"
-                f"background:{f'rgba({r},{g},{b},0.2)' if is_current else 'transparent'};"
+                f"background:{cur_bg if is_current else 'transparent'};"
                 f"color:{accent.lighter(160).name() if is_current else icon_inactive};"
                 f"border:none;border-radius:8px;font-size:18px;"
                 f"}}"
                 f"QPushButton:hover{{"
-                f"background:{f'rgba({r},{g},{b},0.3)' if is_current else hover_bg};"
+                f"background:{cur_hover_bg if is_current else hover_bg};"
                 f"}}"
             )
             lbl.setStyleSheet(f"color:{lbl_active if is_current else lbl_inactive};font-size:14px;")
@@ -218,7 +220,7 @@ class Sidebar(QWidget):
 
     def _apply_toggle_btn_style(self):
         toggle_color = "#555555" if self._is_light else "#aaaaaa"
-        toggle_hover_bg = "rgba(0,0,0,0.06)" if self._is_light else "rgba(255,255,255,0.08)"
+        toggle_hover_bg = "#e0e0e0" if self._is_light else "#1a1a2e"
         toggle_hover_color = "#333" if self._is_light else "#fff"
         self._toggle_btn.setStyleSheet(
             f"QPushButton{{background:transparent;color:{toggle_color};border:none;"

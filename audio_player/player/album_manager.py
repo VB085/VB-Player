@@ -32,14 +32,14 @@ class AlbumManager:
                 meta = read_metadata(filepath)
 
             album = (meta.album or "") if meta else ""
-            artist = (meta.artist or meta.album_artist or "") if meta else ""
+            # Use album_artist for grouping, fall back to track artist
+            album_artist = (meta.album_artist or meta.artist or "") if meta else ""
 
             if not album:
-                # Fallback: group by parent folder name
                 folder = os.path.basename(os.path.dirname(filepath)) if filepath else "Unknown"
                 album = folder or "Unknown"
 
-            key = (album.strip(), artist.strip())
+            key = (album.strip(), album_artist.strip())
             if key not in groups:
                 groups[key] = []
             # Store (index, filepath, metadata_object_or_None)

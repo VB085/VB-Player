@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidgetItem, QAbstractItemView, QFrame)
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize
 from PyQt6.QtGui import QColor, QFont
+from audio_player.app import current_accent
 
 
 _NAV_ITEMS = [
@@ -47,7 +48,7 @@ class SlidePanel(QWidget):
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet(
             "QPushButton{background:transparent;color:#888;border:none;font-size:14px;border-radius:12px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.1);color:#fff;}"
+            "QPushButton:hover{background:#1a1a2e;color:#fff;}"
         )
         close_btn.clicked.connect(self.hide_panel)
         top.addWidget(close_btn)
@@ -64,7 +65,7 @@ class SlidePanel(QWidget):
         self._nav_list.setStyleSheet(
             "QListWidget{background:transparent;border:none;font-size:13px;padding:8px 4px;}"
             "QListWidget::item{color:#888;padding:12px 14px;border-radius:6px;margin:1px 6px;}"
-            "QListWidget::item:selected{color:#d0d0d0;background:rgba(124,58,237,0.15);}"
+            "QListWidget::item:selected{color:#d0d0d0;background:#1f1140;}"
             "QListWidget::item:hover{color:#bbb;}"
         )
         for label, key in _NAV_ITEMS:
@@ -93,18 +94,18 @@ class SlidePanel(QWidget):
 
         folder_btn = QPushButton("📂  导入文件夹")
         folder_btn.setStyleSheet(
-            "QPushButton{background:rgba(124,58,237,0.15);color:#a78bfa;border:none;"
+            "QPushButton{background:#1f1140;color:#a78bfa;border:none;"
             "border-radius:6px;padding:10px;font-size:12px;text-align:left;}"
-            "QPushButton:hover{background:rgba(124,58,237,0.25);}"
+            "QPushButton:hover{background:#2e185e;}"
         )
         folder_btn.clicked.connect(self.importFolder)
         layout.addWidget(folder_btn)
 
         files_btn = QPushButton("📁  导入文件")
         files_btn.setStyleSheet(
-            "QPushButton{background:rgba(124,58,237,0.15);color:#a78bfa;border:none;"
+            "QPushButton{background:#1f1140;color:#a78bfa;border:none;"
             "border-radius:6px;padding:10px;font-size:12px;text-align:left;}"
-            "QPushButton:hover{background:rgba(124,58,237,0.25);}"
+            "QPushButton:hover{background:#2e185e;}"
         )
         files_btn.clicked.connect(self.importFiles)
         layout.addWidget(files_btn)

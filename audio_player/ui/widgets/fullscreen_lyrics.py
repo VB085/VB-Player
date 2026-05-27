@@ -54,9 +54,9 @@ class FullscreenLyricsWindow(QWidget):
         self._close_btn = QPushButton("✕", self)
         self._close_btn.setFixedSize(36, 36)
         self._close_btn.setStyleSheet(
-            "QPushButton{background:rgba(255,255,255,0.08);color:#888;border:none;"
+            "QPushButton{background:#1a1a2e;color:#888;border:none;"
             "border-radius:18px;font-size:16px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.2);color:#fff;}"
+            "QPushButton:hover{background:#2a2a4a;color:#fff;}"
         )
         self._close_btn.clicked.connect(self.hide)
         self._close_btn_effect = QGraphicsOpacityEffect(self)
@@ -286,7 +286,7 @@ class FullscreenLyricsWindow(QWidget):
             fs = max(10, fs)
 
             font = QFont()
-            font.setPointSize(fs)
+            font.setPointSize(int(fs))
             if letter_spacing:
                 font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, letter_spacing)
             font.setBold(offset == 0)
@@ -312,7 +312,7 @@ class FullscreenLyricsWindow(QWidget):
             painter.drawText(int(x), int(ty), text)
 
             if translation and dist <= 2:
-                t_fs = max(10, fs - 6)
+                t_fs = int(max(10, fs - 6))
                 t_font = QFont()
                 t_font.setPointSize(t_fs)
                 if letter_spacing:

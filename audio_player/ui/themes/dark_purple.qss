@@ -38,7 +38,7 @@ QPushButton:pressed { background: #080808; }
 
 QComboBox { background: #080808; color: #d0d0d0; border: 1px solid #1a1a1a; border-radius: 5px; padding: 5px 10px; }
 QComboBox:hover { border-color: #333333; }
-QComboBox QAbstractItemView { background: #0f0f0f; color: #d0d0d0; border: 1px solid #1a1a1a; selection-background-color: rgba(124,58,237,0.3); }
+QComboBox QAbstractItemView { background: #0f0f0f; color: #d0d0d0; border: 1px solid #1a1a1a; selection-background-color: #4C7C3AED; }
 
 QGroupBox { color: #777777; font-size: 11px; border: 1px solid #141414; border-radius: 5px; margin-top: 12px; padding-top: 14px; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }

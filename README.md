@@ -1,15 +1,16 @@
 # VB Player
 
-Linux 桌面 HIFI 音乐播放器，基于 PyQt6 + GStreamer 1.28.2，为高解析度音频回放设计。
+跨平台 HIFI 音乐播放器，基于 PyQt6 + GStreamer，为高解析度音频回放设计。支持 Windows、macOS、Linux。
 
 ## 功能
 
-- **GStreamer 后端** — 支持 ALSA 独占模式 (hw:)，bit-perfect 直通 DAC，跳过 PulseAudio/PipeWire
+- **跨平台** — Windows (WASAPI/ASIO)、macOS (CoreAudio)、Linux (ALSA/PipeWire)
+- **独占模式** — Windows ASIO/WASAPI 独占、macOS CoreAudio Exclusive、Linux ALSA hw: 直通 DAC，bit-perfect 输出
 - **DSD 软解** — 支持 .dsf / .dff 文件，自动解码为 PCM 输出
 - **10 段均衡器** — 实时调节，基于 GStreamer equalizer-nbands
 - **全屏歌词** — 平滑动画歌词显示，支持 LRC 时间轴歌词
 - **多语言** — 简体中文、繁體中文、English、日本語
-- **明暗主题** — 纯黑/纯白双主题，10 种强调色
+- **明暗主题** — 纯黑/纯白双主题，6 种强调色
 - **音频输出流程** — 实时显示格式、采样率、位深度、声道、SRC 状态
 - **播放列表管理** — 文件夹导入、M3U 导入导出
 - **专辑视图** — 网格/列表双视图，自动按专辑归类
@@ -18,12 +19,36 @@ Linux 桌面 HIFI 音乐播放器，基于 PyQt6 + GStreamer 1.28.2，为高解�
 
 ## 系统要求
 
-- Linux (X11)
 - Python 3.10+
-- GStreamer 1.28+（含 good/bad/ugly/alsa 插件）
+- GStreamer 1.28+（含 good/bad/ugly 插件）
 - PyQt6
 
-### 安装依赖
+### Windows
+
+```powershell
+# 安装 GStreamer — 从 https://gstreamer.freedesktop.org/download/ 下载 MSVC 版
+# 需安装 runtime + development 两个包
+
+pip install pyqt6 mutagen PyGObject
+```
+
+支持 WASAPI Shared/Exclusive 和 ASIO 独占模式。ASIO 需额外安装 GStreamer ASIO 插件。
+
+### macOS
+
+```bash
+# Intel Mac
+brew install gstreamer gst-plugins-good gst-plugins-bad gst-plugins-ugly
+pip install pyqt6 mutagen PyGObject
+
+# Apple Silicon Mac（同一条命令，Homebrew 自动处理架构）
+brew install gstreamer gst-plugins-good gst-plugins-bad gst-plugins-ugly
+pip install pyqt6 mutagen PyGObject
+```
+
+支持 CoreAudio Shared/Exclusive 模式。如手动安装 GStreamer，请下载对应架构（x86_64 或 arm64）的 `.pkg` 安装包。
+
+### Linux
 
 ```bash
 # Ubuntu/Debian

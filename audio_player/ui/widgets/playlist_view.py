@@ -1,21 +1,8 @@
 from PyQt6.QtWidgets import (QListView, QStyledItemDelegate, QStyle,
                              QAbstractItemView)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QModelIndex, QSettings
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QModelIndex
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
-
-
-def _accent_color() -> QColor:
-    s = QSettings("VBPlayer", "VB Player")
-    name = str(s.value("accent", "purple") or "purple")
-    accents = {
-        "purple": QColor("#7c3aed"),
-        "blue":   QColor("#007AFF"),
-        "green":  QColor("#10b981"),
-        "orange": QColor("#f59e0b"),
-        "pink":   QColor("#ec4899"),
-        "red":    QColor("#ef4444"),
-    }
-    return accents.get(name, QColor("#7c3aed"))
+from audio_player.app import current_accent
 
 
 class _PlaylistDelegate(QStyledItemDelegate):
@@ -29,7 +16,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
         is_selected = option.state & QStyle.StateFlag.State_Selected
         model = index.model()
         row = index.row()
-        accent = _accent_color()
+        accent = current_accent()
 
         # Background
         if is_selected:

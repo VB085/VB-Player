@@ -115,7 +115,7 @@ class PlaylistManager(QAbstractListModel):
         if len(self._tracks) > start:
             self.insertRows(start, len(self._tracks) - start, QModelIndex())
             for i in range(start, len(self._tracks)):
-                worker = _MetadataWorker(self, i - start, self._tracks[i]["path"])
+                worker = _MetadataWorker(self, i, self._tracks[i]["path"])
                 self._pool.start(worker)
 
     def add_folder(self, path: str):

@@ -28,15 +28,15 @@ def enumerate_hw_devices() -> list[dict]:
                 hw = f'hw:{card},{dev}'
                 name = card_names.get(card, f'Card {card}')
                 devices.append({'card': card, 'device': dev, 'hw': hw,
-                                'name': f'{name} ({hw})'})
+                                'name': f'{name} ({hw})', 'driver': 'ALSA'})
     if not devices:
         for card_id, name in sorted(card_names.items()):
             hw = f'hw:{card_id},0'
             devices.append({'card': card_id, 'device': 0, 'hw': hw,
-                            'name': f'{name} ({hw})'})
+                            'name': f'{name} ({hw})', 'driver': 'ALSA'})
     if not devices:
         devices.append({'card': 0, 'device': 0, 'hw': 'hw:0,0',
-                        'name': '默认设备 (hw:0,0)'})
+                        'name': '默认设备 (hw:0,0)', 'driver': 'ALSA'})
     return devices
 
 
@@ -64,9 +64,15 @@ class AudioEngine(_BaseAudioEngine):
                 "name": self._exclusive_device,
                 "driver": "ALSA (硬件直通)",
                 "mode": "独占模式 (Exclusive)",
+                "is_exclusive": True,
+                "api": "alsa",
+                "latency": "ALSA 硬件缓冲",
             }
         return {
             "name": "系统默认",
             "driver": "PipeWire / PulseAudio",
             "mode": "共享模式 (Shared)",
+            "is_exclusive": False,
+            "api": "pulse",
+            "latency": "声音服务器控制",
         }

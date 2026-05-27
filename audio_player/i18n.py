@@ -190,6 +190,20 @@ _ZH_CN = {
     "misc.stereo": "立体声",
     "misc.mono": "单声道",
     "misc.channels": "{n}声道",
+    # Settings dialog hardcoded strings
+    "settings.window_title": "设置",
+    "settings.ok": "确定",
+    "settings.exclusive_tooltip": "启用后直接访问硬件设备，绕过 PipeWire/PulseAudio\n注意：独占模式下其他应用将无法使用该音频设备",
+    "settings.dsd_pcm": "DSD → PCM (软解, 兼容性最好)",
+    "settings.dsd_native": "DSD Native (硬解, 需 ASIO + DAC 支持)",
+    "settings.dsd_dop": "DSD over PCM / DoP (硬解)",
+    "settings.dsd_tooltip": "DSD 解码模式：\n· PCM 软解 — 解码为 PCM 后输出，兼容所有设备\n· Native 硬解 — 原始 DSD 码流直通 DAC（需 ASIO + DAC 原生 DSD 支持）\n· DoP — DSD 封装在 PCM 帧中传输（DAC 需支持 DoP 协议）\n硬解需要独占模式 + ASIO 驱动，不支持时自动回退 PCM 软解",
+    # Playback mode
+    "playback.sequential": "顺序播放",
+    "playback.repeat_all": "列表循环",
+    "playback.repeat_one": "单曲循环",
+    "playback.shuffle_on": "随机播放开",
+    "playback.shuffle_off": "随机播放关",
 }
 
 _ZH_TW = {
@@ -294,6 +308,18 @@ _ZH_TW = {
     "misc.stereo": "立體聲",
     "misc.mono": "單聲道",
     "misc.channels": "{n}聲道",
+    "settings.window_title": "設定",
+    "settings.ok": "確定",
+    "settings.exclusive_tooltip": "啟用後直接訪問硬體裝置，繞過 PipeWire/PulseAudio\n注意：獨佔模式下其他應用將無法使用該音訊裝置",
+    "settings.dsd_pcm": "DSD → PCM (軟解, 兼容性最好)",
+    "settings.dsd_native": "DSD Native (硬解, 需 ASIO + DAC 支援)",
+    "settings.dsd_dop": "DSD over PCM / DoP (硬解)",
+    "settings.dsd_tooltip": "DSD 解碼模式：\n· PCM 軟解 — 解碼為 PCM 後輸出，兼容所有裝置\n· Native 硬解 — 原始 DSD 碼流直通 DAC（需 ASIO + DAC 原生 DSD 支援）\n· DoP — DSD 封裝在 PCM 幀中傳輸（DAC 需支援 DoP 協議）\n硬解需要獨佔模式 + ASIO 驅動，不支援時自動回退 PCM 軟解",
+    "playback.sequential": "順序播放",
+    "playback.repeat_all": "列表循環",
+    "playback.repeat_one": "單曲循環",
+    "playback.shuffle_on": "隨機播放開",
+    "playback.shuffle_off": "隨機播放關",
 }
 
 _EN = {
@@ -398,6 +424,18 @@ _EN = {
     "misc.stereo": "Stereo",
     "misc.mono": "Mono",
     "misc.channels": "{n}ch",
+    "settings.window_title": "Settings",
+    "settings.ok": "OK",
+    "settings.exclusive_tooltip": "Direct hardware access, bypassing PipeWire/PulseAudio\nNote: other apps cannot use the audio device in exclusive mode",
+    "settings.dsd_pcm": "DSD → PCM (Software decode, best compatibility)",
+    "settings.dsd_native": "DSD Native (Hardware, requires ASIO + DAC)",
+    "settings.dsd_dop": "DSD over PCM / DoP (Hardware)",
+    "settings.dsd_tooltip": "DSD decode mode:\n· PCM — Decode to PCM, works with all devices\n· Native — Raw DSD passthrough to DAC (requires ASIO + native DSD DAC)\n· DoP — DSD wrapped in PCM frames (DAC must support DoP)\nHardware decode requires exclusive mode + ASIO driver, auto-fallbacks to PCM",
+    "playback.sequential": "Sequential",
+    "playback.repeat_all": "Repeat All",
+    "playback.repeat_one": "Repeat One",
+    "playback.shuffle_on": "Shuffle On",
+    "playback.shuffle_off": "Shuffle Off",
 }
 
 _JA = {
@@ -502,6 +540,18 @@ _JA = {
     "misc.stereo": "ステレオ",
     "misc.mono": "モノラル",
     "misc.channels": "{n}ch",
+    "settings.window_title": "設定",
+    "settings.ok": "OK",
+    "settings.exclusive_tooltip": "ハードウェアに直接アクセス、PipeWire/PulseAudioをバイパス\n注意：排他モードでは他のアプリは音声デバイスを使用できません",
+    "settings.dsd_pcm": "DSD → PCM (ソフトウェアデコード、最高互換性)",
+    "settings.dsd_native": "DSD Native (ハードウェア、ASIO + DAC必要)",
+    "settings.dsd_dop": "DSD over PCM / DoP (ハードウェア)",
+    "settings.dsd_tooltip": "DSDデコードモード：\n· PCM — PCMにデコード、全デバイス対応\n· Native — Raw DSDパススルー（ASIO + ネイティブDSD DAC必要）\n· DoP — DSDをPCMフレームにラップ（DACがDoP対応であること）\nハードウェアデコードには排他モード + ASIOドライバーが必要、非対応時はPCMにフォールバック",
+    "playback.sequential": "順番再生",
+    "playback.repeat_all": "リピートオール",
+    "playback.repeat_one": "リピートワン",
+    "playback.shuffle_on": "シャッフルオン",
+    "playback.shuffle_off": "シャッフルオフ",
 }
 
 # Init on import

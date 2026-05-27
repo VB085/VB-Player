@@ -10,20 +10,7 @@ from audio_player.ui.widgets.equalizer_widget import EqualizerWidget
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.player.equalizer import PRESETS
 from audio_player.i18n import _, set_language, current_lang, languageChanged
-
-
-def _accent_color() -> QColor:
-    s = QSettings("VBPlayer", "VB Player")
-    name = str(s.value("accent", "purple") or "purple")
-    accents = {
-        "purple": QColor("#7c3aed"),
-        "blue":   QColor("#007AFF"),
-        "green":  QColor("#10b981"),
-        "orange": QColor("#f59e0b"),
-        "pink":   QColor("#ec4899"),
-        "red":    QColor("#ef4444"),
-    }
-    return accents.get(name, QColor("#7c3aed"))
+from audio_player.app import current_accent
 
 
 class _AccentSwatch(QPushButton):
@@ -128,6 +115,7 @@ class SettingsDialog(QDialog):
     reloadRequested = pyqtSignal()
     exclusiveModeToggled = pyqtSignal(bool)
     exclusiveDeviceChanged = pyqtSignal(str)
+    dsdModeChanged = pyqtSignal(str)
     languageChanged = pyqtSignal(str)
 
     THEME_MODES = {"dark": "深色 (Dark)", "light": "浅色 (Light)"}
@@ -143,7 +131,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(None)  # Independent top-level window — no parent
-        self.setWindowTitle("设置")
+        self.setWindowTitle(_("settings.window_title"))
         self.setMinimumSize(560, 520)
         self.resize(600, 660)
         self.setWindowFlags(
@@ -211,7 +199,7 @@ class SettingsDialog(QDialog):
         drag_layout = QHBoxLayout(drag_bar)
         drag_layout.setContentsMargins(16, 0, 10, 0)
         drag_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        self._drag_label = QLabel("设置")
+        self._drag_label = QLabel(_("settings.window_title"))
         self._drag_label.setStyleSheet("color:#94a3b8;font-size:13px;font-weight:500;")
         drag_layout.addWidget(self._drag_label)
         drag_layout.addStretch()
@@ -277,12 +265,12 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
 
-        ok = QPushButton("确定")
+        ok = QPushButton(_("settings.ok"))
         ok.setFixedWidth(80)
         ok.setStyleSheet(
-            f"QPushButton{{background:{_accent_color().name()};color:#fff;border:none;"
+            f"QPushButton{{background:{current_accent().name()};color:#fff;border:none;"
             "border-radius:4px;padding:8px;font-size:13px;}}"
-            f"QPushButton:hover{{background:{_accent_color().lighter(115).name()};}}"
+            f"QPushButton:hover{{background:{current_accent().lighter(115).name()};}}"
         )
         ok.clicked.connect(self._save_and_close)
         layout.addWidget(ok, 0, Qt.AlignmentFlag.AlignRight)
@@ -324,7 +312,18 @@ class SettingsDialog(QDialog):
         self._vol_group.setTitle(_("settings.default_volume"))
         self._eq_group.setTitle(_("settings.equalizer"))
         self._exclusive_cb.setText(_("settings.exclusive_mode"))
+        self._exclusive_cb.setToolTip(_("settings.exclusive_tooltip"))
         self._sidebar_log_cb.setText(_("settings.sidebar_log"))
+        # DSD combo
+        self._dsd_combo.blockSignals(True)
+        self._dsd_combo.clear()
+        self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
+        self._dsd_combo.addItem(_("settings.dsd_native"), "native")
+        self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        self._dsd_combo.setToolTip(_("settings.dsd_tooltip"))
+        self._dsd_combo.blockSignals(False)
+        # Drag bar
+        self._drag_label.setText(_("settings.window_title"))
         self._refresh_about_labels()
 
     def _build_appearance_tab(self) -> QWidget:
@@ -502,10 +501,7 @@ class SettingsDialog(QDialog):
         out_layout = QVBoxLayout(out_group)
 
         self._exclusive_cb = QCheckBox(_("settings.exclusive_mode"))
-        self._exclusive_cb.setToolTip(
-            "启用后直接访问 ALSA 硬件设备，绕过 PipeWire/PulseAudio\n"
-            "注意：独占模式下其他应用将无法使用该音频设备"
-        )
+        self._exclusive_cb.setToolTip(_("settings.exclusive_tooltip"))
         self._exclusive_cb.toggled.connect(self._on_exclusive_toggled)
         out_layout.addWidget(self._exclusive_cb)
 
@@ -514,10 +510,18 @@ class SettingsDialog(QDialog):
         self._device_combo.currentIndexChanged.connect(self._on_device_changed)
         out_layout.addWidget(self._device_combo)
 
+        self._dsd_combo = QComboBox()
+        self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
+        self._dsd_combo.addItem(_("settings.dsd_native"), "native")
+        self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        self._dsd_combo.setToolTip(_("settings.dsd_tooltip"))
+        self._dsd_combo.currentIndexChanged.connect(self._on_dsd_mode_changed)
+        out_layout.addWidget(self._dsd_combo)
+
         layout.addWidget(out_group)
 
-        reload_btn = QPushButton("🔄  重新加载专辑")
-        accent = _accent_color()
+        reload_btn = QPushButton(_("manage.reload_albums"))
+        accent = current_accent()
         reload_btn.setStyleSheet(
             f"QPushButton{{background:{accent.name()};color:#fff;border:none;border-radius:5px;"
             f"padding:8px;font-size:13px;}}"
@@ -557,7 +561,7 @@ class SettingsDialog(QDialog):
         self._about_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_title)
 
-        self._about_ver = QLabel("v3.0 — Frameless Edition")
+        self._about_ver = QLabel("v0.2")
         self._about_ver.setStyleSheet("font-size: 13px; color: #888;")
         self._about_ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_ver)
@@ -573,7 +577,7 @@ class SettingsDialog(QDialog):
 
     def _refresh_about_labels(self):
         self._about_title.setText(_("app.title"))
-        self._about_ver.setText("v3.0 — Frameless Edition")
+        self._about_ver.setText("v0.2")
         self._about_desc.setText("PyQt6 + GStreamer")
 
     def set_eq_state(self, enabled: bool, preset: str, gains: list[float]):
@@ -586,10 +590,20 @@ class SettingsDialog(QDialog):
 
     def set_exclusive_state(self, mode: bool, device: str):
         """Initialize exclusive mode UI state from outside."""
+        self._exclusive_cb.blockSignals(True)
         self._exclusive_cb.setChecked(mode)
+        self._exclusive_cb.blockSignals(False)
+        if mode and not getattr(self, '_hw_loaded', False):
+            self._hw_loaded = True
         idx = self._device_combo.findData(device)
         if idx >= 0:
             self._device_combo.setCurrentIndex(idx)
+
+    def set_dsd_mode(self, mode: str):
+        """Initialize DSD decode mode UI state from outside."""
+        idx = self._dsd_combo.findData(mode)
+        if idx >= 0:
+            self._dsd_combo.setCurrentIndex(idx)
 
     def _on_eq_preset_local(self, name: str):
         """Apply preset locally to update sliders, then forward signal."""
@@ -653,25 +667,35 @@ class SettingsDialog(QDialog):
         cover_radius = str(self._settings.value("album_cover_radius", "true")).lower() == "true"
         self._album_cover_radius_cb.setChecked(cover_radius)
 
-        # Populate ALSA device combo
-        from audio_player.player.engine import enumerate_hw_devices
-        self._alsa_devices = enumerate_hw_devices()
-        self._device_combo.clear()
-        for dev in self._alsa_devices:
-            self._device_combo.addItem(dev["name"], dev["hw"])
-
+        # Restore exclusive mode state
+        self._hw_loaded = False
         exclusive = str(self._settings.value("exclusive_mode", "false")).lower() == "true"
+        exclusive_dev = str(self._settings.value("exclusive_device", "hw:0,0") or "hw:0,0")
+        # Block signals during restore so setChecked doesn't trigger enumeration yet
+        self._exclusive_cb.blockSignals(True)
         self._exclusive_cb.setChecked(exclusive)
         self._device_combo.setEnabled(exclusive)
-        exclusive_dev = str(self._settings.value("exclusive_device", "hw:0,0") or "hw:0,0")
+        self._exclusive_cb.blockSignals(False)
+        if exclusive:
+            # Re-enumerate — Windows mic permission is one-time, won't prompt again
+            self._load_hw_devices()
+        else:
+            self._device_combo.clear()
+        # Restore saved device selection
         idx = self._device_combo.findData(exclusive_dev)
         if idx >= 0:
             self._device_combo.setCurrentIndex(idx)
 
+        # Restore DSD decode mode
+        dsd_mode = str(self._settings.value("dsd_mode", "pcm") or "pcm")
+        dsd_idx = self._dsd_combo.findData(dsd_mode)
+        if dsd_idx >= 0:
+            self._dsd_combo.setCurrentIndex(dsd_idx)
+
         self._refresh_theme()
 
     def _refresh_nav_style(self):
-        accent = _accent_color()
+        accent = current_accent()
         r, g, b = accent.red(), accent.green(), accent.blue()
         # Detect theme mode
         p = self.palette()
@@ -711,7 +735,7 @@ class SettingsDialog(QDialog):
         self._drag_label.setStyleSheet(
             f"color:{'#555' if is_light else '#94a3b8'};font-size:13px;font-weight:500;"
         )
-        accent = _accent_color()
+        accent = current_accent()
         r, g, b = accent.red(), accent.green(), accent.blue()
         nav_bg = base
         nav_border = "#ddd" if is_light else "#141414"
@@ -746,7 +770,25 @@ class SettingsDialog(QDialog):
         if mode is not None:
             self.vizModeChanged.emit(mode)
 
+    def _load_hw_devices(self):
+        """Enumerate audio output devices (lazy — avoids WASAPI prompt on dialog open)."""
+        if getattr(self, '_hw_loaded', False):
+            return
+        self._hw_loaded = True
+        from audio_player.player.engine import enumerate_hw_devices
+        try:
+            self._alsa_devices = enumerate_hw_devices()
+        except Exception:
+            self._alsa_devices = [{"name": "默认设备 (WASAPI Shared)", "hw": "", "driver": "WASAPI"}]
+        self._device_combo.clear()
+        for dev in self._alsa_devices:
+            driver_tag = dev.get("driver", "")
+            label = f"{dev['name']}  [{driver_tag}]" if driver_tag else dev["name"]
+            self._device_combo.addItem(label, dev["hw"])
+
     def _on_exclusive_toggled(self, checked: bool):
+        if checked:
+            self._load_hw_devices()
         self._device_combo.setEnabled(checked)
         self.exclusiveModeToggled.emit(checked)
 
@@ -754,6 +796,11 @@ class SettingsDialog(QDialog):
         hw = self._device_combo.itemData(idx)
         if hw:
             self.exclusiveDeviceChanged.emit(hw)
+
+    def _on_dsd_mode_changed(self, idx):
+        mode = self._dsd_combo.itemData(idx)
+        if mode:
+            self.dsdModeChanged.emit(mode)
 
     def _emit_theme(self):
         mode = self._mode_combo.currentData()
@@ -808,6 +855,9 @@ class SettingsDialog(QDialog):
         dev_hw = self._device_combo.currentData()
         if dev_hw:
             self._settings.setValue("exclusive_device", dev_hw)
+        dsd = self._dsd_combo.currentData()
+        if dsd:
+            self._settings.setValue("dsd_mode", dsd)
         self.themeChanged.emit(mode, accent)
         self.accept()
 

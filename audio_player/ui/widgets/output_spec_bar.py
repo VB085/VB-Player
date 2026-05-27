@@ -1,42 +1,28 @@
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QLabel, QDialog,
                              QVBoxLayout, QPushButton, QFrame, QGridLayout,
                              QGroupBox)
-from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QColor, QFont, QPainter
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont, QPainter
 from audio_player.ui.settings_dialog import _CloseButton
 
 
-def _accent_color() -> QColor:
-    s = QSettings("VBPlayer", "VB Player")
-    name = str(s.value("accent", "purple") or "purple")
-    accents = {
-        "purple": QColor("#7c3aed"),
-        "blue":   QColor("#007AFF"),
-        "green":  QColor("#10b981"),
-        "orange": QColor("#f59e0b"),
-        "pink":   QColor("#ec4899"),
-        "red":    QColor("#ef4444"),
-    }
-    return accents.get(name, QColor("#7c3aed"))
-
-
 class _OutputDetailDialog(QDialog):
-    def __init__(self, meta, audio_device_name: str = "", driver: str = "",
-                 mode: str = "", is_light: bool = False, parent=None):
+    def __init__(self, meta, output_info: dict | None = None, is_light: bool = False, parent=None):
         super().__init__(None)
         self.setWindowTitle("音频输出流程")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(440)
         self.setWindowFlags(
             Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint
         )
         self._is_light = is_light
 
+        info = output_info or {}
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Theme colors
         bar_bg = "#f0f0f0" if is_light else "#0a0a0a"
         bar_text = "#666666" if is_light else "#777"
         body_bg = "#ffffff" if is_light else "#0f0f1a"
@@ -57,10 +43,16 @@ class _OutputDetailDialog(QDialog):
         close_btn = _CloseButton()
         close_btn.clicked.connect(self.accept)
         bar_layout.addWidget(close_btn)
-        bar.mousePressEvent = lambda e: (
-            self.windowHandle().startSystemMove()
-            if e.button() == Qt.MouseButton.LeftButton and self.windowHandle() else None
-        )
+        def _on_bar_press(e):
+            if e.button() != Qt.MouseButton.LeftButton:
+                return
+            try:
+                wh = self.windowHandle()
+                if wh is not None:
+                    wh.startSystemMove()
+            except Exception:
+                pass
+        bar.mousePressEvent = _on_bar_press
         layout.addWidget(bar)
 
         body = QWidget()
@@ -69,13 +61,15 @@ class _OutputDetailDialog(QDialog):
         body_layout.setContentsMargins(20, 16, 20, 20)
         body_layout.setSpacing(16)
 
-        # Source file section
-        src = QGroupBox("源文件")
-        src.setStyleSheet(
+        group_ss = (
             f"QGroupBox{{color:{group_color};font-size:11px;font-weight:bold;"
             f"border:1px solid {group_border};border-radius:6px;margin-top:12px;padding-top:18px;}}"
             f"QGroupBox::title{{subcontrol-origin:margin;left:12px;}}"
         )
+
+        # ── 1. Source file section ──
+        src = QGroupBox("源文件")
+        src.setStyleSheet(group_ss)
         src_grid = QGridLayout(src)
         src_grid.setSpacing(6)
         self._add_row(src_grid, 0, "格式", meta.format or "?")
@@ -86,29 +80,63 @@ class _OutputDetailDialog(QDialog):
         self._add_row(src_grid, 3, "声道", ch_str)
         body_layout.addWidget(src)
 
-        # SRC section
-        src_group = QGroupBox("采样率转换 (SRC)")
-        src_group.setStyleSheet(src.styleSheet())
+        # ── 2. SRC / Decode section ──
+        is_dsd = (meta.format or "").upper() in ("DSD", "DSF", "DFF")
+        pipe_rate = info.get("sample_rate", 0)
+        dsd_mode = info.get("dsd_decode_mode", "pcm")
+
+        src_group = QGroupBox("解码与采样率转换 (Decode & SRC)")
+        src_group.setStyleSheet(group_ss)
         srcg = QGridLayout(src_group)
         srcg.setSpacing(6)
+
         orig = f"{meta.sample_rate} Hz" if meta.sample_rate else "?"
         self._add_row(srcg, 0, "原始采样率", orig)
-        self._add_row(srcg, 1, "实际输出采样率", orig)
-        fmt = (meta.format or "").upper()
-        if fmt in ("DSD", "DSF", "DFF"):
-            self._add_row(srcg, 2, "SRC 状态", "DSD → PCM (软件解码)")
+
+        if is_dsd:
+            if dsd_mode == "native":
+                decode_desc = "DSD 直通 → DAC 原生解码 (硬解)"
+                actual_label = "DSD 原生"
+            elif dsd_mode == "dop":
+                decode_desc = "DSD over PCM (DoP) → DAC 硬解"
+                actual_label = "DSD via DoP"
+            else:
+                decode_desc = "DSD → PCM (软件解码)"
+                if pipe_rate:
+                    actual_label = f"{pipe_rate} Hz"
+                else:
+                    actual_label = "系统默认 (由音频栈重采样)"
+            self._add_row(srcg, 1, "解码方式", decode_desc)
+            self._add_row(srcg, 2, "DAC 接收格式", actual_label)
         else:
-            self._add_row(srcg, 2, "SRC 状态", "直通 (无需转换)")
+            if pipe_rate:
+                actual = f"{pipe_rate} Hz"
+                self._add_row(srcg, 1, "DAC 实际采样率", actual)
+                if meta.sample_rate and pipe_rate != meta.sample_rate:
+                    self._add_row(srcg, 2, "SRC 状态", f"重采样 {meta.sample_rate} → {pipe_rate} Hz")
+                else:
+                    self._add_row(srcg, 2, "SRC 状态", "直通 (无需转换)")
+            else:
+                self._add_row(srcg, 1, "DAC 实际采样率", "系统默认 (共享模式)")
+                self._add_row(srcg, 2, "SRC 状态", "由系统音频栈重采样")
+
+        pipe_fmt = info.get("pipeline_format", "")
+        if pipe_fmt:
+            short_fmt = pipe_fmt.split(",")[0].split("/")[-1] if "/" in pipe_fmt else pipe_fmt[:60]
+            self._add_row(srcg, 3, "输出格式", short_fmt)
+
         body_layout.addWidget(src_group)
 
-        # Output device section
+        # ── 3. Output device section ──
         dev = QGroupBox("输出设备")
-        dev.setStyleSheet(src.styleSheet())
+        dev.setStyleSheet(group_ss)
         dev_grid = QGridLayout(dev)
         dev_grid.setSpacing(6)
-        self._add_row(dev_grid, 0, "设备名称", audio_device_name or "系统默认")
-        self._add_row(dev_grid, 1, "驱动", driver or "PipeWire / PulseAudio")
-        self._add_row(dev_grid, 2, "模式", mode or "共享模式 (Shared)")
+        self._add_row(dev_grid, 0, "设备名称", info.get("name") or "系统默认")
+        self._add_row(dev_grid, 1, "音频 API", info.get("api", "").upper() if info.get("api") else (info.get("driver") or "?"))
+        self._add_row(dev_grid, 2, "驱动详情", info.get("driver") or "?")
+        self._add_row(dev_grid, 3, "工作模式", info.get("mode") or "?")
+        self._add_row(dev_grid, 4, "延迟特征", info.get("latency") or "?")
         body_layout.addWidget(dev)
 
         body_layout.addStretch()
@@ -120,8 +148,9 @@ class _OutputDetailDialog(QDialog):
         value_color = "#333333" if self._is_light else "#e2e8f0"
         l = QLabel(label)
         l.setStyleSheet(f"color:{label_color};font-size:11px;")
-        v = QLabel(value)
+        v = QLabel(str(value))
         v.setStyleSheet(f"color:{value_color};font-size:12px;font-weight:bold;")
+        v.setWordWrap(True)
         grid.addWidget(l, row, 0, Qt.AlignmentFlag.AlignLeft)
         grid.addWidget(v, row, 1, Qt.AlignmentFlag.AlignRight)
 
@@ -130,9 +159,7 @@ class OutputSpecBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._meta = None
-        self._audio_device_name = ""
-        self._audio_driver = ""
-        self._audio_mode = ""
+        self._output_info: dict = {}
         self._is_light = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(28)
@@ -173,13 +200,13 @@ class OutputSpecBar(QWidget):
 
     def set_audio_device(self, info):
         if isinstance(info, dict):
-            self._audio_device_name = info.get("name", "")
-            self._audio_driver = info.get("driver", "")
-            self._audio_mode = info.get("mode", "")
+            self._output_info = info
         else:
-            self._audio_device_name = str(info) if info else ""
-            self._audio_driver = "PipeWire / PulseAudio"
-            self._audio_mode = "共享模式 (Shared)"
+            self._output_info = {
+                "name": str(info) if info else "",
+                "driver": "PipeWire / PulseAudio",
+                "mode": "共享模式 (Shared)",
+            }
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._meta is not None:
@@ -187,7 +214,7 @@ class OutputSpecBar(QWidget):
 
     def enterEvent(self, event):
         hover_color = "#333333" if self._is_light else "#c0c0c0"
-        hover_bg = "rgba(0,0,0,0.06)" if self._is_light else "rgba(255,255,255,0.04)"
+        hover_bg = "#e8e8e8" if self._is_light else "#1a1a2e"
         self._label.setStyleSheet(
             f"color:{hover_color};font-size:10px;font-family:monospace;"
             f"padding:2px 10px;border-radius:4px;background:{hover_bg};"
@@ -203,8 +230,7 @@ class OutputSpecBar(QWidget):
     def _show_detail(self):
         if self._meta is None:
             return
-        dlg = _OutputDetailDialog(self._meta, self._audio_device_name,
-                                  self._audio_driver, self._audio_mode,
+        dlg = _OutputDetailDialog(self._meta, self._output_info,
                                   self._is_light, self)
         dlg.exec()
 
@@ -212,7 +238,6 @@ class OutputSpecBar(QWidget):
         pass
 
     def refresh_theme_mode(self, is_light: bool):
-        """Update colors based on theme mode."""
         self._is_light = is_light
         text_color = "#555555" if is_light else "#555"
         self._label.setStyleSheet(

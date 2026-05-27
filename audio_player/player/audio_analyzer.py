@@ -1,7 +1,5 @@
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, QMutex, QWaitCondition
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 import numpy as np
-import subprocess
-import shutil
 from dataclasses import dataclass
 
 
@@ -25,32 +23,139 @@ class _DecoderWorker(QThread):
         waveform = None
         spectrum = None
         lyrics = []
-        samples = self._decode_to_pcm()
-        if samples is not None and len(samples) > 0:
-            waveform = self._compute_waveform(samples)
-            spectrum = self._compute_spectrum(samples, self._bins, self._snapshots_per_sec)
-        lyrics = self._load_lyrics()
+        try:
+            samples = self._decode_to_pcm()
+            if samples is not None and len(samples) > 0:
+                waveform = self._compute_waveform(samples)
+                spectrum = self._compute_spectrum(samples, self._bins, self._snapshots_per_sec)
+            lyrics = self._load_lyrics()
+        except Exception:
+            import traceback, sys
+            traceback.print_exc(file=sys.stderr)
         self.finished.emit(waveform, spectrum, lyrics)
 
     def _decode_to_pcm(self) -> np.ndarray | None:
-        if not shutil.which("gst-launch-1.0"):
+        """Decode audio to F32LE mono 22.05kHz PCM.
+
+        Tries gst-launch first, falls back to ffmpeg on failure.
+        """
+        samples = self._decode_via_gst()
+        if samples is not None:
+            return samples
+        return self._decode_via_ffmpeg()
+
+    def _decode_via_gst(self) -> np.ndarray | None:
+        import subprocess
+        import shutil
+        import os
+
+        gst_launch = shutil.which("gst-launch-1.0")
+        gst_root = None
+        if not gst_launch:
+            for root_var in ("GSTREAMER_1_0_ROOT_MSVC_X86_64",
+                             "GSTREAMER_1_0_ROOT_X86_64",
+                             "GSTREAMER_1_0_ROOT_MINGW_X86_64"):
+                root = os.environ.get(root_var, "")
+                if root:
+                    candidate = os.path.join(root, "bin", "gst-launch-1.0.exe")
+                    if os.path.isfile(candidate):
+                        gst_launch = candidate
+                        gst_root = root
+                        break
+        else:
+            gst_root = os.path.dirname(os.path.dirname(gst_launch))
+        if not gst_launch:
             return None
+
+        env = os.environ.copy()
+        env["GST_REGISTRY_FORK_DISABLE"] = "1"
+        env["GST_DEBUG"] = "1"  # suppress WARNINGs, only show ERRORs
+        env["GST_PLUGIN_SCANNER"] = os.path.join(gst_root, "libexec", "gstreamer-1.0", "gst-plugin-scanner.exe")
+        # Also set PATH so GStreamer DLLs are resolvable
+        if gst_root:
+            env["PATH"] = os.path.join(gst_root, "bin") + os.pathsep + env.get("PATH", "")
+
         try:
+            import tempfile
+            tmp_path = os.path.join(tempfile.gettempdir(),
+                                    f"vbplayer_pcm_{os.path.basename(self._filepath)}.pcm")
+            # GStreamer pipeline parser treats backslashes as escape chars —
+            # use forward slashes which work fine on Windows
+            file_uri = self._filepath.replace("\\", "/")
+            tmp_uri = tmp_path.replace("\\", "/")
             result = subprocess.run(
-                ["gst-launch-1.0", "-q",
-                 "filesrc", f"location={self._filepath}",
+                [gst_launch, "-q",
+                 "filesrc", f'location="{file_uri}"',
                  "!", "decodebin",
                  "!", "audioconvert",
                  "!", "audioresample",
                  "!", "audio/x-raw,format=F32LE,rate=22050,channels=1",
-                 "!", "fdsink"],
-                capture_output=True, timeout=120
+                 "!", "filesink", f'location="{tmp_uri}"'],
+                capture_output=True, timeout=120, env=env,
+            )
+            if result.returncode != 0 or not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+                import sys
+                err = result.stderr.decode(errors='ignore')[:500] if result.stderr else "(no stderr)"
+                sys.stderr.write(f"[gst-launch] rc={result.returncode} stdout={len(result.stdout)} err={err} file={self._filepath}\n")
+                sys.stderr.flush()
+                return None
+            with open(tmp_path, "rb") as f:
+                data = f.read()
+            os.unlink(tmp_path)
+            return np.frombuffer(data, dtype=np.float32).copy()
+        except Exception:
+            import sys, traceback
+            traceback.print_exc(file=sys.stderr)
+            return None
+
+    @staticmethod
+    def _find_ffmpeg() -> str | None:
+        import shutil
+        import os as _os
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            return ffmpeg
+        # Search common locations
+        candidates = [
+            _os.path.join("C:", "/", "msys64", "mingw64", "bin", "ffmpeg.exe"),
+            _os.path.join(_os.environ.get("APPDATA", ""), "bilibili", "ffmpeg", "ffmpeg.exe"),
+            _os.path.join(_os.environ.get("LOCALAPPDATA", ""), "bilibili", "ffmpeg", "ffmpeg.exe"),
+            _os.path.join(_os.environ.get("ProgramFiles", ""), "ffmpeg", "bin", "ffmpeg.exe"),
+            _os.path.join(_os.environ.get("USERPROFILE", ""), "ffmpeg", "ffmpeg.exe"),
+        ]
+        for p in candidates:
+            if _os.path.isfile(p):
+                return p
+        return None
+
+    def _decode_via_ffmpeg(self) -> np.ndarray | None:
+        import subprocess
+        import shutil
+        import os as _os
+
+        ffmpeg = self._find_ffmpeg()
+        if not ffmpeg:
+            return None
+
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-i", self._filepath,
+                 "-f", "f32le", "-ac", "1", "-ar", "22050",
+                 "-loglevel", "quiet", "pipe:1"],
+                capture_output=True, timeout=120,
             )
             if result.returncode != 0 or len(result.stdout) == 0:
+                if result.stderr:
+                    import sys
+                    err = result.stderr.decode(errors='ignore')[:500]
+                    sys.stderr.write(f"[ffmpeg] {err}\n")
+                    sys.stderr.flush()
                 return None
-            samples = np.frombuffer(result.stdout, dtype=np.float32)
-            return samples if len(samples) > 0 else None
+            return np.frombuffer(result.stdout, dtype=np.float32).copy()
         except Exception:
+            import sys, traceback
+            traceback.print_exc(file=sys.stderr)
             return None
 
     def _compute_waveform(self, samples: np.ndarray, num_bars: int = 2000) -> np.ndarray:
