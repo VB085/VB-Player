@@ -341,7 +341,12 @@ class AudioEngine(_BaseAudioEngine):
         return None
 
     def _build_dsd_ffmpeg_fallback(self, filepath: str) -> bool:
-        """Stream DSD→PCM via external ffmpeg + GStreamer appsrc."""
+        """Stream DSD→PCM via external ffmpeg + GStreamer appsrc.
+
+        TODO: feed loop starts before pipeline → PLAYING; appsrc push-buffer
+        may fail due to race condition. Needs bus watch to delay feed until
+        PLAYING state is confirmed.
+        """
         import subprocess
         import os
         import threading
