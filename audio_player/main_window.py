@@ -1,23 +1,28 @@
 import os
+import sys
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QMenu,
     QLabel, QFrame, QPushButton, QApplication, QStyle, QSizePolicy,
-    QSplitter
+    QSplitter, QScrollArea, QInputDialog, QSystemTrayIcon, QLineEdit
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QPoint, QSettings, QEvent
 from PyQt6.QtGui import (QKeySequence, QShortcut, QFont,
                          QDragEnterEvent, QDropEvent, QMouseEvent, QColor,
                          QRegion, QPixmap,
-                         QPainterPath, QPainter, QPen, QBrush, QPalette)
+                         QPainterPath, QPainter, QPen, QBrush, QPalette,
+                         QAction, QIcon)
 from PyQt6.QtCore import QRectF
 
-from audio_player.app import apply_theme, current_accent, current_theme_mode
-from audio_player.player.engine import AudioEngine, PlaybackState
+from audio_player.app import current_accent, current_theme_mode
+from audio_player.player.engine import AudioEngine
 from audio_player.player.playlist import PlaylistManager
-from audio_player.player.metadata import read_metadata
+from audio_player.player.metadata import read_metadata, write_tags
 from audio_player.player.audio_analyzer import AudioAnalyzer
+from audio_player.player.lyrics_fetcher import LyricsFetcher, LyricsState
+from audio_player.player.lrc_parser import export_lrc
 from audio_player.player.equalizer import EqualizerManager
+from audio_player.player.library import LibraryManager
 
 from audio_player.ui.widgets.transport_bar import TransportBar
 from audio_player.ui.widgets.seek_slider import SeekSlider
@@ -25,17 +30,27 @@ from audio_player.ui.widgets.output_spec_bar import OutputSpecBar
 from audio_player.ui.widgets.volume_control import VolumeControl
 from audio_player.ui.widgets.playback_mode import PlaybackModeControl
 from audio_player.ui.widgets.playlist_view import PlaylistView
-from audio_player.ui.widgets.spectrum import SpectrumWidget, SpectrumMode
+from audio_player.ui.widgets.spectrum import SpectrumWidget
 from audio_player.ui.widgets.waveform import WaveformWidget
 from audio_player.ui.widgets.metadata_panel import MetadataPanel
 from audio_player.ui.widgets.sidebar import Sidebar
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.i18n import _, set_language, languageChanged
 from audio_player.ui.widgets.album_view import AlbumGridView, AlbumDetailPage
+from audio_player.ui.widgets.search_filter import PlaylistFilterProxy
+from audio_player.ui.icons import PANEL_COLLAPSE, PANEL_EXPAND, _icon
+from audio_player.ui.widgets.playlist_browse import (
+    PlaylistGridView, PlaylistDetailPage, PlaylistEditDialog, PlaylistInfo, build_playlist_info,
+)
 from audio_player.ui.widgets.fullscreen_lyrics import FullscreenLyricsWindow
+from audio_player.ui.widgets.frameless_resize import FramelessResizeMixin
+from audio_player.ui.widgets.tag_editor_dialog import TagEditorDialog
+from audio_player.ui.widgets.network_page import NetworkPage
 from audio_player.ui.settings_dialog import SettingsDialog, _CloseButton
 
-EDGE_MARGIN = 6
+from audio_player.ui.controllers.library_controller import LibraryController
+from audio_player.ui.controllers.playback_controller import PlaybackController
+from audio_player.ui.controllers.settings_controller import SettingsController
 
 
 class _TitleBar(QWidget):
@@ -64,8 +79,17 @@ class _TitleBar(QWidget):
 
         close_btn = _CloseButton()
         close_btn.setObjectName("closeBtn")
-        close_btn.clicked.connect(lambda: self.window().close())
+        close_btn.clicked.connect(self._minimize_to_tray)
         layout.addWidget(close_btn)
+
+    def _minimize_to_tray(self):
+        w = self.window()
+        if hasattr(w, '_tray') and w._tray.isVisible():
+            w.hide()
+            w._tray.showMessage("VB Player", "已最小化到系统托盘",
+                               QSystemTrayIcon.MessageIcon.Information, 1500)
+        else:
+            w.close()
 
     def _on_btn(self, name):
         w = self.window()
@@ -93,7 +117,7 @@ class _TitleBar(QWidget):
             w.showMaximized()
 
 
-class MainWindow(QMainWindow):
+class MainWindow(FramelessResizeMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VB Player")
@@ -110,17 +134,35 @@ class MainWindow(QMainWindow):
         self._playlist = PlaylistManager(self)
         self._equalizer_mgr = EqualizerManager(self)
         self._analyzer = AudioAnalyzer(self)
+        self._lyrics_fetcher = LyricsFetcher(self)
         self._album_view = AlbumGridView(self._playlist)
 
+        self._library = LibraryManager(self)
+        self._fav_playlist = PlaylistManager(self)
+        self._pls_playlist = PlaylistManager(self)
+
+        # Controllers
+        self._playback_ctrl = PlaybackController(self._engine, self._playlist, self._analyzer, self)
+        self._library_ctrl = LibraryController(self._library, self._fav_playlist, self._pls_playlist, self)
+        self._settings_ctrl = SettingsController(self._equalizer_mgr, None, None, self._engine, self)
+
         self._setup_ui()
-        self._connect_signals()
-        self._connect_analyzer()
 
         # Fullscreen lyrics window
         self._fullscreen_lyrics = FullscreenLyricsWindow()
+
+        # Wire settings controller refs that require UI to exist
+        self._settings_ctrl._spectrum = self._spectrum
+        self._settings_ctrl._fullscreen_lyrics = self._fullscreen_lyrics
+        self._connect_signals()
+        self._connect_analyzer()
         self._spectrum.lyrics_overlay.fullscreenRequested.connect(self._show_fullscreen_lyrics)
         self._setup_shortcuts()
         self._restore_settings()
+
+        # System media controls (MPRIS2 on Linux, SMTC on Windows)
+        self._system_media = None
+        self._init_system_media()
 
         # Set initial theme state on widgets that track it explicitly
         is_light = current_theme_mode() == "light"
@@ -128,9 +170,16 @@ class MainWindow(QMainWindow):
         self._album_view.refresh_theme_mode(is_light)
         self._output_spec_bar.refresh_theme_mode(is_light)
         self._playback_mode.refresh_theme_mode(is_light)
+        self._pls_grid_view.refresh_theme_mode(is_light)
 
         # React to language changes
         languageChanged.connect(self._refresh_language)
+
+        # Auto-scan watch folders on startup
+        self._auto_scan_library()
+
+        # System tray
+        self._setup_tray()
 
     # ================================================================
     #  UI Setup
@@ -171,16 +220,21 @@ class MainWindow(QMainWindow):
         pl_header = QHBoxLayout()
         pl_header.setContentsMargins(8, 8, 8, 4)
         self._pl_label = QLabel(_("page.all_songs"))
-        self._pl_label.setStyleSheet(
-            "color:#94a3b8;font-size:12px;font-weight:bold;"
-            "letter-spacing:2px;padding:6px 12px;"
-        )
+        self._pl_label.setObjectName("pageTitle")
         pl_header.addWidget(self._pl_label)
         pl_header.addStretch()
+        # Search button + bar
+        self._pl_search_btn, self._pl_search_bar = self._make_search_ui()
+        self._pl_search_bar.textChanged.connect(lambda t: self._playlist_view.setFilterText(t))
+        pl_header.addWidget(self._pl_search_btn)
+        pl_header.addWidget(self._pl_search_bar)
         pl_layout.addLayout(pl_header)
+        self._playlist_proxy = PlaylistFilterProxy()
+        self._playlist_proxy.setSourceModel(self._playlist)
+        self._playlist_proxy.invalidate()
         self._playlist_view = PlaylistView()
-        self._playlist_view.setModel(self._playlist)
-        self._playlist_view.trackDoubleClicked.connect(self._play_track_at)
+        self._playlist_view.setModel(self._playlist_proxy)
+        self._playlist_view.trackDoubleClicked.connect(self._playback_ctrl.play_track_at)
         self._playlist_view.tracksDropped.connect(self._load_paths)
         pl_layout.addWidget(self._playlist_view, 1)
         self._content_stack.addWidget(playlist_page)  # index 0
@@ -194,24 +248,22 @@ class MainWindow(QMainWindow):
         album_header = QHBoxLayout()
         album_header.setContentsMargins(8, 8, 8, 4)
         self._album_lbl = QLabel(_("page.albums"))
-        self._album_lbl.setStyleSheet(
-            "color:#94a3b8;font-size:12px;font-weight:bold;"
-            "letter-spacing:2px;padding:6px 12px;"
-        )
+        self._album_lbl.setObjectName("pageTitle")
         album_header.addWidget(self._album_lbl)
+        album_header.addStretch()
+        # Search
+        self._album_search_btn, self._album_search_bar = self._make_search_ui()
+        self._album_search_bar.textChanged.connect(lambda t: self._album_view.set_filter(t))
+        album_header.addWidget(self._album_search_btn)
+        album_header.addWidget(self._album_search_bar)
         album_header.addSpacing(8)
         # Grid/list toggle
         self._album_view_btn = QPushButton("◧")
-        self._album_view_btn.setFixedSize(28, 22)
+        self._album_view_btn.setObjectName("viewToggle")
+        self._album_view_btn.setFixedSize(28, 28)
         self._album_view_btn.setToolTip(_("album.view_toggle_grid"))
-        self._album_view_btn.setStyleSheet(
-            "QPushButton{background:#1a1a2e;color:#94a3b8;border:none;"
-            "border-radius:3px;font-size:12px;}"
-            "QPushButton:hover{background:#2a2a4a;color:#e2e8f0;}"
-        )
         self._album_view_btn.clicked.connect(self._toggle_album_view_mode)
         album_header.addWidget(self._album_view_btn)
-        album_header.addStretch()
         album_layout.addLayout(album_header)
         album_layout.addWidget(self._album_view, 1)
         self._content_stack.addWidget(album_page)  # index 1
@@ -223,8 +275,43 @@ class MainWindow(QMainWindow):
         # Page 3: Album detail (inline)
         self._album_detail_page = AlbumDetailPage()
         self._album_detail_page.backRequested.connect(lambda: self._content_stack.setCurrentIndex(1))
-        self._album_detail_page.trackDoubleClicked.connect(self._play_track_at)
+        self._album_detail_page.trackDoubleClicked.connect(self._playback_ctrl.play_track_at)
+        self._album_detail_page._is_favorite_fn = self._library.is_favorite
+        self._album_detail_page._get_playlist_names_fn = self._library.get_playlist_names
+        self._album_detail_page.addToFavorites.connect(self._library_ctrl.on_add_to_favorites)
+        self._album_detail_page.removeFromFavorites.connect(self._library_ctrl.on_remove_from_favorites)
+        self._album_detail_page.addToPlaylist.connect(self._library_ctrl.on_add_to_playlist)
+        self._album_detail_page.editTags.connect(self._on_edit_tags)
         self._content_stack.addWidget(self._album_detail_page)  # index 3
+
+        # Page 4: Favorites
+        fav_page = self._build_favorites_page()
+        self._content_stack.addWidget(fav_page)  # index 4
+
+        # Page 5: Playlists list
+        pls_page = self._build_playlists_page()
+        self._content_stack.addWidget(pls_page)  # index 5
+
+        # Page 6: Playlist detail (inline)
+        self._pls_detail_page = PlaylistDetailPage()
+        self._pls_detail_page.backRequested.connect(lambda: self._content_stack.setCurrentIndex(5))
+        self._pls_detail_page.trackDoubleClicked.connect(self._library_ctrl.play_pls_track)
+        self._pls_detail_page._is_favorite_fn = self._library.is_favorite
+        self._pls_detail_page._get_playlist_names_fn = self._library.get_playlist_names
+        self._pls_detail_page.addToFavorites.connect(self._library_ctrl.on_add_to_favorites)
+        self._pls_detail_page.removeFromFavorites.connect(self._library_ctrl.on_remove_from_favorites)
+        self._pls_detail_page.addToPlaylist.connect(self._library_ctrl.on_add_to_playlist)
+        self._pls_detail_page.removeFromPlaylist.connect(self._library_ctrl.on_remove_from_pls)
+        self._pls_detail_page.editRequested.connect(self._on_edit_playlist)
+        self._pls_detail_page.editTags.connect(self._on_edit_tags)
+        self._content_stack.addWidget(self._pls_detail_page)  # index 6
+
+        # Page 7: Network
+        self._network_page = NetworkPage()
+        self._network_page.streamAdded.connect(self._play_stream_url)
+        self._network_page.playRequested.connect(self._play_from_paths)
+        self._network_page.smbBrowseRequested.connect(self._on_smb_browse)
+        self._content_stack.addWidget(self._network_page)  # index 7
 
         # ===== RIGHT: viz + controls (splitter) =====
         center_panel = QWidget()
@@ -274,25 +361,44 @@ class MainWindow(QMainWindow):
         transport_layout.addWidget(self._volume_control, 0, Qt.AlignmentFlag.AlignVCenter)
         transport_layout.addStretch(1)
         self._transport_bar = TransportBar()
-        self._transport_bar.playPauseClicked.connect(self._engine.toggle)
-        self._transport_bar.nextClicked.connect(self._next_track)
-        self._transport_bar.prevClicked.connect(self._prev_track)
+        self._transport_bar.playPauseClicked.connect(self._playback_ctrl.toggle)
+        self._transport_bar.nextClicked.connect(self._playback_ctrl.next_track)
+        self._transport_bar.prevClicked.connect(self._playback_ctrl.prev_track)
         transport_layout.addWidget(self._transport_bar, 0, Qt.AlignmentFlag.AlignVCenter)
         transport_layout.addStretch(1)
         # Right side: playback mode control (symmetric with volume)
         self._playback_mode = PlaybackModeControl()
         self._playback_mode.repeatModeChanged.connect(self._on_repeat_mode_changed)
         self._playback_mode.shuffleChanged.connect(self._on_shuffle_changed)
+        self._playback_mode.moreClicked.connect(
+            lambda: self._library_ctrl.show_more_menu(self._playback_mode._more_btn, self._engine.current_file))
         transport_layout.addWidget(self._playback_mode, 0, Qt.AlignmentFlag.AlignVCenter)
         controls_layout.addLayout(transport_layout)
         self._center_splitter.addWidget(controls_container)
 
         self._center_splitter.setSizes([400, 200])
-        center_layout.addWidget(self._center_splitter)
 
-        # Hidden metadata panel
+        # Metadata panel (collapsed view)
         self._metadata_panel = MetadataPanel()
-        self._metadata_panel.hide()
+
+        # Panel toggle button (top-right corner)
+        self._panel_toggle_btn = QPushButton(center_panel)
+        self._panel_toggle_btn.setIcon(_icon(PANEL_COLLAPSE, color="#94a3b8"))
+        self._panel_toggle_btn.setObjectName("panelToggleBtn")
+        self._panel_toggle_btn.setFixedSize(28, 28)
+        self._panel_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._panel_toggle_btn.setToolTip(_("panel.collapse"))
+        self._panel_toggle_btn.clicked.connect(self._toggle_right_panel)
+        self._panel_toggle_btn.raise_()
+        self._refresh_panel_toggle_style()
+
+        # Stacked: page 0 = full, page 1 = metadata-only
+        self._panel_stack = AnimatedStackedWidget()
+        self._panel_stack.addWidget(self._center_splitter)   # index 0: full
+        self._panel_stack.addWidget(self._metadata_panel)     # index 1: collapsed
+        self._panel_collapsed = False
+
+        center_layout.addWidget(self._panel_stack)
 
         # ===== Layout: sidebar | content stack | viz =====
         body_layout = QHBoxLayout(self._body)
@@ -310,6 +416,7 @@ class MainWindow(QMainWindow):
     def _build_manage_page(self) -> QWidget:
         from audio_player.app import current_accent as _accent, current_theme_mode
         w = QWidget()
+        w.setObjectName("managePage")
         layout = QVBoxLayout(w)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
@@ -321,7 +428,7 @@ class MainWindow(QMainWindow):
         muted = "#555" if is_light else "#94a3b8"
 
         self._manage_title = QLabel(_("page.manage"))
-        self._manage_title.setStyleSheet(f"color:{title_color};font-size:15px;font-weight:bold;")
+        self._manage_title.setObjectName("pageTitle")
         layout.addWidget(self._manage_title)
 
         _a12 = f"{int(0.12 * 255):02x}"
@@ -347,11 +454,11 @@ class MainWindow(QMainWindow):
         layout.addSpacing(8)
 
         self._manage_track_label = QLabel(_("manage.tracks_loaded", count=0))
-        self._manage_track_label.setStyleSheet(f"color:{muted};font-size:12px;")
+        self._manage_track_label.setObjectName("statsLabel")
         layout.addWidget(self._manage_track_label)
 
         self._manage_album_label = QLabel(_("manage.albums_found", count=0))
-        self._manage_album_label.setStyleSheet(f"color:{muted};font-size:12px;")
+        self._manage_album_label.setObjectName("statsLabel")
         layout.addWidget(self._manage_album_label)
 
         layout.addSpacing(8)
@@ -359,7 +466,7 @@ class MainWindow(QMainWindow):
         reload_btn = QPushButton(_("manage.reload_albums"))
         reload_btn.setStyleSheet(
             f"QPushButton{{background:{accent.name()};color:#fff;border:none;border-radius:6px;"
-            "padding:12px;font-size:13px;}"
+            "padding:12px;font-size:13px;}}"
             f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
         )
         reload_btn.clicked.connect(self._reload_albums)
@@ -369,8 +476,182 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return w
 
+    def _build_favorites_page(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("favoritesPage")
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        header = QHBoxLayout()
+        header.setContentsMargins(8, 8, 8, 4)
+        self._fav_label = QLabel(_("page.favorites"))
+        self._fav_label.setObjectName("pageTitle")
+        header.addWidget(self._fav_label)
+        header.addStretch()
+        # Search
+        self._fav_search_btn, self._fav_search_bar = self._make_search_ui()
+        self._fav_search_bar.textChanged.connect(lambda t: self._fav_view.setFilterText(t))
+        header.addWidget(self._fav_search_btn)
+        header.addWidget(self._fav_search_bar)
+        layout.addLayout(header)
+        self._fav_proxy = PlaylistFilterProxy()
+        self._fav_proxy.setSourceModel(self._fav_playlist)
+        self._fav_view = PlaylistView()
+        self._fav_view.setModel(self._fav_proxy)
+        self._fav_view._is_favorite_fn = self._library.is_favorite
+        self._fav_view._get_playlist_names_fn = self._library.get_playlist_names
+        self._fav_view.trackDoubleClicked.connect(self._library_ctrl.play_fav_track)
+        self._fav_view.addToFavorites.connect(self._library_ctrl.on_add_to_favorites)
+        self._fav_view.removeFromFavorites.connect(self._library_ctrl.on_remove_from_favorites)
+        self._fav_view.addToPlaylist.connect(self._library_ctrl.on_add_to_playlist)
+        layout.addWidget(self._fav_view, 1)
+        return w
+
+    def _build_playlists_page(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("playlistsPage")
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        header = QHBoxLayout()
+        header.setContentsMargins(8, 8, 8, 4)
+        pls_title = QLabel(_("nav.playlists"))
+        pls_title.setObjectName("pageTitle")
+        self._pls_title_lbl = pls_title
+        header.addWidget(pls_title)
+        header.addStretch()
+        # Grid/list toggle
+        self._pls_view_btn = QPushButton("◧")
+        self._pls_view_btn.setObjectName("viewToggle")
+        self._pls_view_btn.setFixedSize(28, 28)
+        self._pls_view_btn.setToolTip(_("playlist.view_toggle_grid"))
+        self._pls_view_btn.clicked.connect(self._toggle_pls_view_mode)
+        header.addWidget(self._pls_view_btn)
+        header.addSpacing(8)
+        new_pls_btn = QPushButton(_("playlist.new"))
+        self._new_pls_btn = new_pls_btn
+        accent = current_accent()
+        new_pls_btn.setStyleSheet(
+            f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
+            f"border-radius:5px;padding:5px 12px;font-size:11px;}}"
+            f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
+        )
+        new_pls_btn.clicked.connect(self._create_new_playlist)
+        header.addWidget(new_pls_btn)
+        layout.addLayout(header)
+        self._pls_grid_view = PlaylistGridView()
+        self._pls_grid_view.playlistClicked.connect(self._on_playlist_clicked)
+        self._pls_grid_view.editRequested.connect(self._on_edit_playlist)
+        self._pls_grid_view.deleteRequested.connect(self._on_delete_playlist)
+        layout.addWidget(self._pls_grid_view, 1)
+        return w
+
+    def _refresh_favorites_page(self):
+        paths = self._library.get_favorites()
+        self._fav_playlist.clear()
+        if paths:
+            self._fav_playlist.add_files(paths)
+        self._fav_label.setText(_("page.favorites_count", count=len(paths)))
+
+    def _refresh_playlists_page(self):
+        names = self._library.get_playlist_names()
+        infos = []
+        for name in names:
+            paths = self._library.get_playlist_tracks(name)
+            info = build_playlist_info(name, paths, self._library)
+            infos.append(info)
+        self._pls_grid_view.set_playlists(infos)
+
+    def _create_new_playlist(self):
+        name, ok = QInputDialog.getText(self, _("playlist.new"), _("playlist.name_label") + ":")
+        if ok and name.strip():
+            if self._library.playlist_exists(name.strip()):
+                self._log_message(_("log.playlist_exists", name=name.strip()))
+            else:
+                self._library.create_playlist(name.strip())
+                self._refresh_playlists_page()
+                self._log_message(_("log.playlist_created", name=name.strip()))
+
+    def _on_playlist_clicked(self, info: PlaylistInfo):
+        self._open_playlist_detail(info.name)
+
+    def _open_playlist_detail(self, name: str):
+        self._library_ctrl._current_pls_name = name
+        paths = self._library.get_playlist_tracks(name)
+        info = build_playlist_info(name, paths, self._library)
+        self._pls_detail_page.show_playlist(info)
+        self._content_stack.setCurrentIndex(6)
+
+    def _toggle_pls_view_mode(self):
+        if self._pls_grid_view.view_mode() == "grid":
+            self._pls_grid_view.set_view_mode("list")
+            self._pls_view_btn.setText("⊞")
+        else:
+            self._pls_grid_view.set_view_mode("grid")
+            self._pls_view_btn.setText("◧")
+
+    def _on_edit_playlist(self, info: PlaylistInfo):
+        dlg = PlaylistEditDialog(info, self)
+        if dlg.exec() == PlaylistEditDialog.DialogCode.Accepted:
+            new_name = dlg.get_name()
+            if not new_name:
+                return
+            old_name = info.name
+            # Rename if changed
+            if new_name != old_name:
+                if self._library.playlist_exists(new_name):
+                    self._log_message(_("log.playlist_exists", name=new_name))
+                    return
+                self._library.rename_playlist(old_name, new_name)
+                self._library_ctrl._current_pls_name = new_name
+            # Update description
+            desc = dlg.get_description()
+            cover_path = dlg.get_cover_path()
+            self._library.update_playlist_meta(
+                new_name if new_name != old_name else old_name,
+                description=desc,
+                cover_path=cover_path if cover_path else None,
+            )
+            self._refresh_playlists_page()
+            # Refresh detail page if we're on it
+            if self._content_stack.currentIndex() == 6:
+                self._open_playlist_detail(self._library_ctrl._current_pls_name)
+            self._log_message(_("log.playlist_updated", name=new_name))
+
+    def _on_edit_tags(self, filepath: str):
+        meta = read_metadata(filepath)
+        dlg = TagEditorDialog(filepath, meta, self)
+        if dlg.exec() == TagEditorDialog.DialogCode.Accepted:
+            tags = dlg.get_tags()
+            try:
+                write_tags(filepath, tags)
+            except Exception as e:
+                QMessageBox.warning(self, _("tags.error"), str(e))
+                return
+            # Refresh playlist model
+            self._playlist.refresh_metadata_for(filepath)
+            # Refresh metadata panel if this is the current track
+            if self._engine.current_file == filepath:
+                new_meta = read_metadata(filepath)
+                self._metadata_panel.show_metadata(new_meta, filepath)
+            self._log_message(
+                _("tags.saved", name=meta.title or os.path.basename(filepath))
+            )
+
+    def _on_delete_playlist(self, info: PlaylistInfo):
+        reply = QMessageBox.question(
+            self, _("playlist.delete"),
+            _("playlist.confirm_delete", name=info.name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._library.delete_playlist(info.name)
+            self._refresh_playlists_page()
+            self._log_message(_("log.playlist_deleted", name=info.name))
+
+
     def _setup_shortcuts(self):
-        QShortcut(QKeySequence("Space"), self, self._engine.toggle)
+        QShortcut(QKeySequence("Space"), self, self._playback_ctrl.toggle)
         QShortcut(QKeySequence("Ctrl+O"), self, self._open_files)
         QShortcut(QKeySequence("Ctrl+Shift+O"), self, self._open_folder)
         QShortcut(QKeySequence("Ctrl+S"), self, self._save_playlist)
@@ -383,19 +664,93 @@ class MainWindow(QMainWindow):
                   lambda: setattr(self._engine, 'volume', min(1.0, self._engine.volume + 0.05)))
         QShortcut(QKeySequence("Down"), self,
                   lambda: setattr(self._engine, 'volume', max(0.0, self._engine.volume - 0.05)))
-        QShortcut(QKeySequence("Ctrl+Right"), self, self._next_track)
-        QShortcut(QKeySequence("Ctrl+Left"), self, self._prev_track)
+        QShortcut(QKeySequence("Ctrl+Right"), self, self._playback_ctrl.next_track)
+        QShortcut(QKeySequence("Ctrl+Left"), self, self._playback_ctrl.prev_track)
         QShortcut(QKeySequence("Delete"), self, self._remove_selected)
         QShortcut(QKeySequence("R"), self, self._cycle_playback_mode_shortcut)
 
+    def _setup_tray(self):
+        self._tray = QSystemTrayIcon(self)
+        app_icon = QApplication.instance().windowIcon()
+        if app_icon.isNull():
+            pix = QPixmap(64, 64)
+            pix.fill(QColor("#7c3aed"))
+            p = QPainter(pix)
+            p.setPen(QColor("#ffffff"))
+            f = QFont()
+            f.setPointSize(32)
+            f.setBold(True)
+            p.setFont(f)
+            p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "V")
+            p.end()
+            app_icon = QIcon(pix)
+        self._tray.setIcon(app_icon)
+        self._tray.setToolTip("VB Player")
+
+        tray_menu = QMenu()
+        show_act = QAction("显示主窗口", self)
+        show_act.triggered.connect(self._tray_show_window)
+        tray_menu.addAction(show_act)
+        tray_menu.addSeparator()
+        play_act = QAction("播放/暂停", self)
+        play_act.triggered.connect(self._playback_ctrl.toggle)
+        tray_menu.addAction(play_act)
+        prev_act = QAction("上一首", self)
+        prev_act.triggered.connect(self._playback_ctrl.prev_track)
+        tray_menu.addAction(prev_act)
+        next_act = QAction("下一首", self)
+        next_act.triggered.connect(self._playback_ctrl.next_track)
+        tray_menu.addAction(next_act)
+        tray_menu.addSeparator()
+        quit_act = QAction("退出", self)
+        quit_act.triggered.connect(self._tray_quit)
+        tray_menu.addAction(quit_act)
+
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._tray_activated)
+        self._playback_ctrl.trackLoaded.connect(self._update_tray_tooltip)
+        self._tray.show()
+
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._tray_show_window()
+
+    def _tray_show_window(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _tray_quit(self):
+        self._quitting = True
+        self._engine.stop()
+        self._lyrics_fetcher.cleanup()
+        if self._system_media:
+            self._system_media.cleanup()
+        self._tray.hide()
+        QApplication.quit()
+
+    def _update_tray_tooltip(self, filepath):
+        meta = read_metadata(filepath)
+        title = meta.title or os.path.basename(filepath)
+        artist = meta.artist or ""
+        tip = f"{artist} — {title}" if artist else title
+        self._tray.setToolTip(f"VB Player — {tip}")
+
     def _restore_settings(self):
+        self._settings_ctrl.restore_settings(self._volume_control, self._sidebar)
+
         s = QSettings("VBPlayer", "VB Player")
-        vol = float(s.value("default_volume", 80) or 80) / 100.0
-        self._engine.volume = vol
-        self._volume_control.set_value(vol)
 
         lyrics_on = str(s.value("lyrics_enabled", "true") or "true").lower() == "true"
         self._lyrics_enabled = lyrics_on
+
+        # Configure online lyrics fetcher
+        online_enabled = str(s.value("online_lyrics_enabled", "false")).lower() == "true"
+        lrclib_on = str(s.value("lyrics_source_lrclib", "true")).lower() == "true"
+        custom_on = str(s.value("lyrics_source_custom", "false")).lower() == "true"
+        custom_url = str(s.value("lyrics_custom_url", "")) if custom_on else ""
+        custom_token = str(s.value("lyrics_custom_token", "")) if custom_on else ""
+        self._lyrics_fetcher.configure(online_enabled, lrclib_on, custom_url, custom_token)
 
         br = int(s.value("border_radius", 0) or 0)
         if br > 0:
@@ -404,18 +759,6 @@ class MainWindow(QMainWindow):
         self._ui_radius = ui_r
         self._mask_dirty = True
         self.update()
-
-        lh = int(s.value("lyrics_line_height", 40) or 40)
-        self._spectrum.lyrics_overlay.set_line_height(lh)
-
-        sidebar_log = str(s.value("sidebar_log", "false")).lower() == "true"
-        self._sidebar.set_log_visible(sidebar_log)
-
-        # Exclusive mode
-        exclusive = str(s.value("exclusive_mode", "false")).lower() == "true"
-        exclusive_dev = str(s.value("exclusive_device", "hw:0,0") or "hw:0,0")
-        self._engine._exclusive_mode = exclusive
-        self._engine._exclusive_device = exclusive_dev
 
         # Propagate loaded UI radius to sliders
         if self._ui_radius != 12:
@@ -427,35 +770,153 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _connect_signals(self):
-        self._engine.stateChanged.connect(self._on_state_changed)
+        # Playback controller — engine signals
+        self._playback_ctrl.connect_engine()
+        self._playback_ctrl.playbackStateChanged.connect(lambda playing: self._transport_bar.set_playing(playing))
+        self._playback_ctrl.logMessage.connect(self._log_message)
+        self._playback_ctrl.errorOccurred.connect(lambda msg: self._log_message(_("log.error", msg=msg)))
+        self._playback_ctrl.trackLoaded.connect(self._on_track_loaded_ui)
+        self._playback_ctrl.metadataLoaded.connect(self._on_metadata_loaded_ui)
+
+        # Position/duration — keep direct for seek slider/waveform/spectrum
         self._engine.positionChanged.connect(self._on_position_changed)
         self._engine.durationChanged.connect(self._on_duration_changed)
-        self._engine.trackChanged.connect(self._on_track_changed)
-        self._engine.trackFinished.connect(self._on_track_finished)
-        self._engine.errorOccurred.connect(self._on_error)
+
+        # Engine volume/exclusive/output direct connections
         self._engine.volumeChanged.connect(lambda v: self._volume_control.set_value(v))
-        self._engine.exclusiveModeChanged.connect(self._on_exclusive_mode_changed)
+        self._engine.exclusiveModeChanged.connect(lambda enabled: (
+            self._output_spec_bar.set_audio_device(self._engine.output_info),
+            self._log_message(_("log.exclusive_mode",
+                mode=_("log.exclusive_alsa") if enabled else _("log.exclusive_shared")))
+        ))
         self._engine.outputInfoChanged.connect(lambda info: self._output_spec_bar.set_audio_device(info))
-        self._playlist.currentIndexChanged.connect(self._on_playlist_index_changed)
+
+        # Playlist index → playback controller
+        self._playlist.currentIndexChanged.connect(self._playback_ctrl.on_playlist_index_changed)
+
+        # Album view
         self._album_view.albumClicked.connect(self._on_album_clicked)
-        self._album_view.trackDoubleClicked.connect(self._play_track_at)
+
+        # Library controller
+        self._library_ctrl.playRequested.connect(self._play_from_paths)
+        self._library_ctrl.logMessage.connect(self._log_message)
+        self._library_ctrl.navigateToPage.connect(self._content_stack.setCurrentIndex)
+        self._library_ctrl.playlistChanged.connect(self._refresh_playlists_page)
+
+        # Playlist view context menu hooks
+        self._playlist_view._is_favorite_fn = self._library.is_favorite
+        self._playlist_view._get_playlist_names_fn = self._library.get_playlist_names
+        self._playlist_view.addToFavorites.connect(self._library_ctrl.on_add_to_favorites)
+        self._playlist_view.removeFromFavorites.connect(self._library_ctrl.on_remove_from_favorites)
+        self._playlist_view.addToPlaylist.connect(self._library_ctrl.on_add_to_playlist)
+        self._playlist_view.editTags.connect(self._on_edit_tags)
+
+        # Library controller tag editing
+        self._library_ctrl.editTags.connect(self._on_edit_tags)
+
+        # Settings controller
+        self._settings_ctrl.themeChanged.connect(self._on_theme_changed_ui)
+        self._settings_ctrl.accentChanged.connect(self._refresh_accent_colors)
+        self._settings_ctrl.logMessage.connect(self._log_message)
 
     def _connect_analyzer(self):
         self._analyzer.waveformReady.connect(self._waveform.set_waveform_data)
         self._analyzer.spectrumReady.connect(self._spectrum.set_audio_data)
         self._analyzer.lyricsReady.connect(self._on_lyrics_loaded)
+        self._lyrics_fetcher.lyricsReady.connect(self._on_online_lyrics_fetched)
+        self._lyrics_fetcher.stateChanged.connect(self._on_lyrics_state_changed)
+        self._spectrum.lyrics_overlay.searchRequested.connect(self._manual_lyrics_search)
 
     def _log_message(self, msg: str):
         self._sidebar.append_log(msg)
 
+    def _make_search_ui(self):
+        """Create a search button + hidden search bar. Returns (button, line_edit)."""
+        btn = QPushButton("🔍")
+        btn.setObjectName("searchBtn")
+        btn.setFixedSize(28, 28)
+        btn.setToolTip(_("search.tooltip"))
+        btn.setCheckable(True)
+        btn.setStyleSheet(
+            "QPushButton{background:#1a1a2e;color:#94a3b8;border:none;"
+            "border-radius:5px;font-size:13px;}"
+            "QPushButton:hover{background:#2a2a4a;color:#e2e8f0;}"
+            "QPushButton:checked{background:#2a2a4a;color:#e2e8f0;}"
+        )
+        bar = QLineEdit()
+        bar.setPlaceholderText(_("search.placeholder"))
+        bar.setFixedWidth(180)
+        bar.setStyleSheet(
+            "QLineEdit{background:#1a1a2e;color:#e2e8f0;border:1px solid #333;"
+            "border-radius:5px;padding:4px 8px;font-size:12px;}"
+            "QLineEdit:focus{border:1px solid #7c3aed;}"
+        )
+        bar.setVisible(False)
+        btn.toggled.connect(bar.setVisible)
+        return btn, bar
+
+    def _init_system_media(self):
+        if sys.platform == "linux":
+            try:
+                from audio_player.player.mpris2 import Mpris2Service
+                self._system_media = Mpris2Service(
+                    self._engine, self._playback_ctrl, self._playlist, self
+                )
+                self._system_media.raiseRequested.connect(self._on_raise_requested)
+                self._system_media.connect_signals()
+            except Exception as e:
+                print(f"[mpris2] init failed: {e}", file=sys.stderr)
+        elif sys.platform == "darwin":
+            try:
+                from audio_player.player.macos_media import MacOSSMediaService
+                self._system_media = MacOSSMediaService(
+                    self._engine, self._playback_ctrl, self
+                )
+                self._system_media.connect_signals()
+            except Exception as e:
+                print(f"[macos_media] init failed: {e}", file=sys.stderr)
+        elif sys.platform == "win32":
+            try:
+                from audio_player.player.smtc import SmtcService
+                self._system_media = SmtcService(
+                    self._engine, self._playback_ctrl, self
+                )
+                self._system_media.connect_signals()
+            except Exception as e:
+                print(f"[smtc] init failed: {e}", file=sys.stderr)
+
+    def _on_raise_requested(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
     def _on_sidebar_nav(self, key: str):
-        page_map = {"songs": 0, "albums": 1, "manage": 2}
+        page_map = {"songs": 0, "albums": 1, "favorites": 4, "playlists": 5, "manage": 2, "network": 7}
         if key in page_map:
             self._content_stack.setCurrentIndex(page_map[key])
             if key == "albums":
                 self._album_view.refresh_from_playlist()
+            elif key == "favorites":
+                self._library_ctrl.refresh_favorites_page(self._fav_label)
+            elif key == "playlists":
+                self._refresh_playlists_page()
         elif key == "settings":
             self._open_settings()
+
+    def closeEvent(self, event):
+        # If tray is visible and this isn't a tray-quit, hide to tray
+        if hasattr(self, '_tray') and self._tray.isVisible() and not getattr(self, '_quitting', False):
+            event.ignore()
+            self.hide()
+            self._tray.showMessage("VB Player", "已最小化到系统托盘",
+                                   QSystemTrayIcon.MessageIcon.Information, 1500)
+            return
+        self._engine.stop()
+        self._lyrics_fetcher.cleanup()
+        if self._system_media:
+            self._system_media.cleanup()
+        self._tray.hide()
+        super().closeEvent(event)
 
     def _on_sidebar_width_toggled(self, target_w: int):
         sizes = self._body_splitter.sizes()
@@ -473,6 +934,7 @@ class MainWindow(QMainWindow):
         if self._playlist.count > 0:
             self._playlist.current_index = 0
         self._playlist.blockSignals(False)
+        self._playlist_proxy.invalidate()
         self._album_view.refresh_from_playlist()
         # Pre-load first track without playing
         path = self._playlist.current_track_path
@@ -483,6 +945,41 @@ class MainWindow(QMainWindow):
         self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
         self._manage_album_label.setText(_("manage.albums_found", count=album_count))
         self._log_message(_("log.reloaded", tracks=self._playlist.count, albums=album_count))
+
+    def _auto_scan_library(self):
+        """On startup: scan watch folders, load tracks, restore album cache."""
+        folders = self._library.get_watch_folders()
+        if not folders:
+            return
+        # Scan all watch folders for audio files
+        paths = self._library.scan_watch_folders()
+        if not paths:
+            return
+        self._playlist.blockSignals(True)
+        self._playlist.clear()
+        self._playlist.add_files(paths)
+        if self._playlist.count > 0:
+            self._playlist.current_index = 0
+        self._playlist.blockSignals(False)
+        self._playlist_proxy.invalidate()
+
+        # Restore album cache if available
+        album_cache = self._library.get_album_cache()
+        if album_cache:
+            self._album_view.refresh_from_playlist()
+        else:
+            self._album_view.refresh_from_playlist()
+
+        path = self._playlist.current_track_path
+        if path:
+            self._engine.load(path)
+        album_count = len(self._album_view._albums)
+        self._sidebar.update_stats(self._playlist.count, album_count)
+        if hasattr(self, '_manage_track_label'):
+            self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
+        if hasattr(self, '_manage_album_label'):
+            self._manage_album_label.setText(_("manage.albums_found", count=album_count))
+        self._log_message(f"媒体库已加载: {self._playlist.count} 首歌曲, {album_count} 张专辑")
 
     def _on_album_clicked(self, album_info):
         self._album_detail_page.show_album(album_info)
@@ -506,7 +1003,84 @@ class MainWindow(QMainWindow):
                 self._spectrum.show_lyrics()
             self._log_message(_("log.lyrics_loaded", count=len(lines)))
         else:
-            self._log_message(_("log.lyrics_not_found"))
+            online_enabled = str(s.value("online_lyrics_enabled", "false")).lower() == "true"
+            if online_enabled:
+                self._try_online_lyrics()
+            else:
+                self._log_message(_("log.lyrics_not_found"))
+
+    def _try_online_lyrics(self):
+        """Trigger online lyrics search for current track."""
+        filepath = self._engine.current_file
+        if not filepath or filepath.startswith(("http://", "https://", "smb://")):
+            return
+        meta = read_metadata(filepath)
+        if not meta.title:
+            return
+        s = QSettings("VBPlayer", "VB Player")
+        lrclib_on = str(s.value("lyrics_source_lrclib", "true")).lower() == "true"
+        custom_on = str(s.value("lyrics_source_custom", "false")).lower() == "true"
+        custom_url = str(s.value("lyrics_custom_url", "")) if custom_on else ""
+        custom_token = str(s.value("lyrics_custom_token", "")) if custom_on else ""
+        self._lyrics_fetcher.configure(
+            online_enabled=True,
+            lrclib_enabled=lrclib_on,
+            custom_url=custom_url,
+            custom_token=custom_token,
+        )
+        self._lyrics_fetcher.fetch(meta.title, meta.artist, meta.duration_seconds)
+
+    def _on_online_lyrics_fetched(self, lines):
+        if not lines:
+            return
+        self._spectrum.set_lyrics(lines)
+        self._fullscreen_lyrics.set_lyrics(lines)
+        s = QSettings("VBPlayer", "VB Player")
+        lyrics_on = str(s.value("lyrics_enabled", "true") or "true").lower() == "true"
+        if lyrics_on:
+            self._spectrum.show_lyrics()
+        self._log_message(_("log.lyrics_loaded", count=len(lines)))
+        # Cache in fetcher
+        filepath = self._engine.current_file
+        if filepath:
+            meta = read_metadata(filepath)
+            if meta.title:
+                self._lyrics_fetcher.cache_result(meta.artist, meta.title, lines)
+        # Auto-save if enabled
+        auto_save = str(s.value("auto_save_lyrics", "false")).lower() == "true"
+        if auto_save and filepath and not filepath.startswith(("http://", "https://")):
+            self._save_lyrics_to_file(lines)
+
+    def _on_lyrics_state_changed(self, state):
+        overlay = self._spectrum.lyrics_overlay
+        if state == LyricsState.LOADING:
+            overlay.set_loading_state(True)
+        elif state == LyricsState.EMPTY:
+            overlay.set_loading_state(False)
+            self._log_message(_("log.lyrics_online_not_found"))
+        elif state == LyricsState.NETWORK_ERROR:
+            overlay.set_loading_state(False)
+            self._log_message(_("log.lyrics_network_error"))
+        elif state in (LyricsState.SUCCESS, LyricsState.IDLE):
+            overlay.set_loading_state(False)
+
+    def _save_lyrics_to_file(self, lines):
+        """Save lyrics as .lrc file next to the audio file. Does not overwrite."""
+        filepath = self._engine.current_file
+        if not filepath or filepath.startswith(("http://", "https://")):
+            return
+        from pathlib import Path
+        lrc_path = Path(filepath).with_suffix(".lrc")
+        if lrc_path.exists():
+            return
+        try:
+            lrc_path.write_text(export_lrc(lines), encoding="utf-8")
+        except OSError as e:
+            self._log_message(_("log.lyrics_save_error", msg=str(e)))
+
+    def _manual_lyrics_search(self):
+        """Manual re-search triggered by overlay search button."""
+        self._try_online_lyrics()
 
     def _show_fullscreen_lyrics(self):
         """Show the fullscreen lyrics window on the primary screen."""
@@ -519,11 +1093,26 @@ class MainWindow(QMainWindow):
         self._fullscreen_lyrics.setFocus()
 
     # ================================================================
-    #  Engine Callbacks
+    #  UI Bridge Methods (controllers → UI)
     # ================================================================
 
-    def _on_state_changed(self, state):
-        self._transport_bar.set_playing(state == PlaybackState.Playing)
+    def _on_track_loaded_ui(self, filepath):
+        """Called when playback controller loads a new track — update UI."""
+        meta = read_metadata(filepath)
+        self._metadata_panel.show_metadata(meta, filepath)
+        title = meta.title or os.path.basename(filepath)
+        artist = meta.artist or ""
+        if artist:
+            self._log_message(_("log.now_playing", artist=artist, title=title))
+        else:
+            self._log_message(_("log.now_playing_no_artist", title=title))
+        self._output_spec_bar.set_meta(meta)
+        self._output_spec_bar.set_audio_device(self._engine.output_info)
+        self._fullscreen_lyrics.set_meta(meta)
+        self._album_detail_page.set_current_playlist_index(self._playlist.current_index)
+
+    def _on_metadata_loaded_ui(self, meta, filepath):
+        self._metadata_panel.show_metadata(meta, filepath)
 
     def _on_position_changed(self, ms):
         self._seek_slider.set_position(ms)
@@ -540,71 +1129,33 @@ class MainWindow(QMainWindow):
         self._spectrum.lyrics_overlay.set_duration(ms)
         self._fullscreen_lyrics.set_duration(ms)
 
-    def _on_track_changed(self, filepath):
-        meta = read_metadata(filepath)
-        self._metadata_panel.show_metadata(meta, filepath)
-        title = meta.title or os.path.basename(filepath)
-        artist = meta.artist or ""
-        if artist:
-            self._log_message(_("log.now_playing", artist=artist, title=title))
-        else:
-            self._log_message(_("log.now_playing_no_artist", title=title))
-        self._output_spec_bar.set_meta(meta)
-        self._output_spec_bar.set_audio_device(self._engine.output_info)
-        self._fullscreen_lyrics.set_meta(meta)
-        self._analyzer.analyze(filepath)
-        self._album_detail_page.set_current_playlist_index(self._playlist.current_index)
+    def _play_from_paths(self, paths):
+        """Load paths into main playlist and play."""
+        self._playback_ctrl.load_and_play(paths)
+        self._update_manage_labels()
 
-    def _on_track_finished(self):
-        if self._playlist.advance():
-            path = self._playlist.current_track_path
-            if path:
-                self._engine.load(path)
-                self._engine.play()
-        else:
-            self._engine.stop()
+    def _play_stream_url(self, url: str):
+        """Play a network stream URL directly."""
+        self._playlist.add_url(url)
+        idx = self._playlist.count - 1
+        self._playback_ctrl.play_track_at(idx)
 
-    def _on_error(self, msg):
-        self._log_message(_("log.error", msg=msg))
-        self._transport_bar.set_playing(False)
+    def _on_smb_browse(self, server: str, username: str, password: str):
+        """Handle SMB NAS connection request."""
+        from audio_player.player.smb_scanner import is_smb_available, list_shares
+        if not is_smb_available():
+            self._sidebar.append_log(_("network.smb_not_available"))
+            return
+        try:
+            shares = list_shares(server, username, password)
+            self._network_page.add_share_items(shares)
+            self._sidebar.append_log(f"NAS {server}: {len(shares)} shares")
+        except Exception as e:
+            self._sidebar.append_log(f"NAS error: {e}")
 
-    def _on_playlist_index_changed(self, idx):
-        path = self._playlist.current_track_path
-        if path:
-            self._engine.load(path)
-            self._engine.play()
-        self._playlist_view.scrollTo(
-            self._playlist.index(idx, 0),
-            self._playlist_view.ScrollHint.EnsureVisible
-        )
-        self._album_detail_page.set_current_playlist_index(idx)
-
-    # ================================================================
-    #  Playlist Actions
-    # ================================================================
-
-    def _play_track_at(self, idx):
-        if idx == self._playlist.current_index and self._playlist.current_track_path:
-            self._engine.seek(0)
-            self._engine.play()
-        else:
-            self._playlist.current_index = idx
-
-    def _next_track(self):
-        if self._playlist.advance():
-            path = self._playlist.current_track_path
-            if path:
-                self._engine.load(path)
-                self._engine.play()
-
-    def _prev_track(self):
-        if self._engine.position > 3000:
-            self._engine.seek(0)
-        elif self._playlist.previous():
-            path = self._playlist.current_track_path
-            if path:
-                self._engine.load(path)
-                self._engine.play()
+    def _update_manage_labels(self):
+        if hasattr(self, '_manage_track_label'):
+            self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
 
     def _remove_selected(self):
         indices = [idx.row() for idx in self._playlist_view.selectedIndexes()]
@@ -630,6 +1181,7 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, _("manage.select_folder"))
         if not folder:
             return
+        self._library.add_watch_folder(folder)
         self._playlist.clear()
         self._playlist.add_folder(folder)
         self._sidebar.update_stats(self._playlist.count, 0)
@@ -638,7 +1190,7 @@ class MainWindow(QMainWindow):
 
     def _open_files(self):
         files, __ = QFileDialog.getOpenFileNames(
-            self, _("manage.import_files").replace("📁  ", ""), "",
+            self, _("manage.import_files"), "",
             _("manage.audio_files_filter")
         )
         if files:
@@ -648,30 +1200,18 @@ class MainWindow(QMainWindow):
             self._log_message(_("log.added_files", count=len(files)))
 
     def _load_paths(self, paths: list[str]):
-        self._playlist.clear()
-        audio_paths = []
+        # Save dragged-in folders as watch folders
         for p in paths:
             if os.path.isdir(p):
-                audio_paths.extend(
-                    os.path.join(p, f) for f in os.listdir(p)
-                    if os.path.splitext(f)[1].lower() in {
-                        ".mp3", ".flac", ".wav", ".ogg", ".opus",
-                        ".m4a", ".aac", ".wma", ".aiff", ".ape", ".wv",
-                        ".dsf", ".dff"
-                    }
-                )
-            else:
-                audio_paths.append(p)
-        if audio_paths:
-            self._playlist.add_files(sorted(audio_paths))
-            if self._playlist.current_index < 0:
-                self._playlist.current_index = 0
-            self._sidebar.update_stats(self._playlist.count, 0)
-            self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
+                self._library.add_watch_folder(p)
+        self._playlist.clear()
+        self._playback_ctrl.load_paths(paths)
+        self._sidebar.update_stats(self._playlist.count, 0)
+        self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
 
     def _save_playlist(self):
         path, __ = QFileDialog.getSaveFileName(
-            self, "保存播放列表", "", "M3U (*.m3u);;所有文件 (*)"
+            self, _("manage.load_playlist_title"), "", _("manage.m3u_filter")
         )
         if path:
             self._playlist.save_m3u(path)
@@ -679,7 +1219,7 @@ class MainWindow(QMainWindow):
 
     def _load_playlist(self):
         path, __ = QFileDialog.getOpenFileName(
-            self, "加载播放列表", "", "M3U (*.m3u);;所有文件 (*)"
+            self, _("manage.load_playlist_title"), "", _("manage.m3u_filter")
         )
         if path:
             self._playlist.load_m3u(path)
@@ -692,75 +1232,28 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _open_settings(self):
-        dlg = SettingsDialog(self)
-        dlg.themeChanged.connect(self._on_theme_changed)
-        dlg.vizModeChanged.connect(lambda m: self._spectrum.set_mode(SpectrumMode(m)))
-        dlg.defaultVolumeChanged.connect(lambda v: setattr(self._engine, 'volume', v))
-        dlg.borderRadiusChanged.connect(self._apply_border_radius)
-        dlg.uiRadiusChanged.connect(self._apply_ui_radius)
-        dlg.lyricsToggled.connect(self._on_lyrics_toggled)
-        dlg.lyricsLineHeightChanged.connect(self._on_lyrics_line_height)
-        dlg.lyricsFullscreenLineHeightChanged.connect(self._on_lyrics_fullscreen_line_height)
-        dlg.lyricsFontSizeChanged.connect(self._on_lyrics_font_size)
-        dlg.lyricsLetterSpacingChanged.connect(self._on_lyrics_letter_spacing)
-        dlg.lyricsShowSpecToggled.connect(self._on_lyrics_show_spec_toggled)
-        dlg.sidebarLogToggled.connect(self._on_sidebar_log_toggled)
-        dlg.albumCoverRadiusToggled.connect(self._on_album_cover_radius_toggled)
+        self._settings_ctrl.open_settings(self)
 
-        # Equalizer state → settings dialog
-        dlg.set_eq_state(
-            self._equalizer_mgr.enabled,
-            self._equalizer_mgr.current_preset,
-            self._equalizer_mgr.all_gains()
-        )
-        dlg.eqBandChanged.connect(self._equalizer_mgr.set_band_gain)
-        dlg.eqBandChanged.connect(self._engine.set_eq_band_gain)
-        dlg.eqPresetSelected.connect(self._on_eq_preset_from_settings)
-        dlg.eqResetRequested.connect(self._on_eq_reset_from_settings)
-        dlg.eqEnabledToggled.connect(self._on_eq_enabled_from_settings)
-        dlg.reloadRequested.connect(self._reload_albums)
-
-        # Exclusive mode
-        dlg.set_exclusive_state(self._engine.exclusive_mode, self._engine.exclusive_device)
-        dlg.exclusiveModeToggled.connect(lambda v: setattr(self._engine, 'exclusive_mode', v))
-        dlg.exclusiveDeviceChanged.connect(lambda v: setattr(self._engine, 'exclusive_device', v))
-        # DSD decode mode
-        dlg.set_dsd_mode(self._engine.dsd_mode)
-        dlg.dsdModeChanged.connect(lambda v: setattr(self._engine, 'dsd_mode', v))
-        # Language
-        dlg.languageChanged.connect(lambda lang: set_language(lang))
-
-        if dlg.exec():
-            self._log_message(_("log.settings_saved"))
-
-    def _on_theme_changed(self, mode: str, accent_name: str):
-        apply_theme(QApplication.instance(), mode, accent_name)
+    def _on_theme_changed_ui(self, mode: str, accent_name: str):
+        """Update UI widgets after theme has been applied by SettingsController."""
         is_light = mode == "light"
         self._sidebar.refresh_theme_mode(is_light)
         self._album_view.refresh_theme_mode(is_light)
         self._output_spec_bar.refresh_theme_mode(is_light)
         self._playback_mode.refresh_theme_mode(is_light)
+        if hasattr(self, '_pls_grid_view'):
+            self._pls_grid_view.refresh_theme_mode(is_light)
+        if hasattr(self, '_pls_detail_page'):
+            self._pls_detail_page.refresh_theme_mode(is_light)
+        self._refresh_panel_toggle_style()
         self._refresh_accent_colors()
-        # Page header labels (match back-button position)
-        hdr_color = "#666666" if is_light else "#94a3b8"
-        self._pl_label.setStyleSheet(
-            f"color:{hdr_color};font-size:12px;font-weight:bold;"
-            "letter-spacing:2px;padding:6px 12px;"
-        )
-        self._album_lbl.setStyleSheet(
-            f"color:{hdr_color};font-size:12px;font-weight:bold;"
-            "letter-spacing:2px;padding:6px 12px;"
-        )
-        # Album toggle button
-        btn_color = "#888888" if is_light else "#94a3b8"
-        btn_hover_color = "#333333" if is_light else "#e2e8f0"
-        btn_bg = "#e0e0e0" if is_light else "#1a1a2e"
-        btn_hover_bg = "#d0d0d0" if is_light else "#2a2a4a"
-        self._album_view_btn.setStyleSheet(
-            f"QPushButton{{background:{btn_bg};color:{btn_color};border:none;"
-            f"border-radius:3px;font-size:12px;}}"
-            f"QPushButton:hover{{background:{btn_hover_bg};color:{btn_hover_color};}}"
-        )
+        accent = current_accent()
+        if hasattr(self, '_new_pls_btn'):
+            self._new_pls_btn.setStyleSheet(
+                f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
+                f"border-radius:5px;padding:5px 12px;font-size:11px;}}"
+                f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
+            )
 
     def _refresh_accent_colors(self):
         """Re-apply inline accent-dependent styles across all widgets."""
@@ -770,6 +1263,7 @@ class MainWindow(QMainWindow):
         self._volume_control._refresh_style()
         self._transport_bar._apply_sizing()
         self._playback_mode.refresh_accent()
+        self._album_view.refresh_from_playlist()
 
     def _refresh_language(self, _code: str = ""):
         """Refresh all translatable UI text after language change."""
@@ -793,6 +1287,14 @@ class MainWindow(QMainWindow):
         # Album view
         self._album_view.refresh_language()
         self._album_detail_page.refresh_language()
+        # Playlist view
+        if hasattr(self, '_pls_grid_view'):
+            self._pls_grid_view.refresh_language()
+            self._pls_title_lbl.setText(_("nav.playlists"))
+            self._pls_view_btn.setToolTip(_("playlist.view_toggle_grid"))
+            self._new_pls_btn.setText(_("playlist.new"))
+        if hasattr(self, '_pls_detail_page'):
+            self._pls_detail_page.refresh_language()
         self._metadata_panel.refresh_accent()
         self._output_spec_bar.refresh_accent()
         self._waveform.update()
@@ -825,9 +1327,6 @@ class MainWindow(QMainWindow):
                 "padding:12px;font-size:13px;}"
                 f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
             )
-            self._manage_title.setStyleSheet(f"color:{title_color};font-size:15px;font-weight:bold;")
-            self._manage_track_label.setStyleSheet(f"color:{muted};font-size:12px;")
-            self._manage_album_label.setStyleSheet(f"color:{muted};font-size:12px;")
 
     # ================================================================
     #  Toggles
@@ -837,62 +1336,39 @@ class MainWindow(QMainWindow):
         visible = self._spectrum.toggle_lyrics()
         self._log_message(_("log.lyrics_on") if visible else _("log.lyrics_off"))
 
-    def _on_lyrics_toggled(self, enabled: bool):
-        if enabled:
-            self._spectrum.show_lyrics()
+    def _toggle_right_panel(self):
+        self._panel_collapsed = not self._panel_collapsed
+        if self._panel_collapsed:
+            self._panel_stack.setCurrentIndex(1)
+            self._panel_toggle_btn.setIcon(_icon(PANEL_EXPAND, color="#94a3b8"))
+            self._panel_toggle_btn.setToolTip(_("panel.expand"))
         else:
-            self._spectrum.hide_lyrics()
+            self._panel_stack.setCurrentIndex(0)
+            self._panel_toggle_btn.setIcon(_icon(PANEL_COLLAPSE, color="#94a3b8"))
+            self._panel_toggle_btn.setToolTip(_("panel.collapse"))
 
-    def _on_lyrics_line_height(self, px: int):
-        self._spectrum.lyrics_overlay.set_line_height(px)
-        QSettings("VBPlayer", "VB Player").setValue("lyrics_line_height", px)
+    def _update_panel_toggle_pos(self):
+        """Position toggle button at top-right of center panel."""
+        btn = self._panel_toggle_btn
+        parent = btn.parent()
+        if parent:
+            btn.move(parent.width() - btn.width() - 6, 6)
 
-    def _on_lyrics_fullscreen_line_height(self, px: int):
-        QSettings("VBPlayer", "VB Player").setValue("lyrics_fullscreen_line_height", px)
-        self._fullscreen_lyrics.update()
+    def _refresh_panel_toggle_style(self):
+        is_light = current_theme_mode() == "light"
+        if is_light:
+            self._panel_toggle_btn.setStyleSheet(
+                "QPushButton#panelToggleBtn{background:rgba(0,0,0,0.05);border:none;"
+                "border-radius:14px;}"
+                "QPushButton#panelToggleBtn:hover{background:rgba(0,0,0,0.10);}"
+            )
+        else:
+            self._panel_toggle_btn.setStyleSheet(
+                "QPushButton#panelToggleBtn{background:rgba(255,255,255,0.08);border:none;"
+                "border-radius:14px;}"
+                "QPushButton#panelToggleBtn:hover{background:rgba(255,255,255,0.15);}"
+            )
 
-    def _on_lyrics_font_size(self, pt: int):
-        QSettings("VBPlayer", "VB Player").setValue("lyrics_font_size", pt)
-        self._fullscreen_lyrics.update()
-
-    def _on_lyrics_letter_spacing(self, px: int):
-        QSettings("VBPlayer", "VB Player").setValue("lyrics_letter_spacing", px)
-        self._fullscreen_lyrics.update()
-
-    def _on_lyrics_show_spec_toggled(self, show: bool):
-        QSettings("VBPlayer", "VB Player").setValue("lyrics_show_spec", show)
-        self._fullscreen_lyrics._update_spec_bar()
-
-    def _on_sidebar_log_toggled(self, visible: bool):
-        self._sidebar.set_log_visible(visible)
-        QSettings("VBPlayer", "VB Player").setValue("sidebar_log", visible)
-
-    def _on_exclusive_mode_changed(self, enabled: bool):
-        self._output_spec_bar.set_audio_device(self._engine.output_info)
-        self._log_message(_("log.exclusive_mode",
-            mode=_("log.exclusive_alsa") if enabled else _("log.exclusive_shared")))
-
-    def _on_album_cover_radius_toggled(self, enabled: bool):
-        QSettings("VBPlayer", "VB Player").setValue("album_cover_radius", enabled)
-        self._album_view.refresh_from_playlist()
-        if hasattr(self, '_album_detail_page'):
-            self._album_detail_page._album = None
-
-    # ================================================================
-    #  Equalizer (controlled from Settings > Playback)
-    # ================================================================
-
-    def _on_eq_preset_from_settings(self, name: str):
-        self._equalizer_mgr.apply_preset(name)
-        self._engine.set_eq_all_gains(self._equalizer_mgr.all_gains())
-
-    def _on_eq_reset_from_settings(self):
-        self._equalizer_mgr.reset_flat()
-        self._engine.set_eq_all_gains([0.0] * 10)
-
-    def _on_eq_enabled_from_settings(self, enabled: bool):
-        self._equalizer_mgr.enabled = enabled
-        self._engine.set_eq_enabled(enabled)
 
     # ================================================================
     #  Border Radius
@@ -913,6 +1389,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._mask_dirty = True
+        self._update_panel_toggle_pos()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -965,51 +1442,16 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
-        paths = [url.toLocalFile() for url in event.mimeData().urls()]
-        self._load_paths(paths)
+        paths = []
+        for url in event.mimeData().urls():
+            local = url.toLocalFile()
+            if local:
+                paths.append(local)
+            else:
+                s = url.toString()
+                if s.startswith(("http://", "https://")):
+                    paths.append(s)
+        if paths:
+            self._load_paths(paths)
         event.acceptProposedAction()
 
-    # ================================================================
-    #  Frameless window edge resize
-    # ================================================================
-
-    def mousePressEvent(self, e: QMouseEvent):
-        if e.button() == Qt.MouseButton.LeftButton and self._is_on_edge(e.pos()):
-            wh = self.windowHandle()
-            if wh:
-                wh.startSystemResize(self._edge_at(e.pos()))
-        else:
-            super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e: QMouseEvent):
-        edge = self._edge_at(e.pos())
-        if edge == Qt.Edge.TopEdge or edge == Qt.Edge.BottomEdge:
-            self.setCursor(Qt.CursorShape.SizeVerCursor)
-        elif edge == Qt.Edge.LeftEdge or edge == Qt.Edge.RightEdge:
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
-        elif edge == (Qt.Edge.TopEdge | Qt.Edge.LeftEdge) or \
-             edge == (Qt.Edge.BottomEdge | Qt.Edge.RightEdge):
-            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
-        elif edge == (Qt.Edge.TopEdge | Qt.Edge.RightEdge) or \
-             edge == (Qt.Edge.BottomEdge | Qt.Edge.LeftEdge):
-            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-        super().mouseMoveEvent(e)
-
-    def _is_on_edge(self, pos: QPoint) -> bool:
-        return self._edge_at(pos) is not None
-
-    def _edge_at(self, pos: QPoint):
-        x, y = pos.x(), pos.y()
-        w, h = self.width(), self.height()
-        edge = None
-        if y <= EDGE_MARGIN:
-            edge = Qt.Edge.TopEdge
-        elif y >= h - EDGE_MARGIN:
-            edge = Qt.Edge.BottomEdge
-        if x <= EDGE_MARGIN:
-            edge = edge | Qt.Edge.LeftEdge if edge else Qt.Edge.LeftEdge
-        elif x >= w - EDGE_MARGIN:
-            edge = edge | Qt.Edge.RightEdge if edge else Qt.Edge.RightEdge
-        return edge

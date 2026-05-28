@@ -77,11 +77,10 @@ def apply_theme(app: QApplication, mode: str = "dark", accent_name: str = "purpl
     else:
         app.setPalette(_build_dark_palette(accent))
         qss = (THEME_DIR / "dark_purple.qss").read_text(encoding="utf-8")
-    # Inject accent into QSS
-    accent_hex = accent.name()
-    qss = qss.replace("#7c3aed", accent_hex)
-    qss = qss.replace("#a78bfa", accent.lighter(130).name())
-    qss = qss.replace("#6d28d9", accent.darker(120).name())
+    # Inject accent into QSS via placeholders
+    qss = qss.replace("@ACCENT@", accent.name())
+    qss = qss.replace("@ACCENT_LIGHT@", accent.lighter(130).name())
+    qss = qss.replace("@ACCENT_DARK@", accent.darker(120).name())
     app.setStyleSheet(qss)
 
 def current_accent() -> QColor:

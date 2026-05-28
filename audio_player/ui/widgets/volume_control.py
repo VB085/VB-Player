@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSlider, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal
 from audio_player.app import current_accent
+from audio_player.ui.icons import VOLUME_MUTED, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_HIGH, _icon
 
 
 def _make_style(ui_radius: int = 12) -> str:
@@ -33,9 +34,10 @@ class VolumeControl(QWidget):
         layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(2)
 
-        self._label = QLabel("\U0001f50a")
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._label)
+        self._icon_label = QLabel()
+        self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._set_icon(VOLUME_HIGH)
+        layout.addWidget(self._icon_label)
 
         self._slider = QSlider(Qt.Orientation.Vertical)
         self._slider.setRange(0, 100)
@@ -63,15 +65,20 @@ class VolumeControl(QWidget):
         self._update_icon(value)
         self.valueChanged.emit(pct)
 
+    def _set_icon(self, icon_name: str):
+        """Set the volume icon using QtAwesome."""
+        pixmap = _icon(icon_name, color="#94a3b8").pixmap(24, 24)
+        self._icon_label.setPixmap(pixmap)
+
     def _update_icon(self, pct):
         if pct == 0:
-            self._label.setText("\U0001f507")
+            self._set_icon(VOLUME_MUTED)
         elif pct < 33:
-            self._label.setText("\U0001f508")
+            self._set_icon(VOLUME_LOW)
         elif pct < 66:
-            self._label.setText("\U0001f509")
+            self._set_icon(VOLUME_MEDIUM)
         else:
-            self._label.setText("\U0001f50a")
+            self._set_icon(VOLUME_HIGH)
 
     def _refresh_style(self, ui_radius: int = None):
         if ui_radius is not None:

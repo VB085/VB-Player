@@ -256,34 +256,8 @@ class _DecoderWorker(QThread):
             return None
 
     def _parse_lrc(self, text: str) -> list[LyricsLine]:
-        import re
-        lines = []
-        for line in text.splitlines():
-            # Match: [mm:ss.xx] or [mm:ss.xxx]
-            matches = list(re.finditer(r'\[(\d+):(\d+(?:\.\d+)?)\]', line))
-            if not matches:
-                continue
-            lyric_text = line[matches[-1].end():].strip()
-            if not lyric_text:
-                continue
-            for m in matches:
-                minutes = int(m.group(1))
-                seconds = float(m.group(2))
-                time_ms = int((minutes * 60 + seconds) * 1000)
-                lines.append(LyricsLine(time_ms, lyric_text))
-        # Sort by time
-        lines.sort(key=lambda x: x.time_ms)
-        # Merge same-timestamp lines as original + translation pairs
-        merged = []
-        i = 0
-        while i < len(lines):
-            if i + 1 < len(lines) and lines[i].time_ms == lines[i + 1].time_ms:
-                merged.append(LyricsLine(lines[i].time_ms, lines[i].text, lines[i + 1].text))
-                i += 2
-            else:
-                merged.append(lines[i])
-                i += 1
-        return merged
+        from audio_player.player.lrc_parser import parse_lrc
+        return parse_lrc(text)
 
 
 class AudioAnalyzer(QObject):
@@ -298,6 +272,9 @@ class AudioAnalyzer(QObject):
 
     def analyze(self, filepath: str):
         self._cancel()
+        # Skip analysis for network streams (no fixed duration, can't decode locally)
+        if filepath.startswith(("http://", "https://", "smb://")):
+            return
         self._worker = _DecoderWorker(filepath)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()

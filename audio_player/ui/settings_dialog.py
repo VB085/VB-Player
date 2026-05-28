@@ -1,8 +1,10 @@
+import sys
 from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QComboBox, QCheckBox, QSlider,
                              QPushButton, QGroupBox, QFormLayout,
                              QListWidget, QListWidgetItem, QScrollArea,
-                             QSpinBox, QAbstractItemView, QGridLayout, QFrame)
+                             QSpinBox, QAbstractItemView, QGridLayout, QFrame,
+                             QLineEdit)
 from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QRectF, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPalette, QRegion, QPixmap
 
@@ -11,6 +13,7 @@ from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.player.equalizer import PRESETS
 from audio_player.i18n import _, set_language, current_lang, languageChanged
 from audio_player.app import current_accent
+from audio_player.ui.widgets.frameless_resize import FramelessResizeMixin
 
 
 class _AccentSwatch(QPushButton):
@@ -92,7 +95,37 @@ class _CloseButton(QPushButton):
 
 
 
-class SettingsDialog(QDialog):
+class _NoWheelList(QListWidget):
+    """QListWidget that ignores mouse wheel events to prevent accidental page switches."""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class _NoWheelSpinBox(QSpinBox):
+    """QSpinBox that ignores mouse wheel to prevent accidental value changes."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class _NoWheelSlider(QSlider):
+    """QSlider that ignores mouse wheel to prevent accidental value changes."""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class _NoWheelComboBox(QComboBox):
+    """QComboBox that ignores mouse wheel to prevent accidental selection changes."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class SettingsDialog(FramelessResizeMixin, QDialog):
     themeChanged = pyqtSignal(str, str)  # mode, accent_name
     vizModeChanged = pyqtSignal(int)
     defaultVolumeChanged = pyqtSignal(float)
@@ -116,7 +149,12 @@ class SettingsDialog(QDialog):
     exclusiveModeToggled = pyqtSignal(bool)
     exclusiveDeviceChanged = pyqtSignal(str)
     dsdModeChanged = pyqtSignal(str)
+    replaygainToggled = pyqtSignal(bool)
+    gaplessToggled = pyqtSignal(bool)
     languageChanged = pyqtSignal(str)
+    onlineLyricsToggled = pyqtSignal(bool)
+    autoSaveLyricsToggled = pyqtSignal(bool)
+    showTranslationToggled = pyqtSignal(bool)
 
     THEME_MODES = {"dark": "深色 (Dark)", "light": "浅色 (Light)"}
     ACCENTS = {
@@ -130,12 +168,12 @@ class SettingsDialog(QDialog):
     VIZ_MODES = {0: "柱状图 (Bars)", 1: "折线图 (Line)", 2: "圆形 (Circular)"}
 
     def __init__(self, parent=None):
-        super().__init__(None)  # Independent top-level window — no parent
+        super().__init__(parent)
         self.setWindowTitle(_("settings.window_title"))
         self.setMinimumSize(560, 520)
         self.resize(600, 660)
         self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -213,13 +251,13 @@ class SettingsDialog(QDialog):
         main_layout.setSpacing(0)
 
         # Left navigation list (vertical, text horizontal)
-        self._nav_list = QListWidget()
+        self._nav_list = _NoWheelList()
         self._nav_list.setFixedWidth(100)
         self._nav_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._refresh_nav_style()
-        self._nav_labels = ["settings.general", "settings.appearance", "settings.playback",
-                           "settings.advanced", "settings.about"]
+        self._nav_labels = ["settings.general", "settings.appearance", "settings.lyrics_tab",
+                           "settings.playback", "settings.advanced", "settings.about"]
         for key in self._nav_labels:
             item = QListWidgetItem(_(key))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -230,6 +268,7 @@ class SettingsDialog(QDialog):
         self._pages = AnimatedStackedWidget()
         self._pages.addWidget(self._build_general_tab())
         self._pages.addWidget(self._build_appearance_tab())
+        self._pages.addWidget(self._build_lyrics_tab())
         self._pages.addWidget(self._build_playback_tab())
         self._pages.addWidget(self._build_advanced_tab())
         self._pages.addWidget(self._build_about_tab())
@@ -256,7 +295,7 @@ class SettingsDialog(QDialog):
 
         self._lang_group = QGroupBox(_("settings.language"))
         lang_layout = QVBoxLayout(self._lang_group)
-        self._lang_combo = QComboBox()
+        self._lang_combo = _NoWheelComboBox()
         for code, name in self.LANGUAGES.items():
             self._lang_combo.addItem(name, code)
         self._lang_combo.currentIndexChanged.connect(self._on_language_changed)
@@ -299,10 +338,20 @@ class SettingsDialog(QDialog):
             self._accent_group.setTitle(_("settings.accent"))
         self._window_radius_group.setTitle(_("settings.window_radius"))
         self._ui_radius_group.setTitle(_("settings.ui_radius"))
-        self._lyrics_group.setTitle(_("settings.lyrics_group"))
+        self._lyrics_group.setTitle(_("settings.lyrics_display"))
         self._lyrics_cb.setText(_("settings.lyrics_enable"))
         self._lyrics_fullscreen_group.setTitle(_("settings.lyrics_fullscreen_group"))
         self._lyrics_show_spec_cb.setText(_("settings.lyrics_audio_spec"))
+        # Online lyrics tab
+        self._online_lyrics_group.setTitle(_("settings.online_lyrics"))
+        self._online_lyrics_cb.setText(_("settings.enable_online_lyrics"))
+        self._lrclib_cb.setText(_("settings.source_lrclib"))
+        self._custom_api_cb.setText(_("settings.source_custom_api"))
+        self._custom_url_input.setPlaceholderText(_("settings.custom_url_placeholder"))
+        self._custom_token_input.setPlaceholderText(_("settings.custom_token_placeholder"))
+        self._auto_save_cb.setText(_("settings.auto_save_lyrics"))
+        self._show_translation_cb.setText(_("settings.show_translation"))
+        self._test_conn_btn.setText(_("settings.test_connection"))
         self._cover_group.setTitle(_("settings.album_cover"))
         self._cover_cb.setText(_("settings.cover_radius"))
         self._viz_group.setTitle(_("settings.visualization"))
@@ -318,8 +367,14 @@ class SettingsDialog(QDialog):
         self._dsd_combo.blockSignals(True)
         self._dsd_combo.clear()
         self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
-        self._dsd_combo.addItem(_("settings.dsd_native"), "native")
-        self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        if sys.platform == "win32":
+            self._dsd_combo.addItem(_("settings.dsd_native"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        else:
+            self._dsd_combo.addItem(_("settings.dsd_native") + "  " + _("settings.dsd_windows_only"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop") + "  " + _("settings.dsd_windows_only"), "dop")
+            self._dsd_combo.model().item(1).setEnabled(False)
+            self._dsd_combo.model().item(2).setEnabled(False)
         self._dsd_combo.setToolTip(_("settings.dsd_tooltip"))
         self._dsd_combo.blockSignals(False)
         # Drag bar
@@ -337,66 +392,10 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
-        # Lyrics (overlay) settings
-        self._lyrics_group = QGroupBox(_("settings.lyrics_group"))
-        lyrics_layout = QVBoxLayout(self._lyrics_group)
-        self._lyrics_cb = QCheckBox(_("settings.lyrics_enable"))
-        self._lyrics_cb.setChecked(True)
-        self._lyrics_cb.toggled.connect(self.lyricsToggled)
-        lyrics_layout.addWidget(self._lyrics_cb)
-
-        lyrics_overlay_row = QHBoxLayout()
-        lyrics_overlay_row.addWidget(QLabel(_("settings.lyrics_height")))
-        self._lyrics_overlay_height_spin = QSpinBox()
-        self._lyrics_overlay_height_spin.setRange(24, 72)
-        self._lyrics_overlay_height_spin.setSuffix(" px")
-        self._lyrics_overlay_height_spin.setValue(40)
-        self._lyrics_overlay_height_spin.valueChanged.connect(
-            lambda v: self.lyricsLineHeightChanged.emit(v))
-        lyrics_overlay_row.addWidget(self._lyrics_overlay_height_spin, 1)
-        lyrics_layout.addLayout(lyrics_overlay_row)
-        layout.addWidget(self._lyrics_group)
-
-        # Fullscreen lyrics settings
-        self._lyrics_fullscreen_group = QGroupBox(_("settings.lyrics_fullscreen_group"))
-        lyrics_fs_grid = QFormLayout(self._lyrics_fullscreen_group)
-        lyrics_fs_grid.setSpacing(8)
-
-        self._lyrics_font_size_spin = QSpinBox()
-        self._lyrics_font_size_spin.setRange(16, 72)
-        self._lyrics_font_size_spin.setSuffix(" pt")
-        self._lyrics_font_size_spin.setValue(32)
-        self._lyrics_font_size_spin.valueChanged.connect(
-            lambda v: self.lyricsFontSizeChanged.emit(v))
-        lyrics_fs_grid.addRow(_("settings.lyrics_font_size"), self._lyrics_font_size_spin)
-
-        self._lyrics_fs_line_height_spin = QSpinBox()
-        self._lyrics_fs_line_height_spin.setRange(30, 120)
-        self._lyrics_fs_line_height_spin.setSuffix(" px")
-        self._lyrics_fs_line_height_spin.setValue(60)
-        self._lyrics_fs_line_height_spin.valueChanged.connect(
-            lambda v: self.lyricsFullscreenLineHeightChanged.emit(v))
-        lyrics_fs_grid.addRow(_("settings.lyrics_height"), self._lyrics_fs_line_height_spin)
-
-        self._lyrics_letter_spacing_spin = QSpinBox()
-        self._lyrics_letter_spacing_spin.setRange(0, 20)
-        self._lyrics_letter_spacing_spin.setSuffix(" px")
-        self._lyrics_letter_spacing_spin.setValue(2)
-        self._lyrics_letter_spacing_spin.valueChanged.connect(
-            lambda v: self.lyricsLetterSpacingChanged.emit(v))
-        lyrics_fs_grid.addRow(_("settings.lyrics_letter_spacing"), self._lyrics_letter_spacing_spin)
-
-        self._lyrics_show_spec_cb = QCheckBox(_("settings.lyrics_audio_spec"))
-        self._lyrics_show_spec_cb.setChecked(True)
-        self._lyrics_show_spec_cb.toggled.connect(self.lyricsShowSpecToggled)
-        lyrics_fs_grid.addRow(self._lyrics_show_spec_cb)
-
-        layout.addWidget(self._lyrics_fullscreen_group)
-
         # Theme mode
         self._theme_group = QGroupBox(_("settings.theme"))
         mode_layout = QVBoxLayout(self._theme_group)
-        self._mode_combo = QComboBox()
+        self._mode_combo = _NoWheelComboBox()
         for k in self.THEME_MODES:
             self._mode_combo.addItem(_(f"theme.{k}"), k)
         self._mode_combo.currentIndexChanged.connect(self._emit_theme)
@@ -423,7 +422,7 @@ class SettingsDialog(QDialog):
         # Window corner radius
         self._window_radius_group = QGroupBox(_("settings.window_radius"))
         win_radius_layout = QHBoxLayout(self._window_radius_group)
-        self._border_radius_spin = QSpinBox()
+        self._border_radius_spin = _NoWheelSpinBox()
         self._border_radius_spin.setRange(0, 20)
         self._border_radius_spin.setSuffix(" px")
         self._border_radius_spin.setValue(0)
@@ -435,7 +434,7 @@ class SettingsDialog(QDialog):
         # UI corner radius
         self._ui_radius_group = QGroupBox(_("settings.ui_radius"))
         ui_radius_layout = QHBoxLayout(self._ui_radius_group)
-        self._ui_radius_spin = QSpinBox()
+        self._ui_radius_spin = _NoWheelSpinBox()
         self._ui_radius_spin.setRange(0, 24)
         self._ui_radius_spin.setSuffix(" px")
         self._ui_radius_spin.setValue(12)
@@ -458,7 +457,158 @@ class SettingsDialog(QDialog):
         scroll.setWidget(w)
         return scroll
 
+    def _build_lyrics_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        # === Online lyrics section ===
+        self._online_lyrics_group = QGroupBox(_("settings.online_lyrics"))
+        online_layout = QVBoxLayout(self._online_lyrics_group)
+
+        self._online_lyrics_cb = QCheckBox(_("settings.enable_online_lyrics"))
+        self._online_lyrics_cb.setChecked(False)
+        self._online_lyrics_cb.toggled.connect(self.onlineLyricsToggled)
+        online_layout.addWidget(self._online_lyrics_cb)
+
+        # Source checkboxes
+        self._lrclib_cb = QCheckBox(_("settings.source_lrclib"))
+        self._lrclib_cb.setChecked(True)
+        online_layout.addWidget(self._lrclib_cb)
+
+        self._custom_api_cb = QCheckBox(_("settings.source_custom_api"))
+        self._custom_api_cb.setChecked(False)
+        self._custom_api_cb.toggled.connect(self._on_custom_api_toggled)
+        online_layout.addWidget(self._custom_api_cb)
+
+        # Custom API fields (shown only when custom checkbox checked)
+        self._custom_api_widget = QWidget()
+        custom_form = QFormLayout(self._custom_api_widget)
+        custom_form.setContentsMargins(24, 0, 0, 0)
+        self._custom_url_input = QLineEdit()
+        self._custom_url_input.setPlaceholderText(_("settings.custom_url_placeholder"))
+        custom_form.addRow(_("settings.custom_url"), self._custom_url_input)
+        self._custom_token_input = QLineEdit()
+        self._custom_token_input.setPlaceholderText(_("settings.custom_token_placeholder"))
+        self._custom_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        custom_form.addRow(_("settings.custom_token"), self._custom_token_input)
+
+        self._test_conn_btn = QPushButton(_("settings.test_connection"))
+        self._test_conn_btn.clicked.connect(self._on_test_connection)
+        custom_form.addRow("", self._test_conn_btn)
+
+        self._custom_api_widget.setVisible(False)
+        online_layout.addWidget(self._custom_api_widget)
+
+        layout.addWidget(self._online_lyrics_group)
+
+        # Auto-save and translation toggles
+        self._auto_save_cb = QCheckBox(_("settings.auto_save_lyrics"))
+        self._auto_save_cb.setChecked(False)
+        self._auto_save_cb.toggled.connect(self.autoSaveLyricsToggled)
+        layout.addWidget(self._auto_save_cb)
+
+        self._show_translation_cb = QCheckBox(_("settings.show_translation"))
+        self._show_translation_cb.setChecked(True)
+        self._show_translation_cb.toggled.connect(self.showTranslationToggled)
+        layout.addWidget(self._show_translation_cb)
+
+        # === Lyrics display settings (moved from Appearance) ===
+        self._lyrics_group = QGroupBox(_("settings.lyrics_display"))
+        lyrics_layout = QVBoxLayout(self._lyrics_group)
+
+        self._lyrics_cb = QCheckBox(_("settings.lyrics_enable"))
+        self._lyrics_cb.setChecked(True)
+        self._lyrics_cb.toggled.connect(self.lyricsToggled)
+        lyrics_layout.addWidget(self._lyrics_cb)
+
+        lyrics_overlay_row = QHBoxLayout()
+        lyrics_overlay_row.addWidget(QLabel(_("settings.lyrics_height")))
+        self._lyrics_overlay_height_spin = _NoWheelSpinBox()
+        self._lyrics_overlay_height_spin.setRange(24, 72)
+        self._lyrics_overlay_height_spin.setSuffix(" px")
+        self._lyrics_overlay_height_spin.setValue(40)
+        self._lyrics_overlay_height_spin.valueChanged.connect(
+            lambda v: self.lyricsLineHeightChanged.emit(v))
+        lyrics_overlay_row.addWidget(self._lyrics_overlay_height_spin, 1)
+        lyrics_layout.addLayout(lyrics_overlay_row)
+        layout.addWidget(self._lyrics_group)
+
+        # === Fullscreen lyrics settings (moved from Appearance) ===
+        self._lyrics_fullscreen_group = QGroupBox(_("settings.lyrics_fullscreen_group"))
+        lyrics_fs_grid = QFormLayout(self._lyrics_fullscreen_group)
+        lyrics_fs_grid.setSpacing(8)
+
+        self._lyrics_font_size_spin = _NoWheelSpinBox()
+        self._lyrics_font_size_spin.setRange(16, 72)
+        self._lyrics_font_size_spin.setSuffix(" pt")
+        self._lyrics_font_size_spin.setValue(32)
+        self._lyrics_font_size_spin.valueChanged.connect(
+            lambda v: self.lyricsFontSizeChanged.emit(v))
+        lyrics_fs_grid.addRow(_("settings.lyrics_font_size"), self._lyrics_font_size_spin)
+
+        self._lyrics_fs_line_height_spin = _NoWheelSpinBox()
+        self._lyrics_fs_line_height_spin.setRange(30, 120)
+        self._lyrics_fs_line_height_spin.setSuffix(" px")
+        self._lyrics_fs_line_height_spin.setValue(60)
+        self._lyrics_fs_line_height_spin.valueChanged.connect(
+            lambda v: self.lyricsFullscreenLineHeightChanged.emit(v))
+        lyrics_fs_grid.addRow(_("settings.lyrics_height"), self._lyrics_fs_line_height_spin)
+
+        self._lyrics_letter_spacing_spin = _NoWheelSpinBox()
+        self._lyrics_letter_spacing_spin.setRange(0, 20)
+        self._lyrics_letter_spacing_spin.setSuffix(" px")
+        self._lyrics_letter_spacing_spin.setValue(2)
+        self._lyrics_letter_spacing_spin.valueChanged.connect(
+            lambda v: self.lyricsLetterSpacingChanged.emit(v))
+        lyrics_fs_grid.addRow(_("settings.lyrics_letter_spacing"), self._lyrics_letter_spacing_spin)
+
+        self._lyrics_show_spec_cb = QCheckBox(_("settings.lyrics_audio_spec"))
+        self._lyrics_show_spec_cb.setChecked(True)
+        self._lyrics_show_spec_cb.toggled.connect(self.lyricsShowSpecToggled)
+        lyrics_fs_grid.addRow(self._lyrics_show_spec_cb)
+
+        layout.addWidget(self._lyrics_fullscreen_group)
+
+        layout.addStretch()
+        scroll.setWidget(w)
+        return scroll
+
+    def _on_custom_api_toggled(self, checked: bool):
+        self._custom_api_widget.setVisible(checked)
+
+    def _on_test_connection(self):
+        import urllib.request
+        import json
+        url = self._custom_url_input.text().strip()
+        if not url:
+            self._test_conn_btn.setText(_("settings.test_fail"))
+            return
+        token = self._custom_token_input.text().strip()
+        test_url = f"{url.rstrip('/')}?track_name=test&artist_name=test&duration=0"
+        headers = {"User-Agent": "VBPlayer/1.0"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(test_url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                json.loads(resp.read().decode("utf-8"))
+            self._test_conn_btn.setText(_("settings.test_ok"))
+        except Exception:
+            self._test_conn_btn.setText(_("settings.test_fail"))
+
     def _build_playback_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -466,7 +616,7 @@ class SettingsDialog(QDialog):
 
         self._viz_group = QGroupBox(_("settings.visualization"))
         viz_layout = QFormLayout(self._viz_group)
-        self._viz_combo = QComboBox()
+        self._viz_combo = _NoWheelComboBox()
         for idx in self.VIZ_MODES:
             self._viz_combo.addItem(_(f"viz.{['bars','line','circular'][idx]}"), idx)
         self._viz_combo.currentIndexChanged.connect(self._on_viz)
@@ -475,11 +625,11 @@ class SettingsDialog(QDialog):
 
         self._vol_group = QGroupBox(_("settings.default_volume"))
         vol_row = QHBoxLayout(self._vol_group)
-        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vol_slider = _NoWheelSlider(Qt.Orientation.Horizontal)
         self._vol_slider.setRange(0, 100)
         self._vol_slider.valueChanged.connect(lambda v: self._vol_label.setText(f"{v}%"))
         vol_row.addWidget(self._vol_slider, 1)
-        self._vol_label = QLabel("80%")
+        self._vol_label = QLabel("100%")
         self._vol_label.setFixedWidth(36)
         vol_row.addWidget(self._vol_label)
         layout.addWidget(self._vol_group)
@@ -497,6 +647,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._eq_group, 1)
 
         # Audio output
+        self._rg_cb = QCheckBox(_("settings.replaygain"))
+        self._rg_cb.setToolTip(_("settings.replaygain_tooltip"))
+        self._rg_cb.toggled.connect(self.replaygainToggled)
+        layout.addWidget(self._rg_cb)
+
+        self._gapless_cb = QCheckBox(_("settings.gapless"))
+        self._gapless_cb.setToolTip(_("settings.gapless_tooltip"))
+        self._gapless_cb.toggled.connect(self.gaplessToggled)
+        layout.addWidget(self._gapless_cb)
+
         out_group = QGroupBox(_("settings.exclusive_mode"))
         out_layout = QVBoxLayout(out_group)
 
@@ -505,15 +665,21 @@ class SettingsDialog(QDialog):
         self._exclusive_cb.toggled.connect(self._on_exclusive_toggled)
         out_layout.addWidget(self._exclusive_cb)
 
-        self._device_combo = QComboBox()
+        self._device_combo = _NoWheelComboBox()
         self._device_combo.setEnabled(False)
         self._device_combo.currentIndexChanged.connect(self._on_device_changed)
         out_layout.addWidget(self._device_combo)
 
-        self._dsd_combo = QComboBox()
+        self._dsd_combo = _NoWheelComboBox()
         self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
-        self._dsd_combo.addItem(_("settings.dsd_native"), "native")
-        self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        if sys.platform == "win32":
+            self._dsd_combo.addItem(_("settings.dsd_native"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        else:
+            self._dsd_combo.addItem(_("settings.dsd_native") + "  " + _("settings.dsd_windows_only"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop") + "  " + _("settings.dsd_windows_only"), "dop")
+            self._dsd_combo.model().item(1).setEnabled(False)
+            self._dsd_combo.model().item(2).setEnabled(False)
         self._dsd_combo.setToolTip(_("settings.dsd_tooltip"))
         self._dsd_combo.currentIndexChanged.connect(self._on_dsd_mode_changed)
         out_layout.addWidget(self._dsd_combo)
@@ -530,7 +696,8 @@ class SettingsDialog(QDialog):
         reload_btn.clicked.connect(self.reloadRequested)
         layout.addWidget(reload_btn)
 
-        return w
+        scroll.setWidget(w)
+        return scroll
 
     def _build_advanced_tab(self) -> QWidget:
         w = QWidget()
@@ -561,7 +728,7 @@ class SettingsDialog(QDialog):
         self._about_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_title)
 
-        self._about_ver = QLabel("v0.2")
+        self._about_ver = QLabel("v0.3")
         self._about_ver.setStyleSheet("font-size: 13px; color: #888;")
         self._about_ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_ver)
@@ -573,12 +740,93 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._about_desc)
 
         layout.addStretch()
+
+        # Integrity check button
+        check_btn = QPushButton(_("settings.check_integrity"))
+        check_btn.setFixedWidth(180)
+        accent = current_accent()
+        check_btn.setStyleSheet(
+            f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
+            "border-radius:4px;padding:8px 16px;font-size:13px;}}"
+            f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
+        )
+        check_btn.clicked.connect(self._run_integrity_check)
+        layout.addWidget(check_btn, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self._integrity_result = QLabel("")
+        self._integrity_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._integrity_result.setWordWrap(True)
+        self._integrity_result.setStyleSheet("font-size:12px;color:#888;")
+        self._integrity_result.setVisible(False)
+        layout.addWidget(self._integrity_result)
+
         return w
 
     def _refresh_about_labels(self):
         self._about_title.setText(_("app.title"))
-        self._about_ver.setText("v0.2")
+        self._about_ver.setText("v0.3")
         self._about_desc.setText("PyQt6 + GStreamer")
+
+    def _run_integrity_check(self):
+        """Check core and platform dependencies, show results."""
+        from importlib import util as _il_util
+        import sys as _sys
+
+        checks: list[tuple[str, bool, str]] = []
+
+        # Core deps
+        for mod, label in [
+            ("PyQt6.QtCore", "PyQt6"),
+            ("numpy", "NumPy"),
+            ("mutagen", "Mutagen"),
+        ]:
+            ok = _il_util.find_spec(mod) is not None
+            checks.append((label, ok, ""))
+
+        # GStreamer
+        try:
+            import gi
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst
+            checks.append(("GStreamer", True, ""))
+        except Exception as e:
+            checks.append(("GStreamer", False, str(e)))
+
+        # Platform media controls
+        if _sys.platform == "linux":
+            try:
+                from gi.repository import Gio
+                checks.append(("MPRIS2", True, ""))
+            except Exception as e:
+                checks.append(("MPRIS2", False, str(e)))
+        elif _sys.platform == "darwin":
+            ok = _il_util.find_spec("MediaPlayer") is not None
+            checks.append(("Now Playing", ok, "" if ok else "pip install pyobjc-framework-MediaPlayer"))
+        elif _sys.platform == "win32":
+            ok = _il_util.find_spec("winsdk.windows.media") is not None
+            checks.append(("SMTC", ok, "" if ok else "pip install winsdk"))
+
+        # Build result text
+        all_ok = all(ok for _, ok, _ in checks)
+        lines = []
+        for label, ok, detail in checks:
+            icon = "✓" if ok else "✗"
+            line = f"{icon} {label}"
+            if not ok and detail:
+                line += f" — {detail}"
+            lines.append(line)
+
+        result_text = "\n".join(lines)
+        if all_ok:
+            result_text = _("settings.integrity_ok") + "\n" + result_text
+            color = "#4ade80"
+        else:
+            result_text = _("settings.integrity_issues") + "\n" + result_text
+            color = "#f59e0b"
+
+        self._integrity_result.setText(result_text)
+        self._integrity_result.setStyleSheet(f"font-size:12px;color:{color};")
+        self._integrity_result.setVisible(True)
 
     def set_eq_state(self, enabled: bool, preset: str, gains: list[float]):
         """Initialize equalizer widget state from outside."""
@@ -604,6 +852,18 @@ class SettingsDialog(QDialog):
         idx = self._dsd_combo.findData(mode)
         if idx >= 0:
             self._dsd_combo.setCurrentIndex(idx)
+
+    def set_replaygain_state(self, enabled: bool):
+        """Initialize ReplayGain UI state from outside."""
+        self._rg_cb.blockSignals(True)
+        self._rg_cb.setChecked(enabled)
+        self._rg_cb.blockSignals(False)
+
+    def set_gapless_state(self, enabled: bool):
+        """Initialize gapless playback UI state from outside."""
+        self._gapless_cb.blockSignals(True)
+        self._gapless_cb.setChecked(enabled)
+        self._gapless_cb.blockSignals(False)
 
     def _on_eq_preset_local(self, name: str):
         """Apply preset locally to update sliders, then forward signal."""
@@ -641,7 +901,7 @@ class SettingsDialog(QDialog):
         self._lyrics_cb.setChecked(
             str(self._settings.value("lyrics_enabled", "true")).lower() == "true"
         )
-        vol = int(self._settings.value("default_volume", 80) or 80)
+        vol = int(self._settings.value("default_volume", 100) or 100)
         self._vol_slider.setValue(vol)
 
         br = int(self._settings.value("border_radius", 0) or 0)
@@ -660,6 +920,21 @@ class SettingsDialog(QDialog):
         self._lyrics_letter_spacing_spin.setValue(lls)
         lss = str(self._settings.value("lyrics_show_spec", "true")).lower() == "true"
         self._lyrics_show_spec_cb.setChecked(lss)
+
+        # Online lyrics settings
+        online = str(self._settings.value("online_lyrics_enabled", "false")).lower() == "true"
+        self._online_lyrics_cb.setChecked(online)
+        lrclib = str(self._settings.value("lyrics_source_lrclib", "true")).lower() == "true"
+        self._lrclib_cb.setChecked(lrclib)
+        custom = str(self._settings.value("lyrics_source_custom", "false")).lower() == "true"
+        self._custom_api_cb.setChecked(custom)
+        self._custom_url_input.setText(str(self._settings.value("lyrics_custom_url", "")))
+        self._custom_token_input.setText(str(self._settings.value("lyrics_custom_token", "")))
+        self._custom_api_widget.setVisible(custom)
+        auto_save = str(self._settings.value("auto_save_lyrics", "false")).lower() == "true"
+        self._auto_save_cb.setChecked(auto_save)
+        show_trans = str(self._settings.value("show_translation", "true")).lower() == "true"
+        self._show_translation_cb.setChecked(show_trans)
 
         sidebar_log = str(self._settings.value("sidebar_log", "false")).lower() == "true"
         self._sidebar_log_cb.setChecked(sidebar_log)
@@ -779,7 +1054,7 @@ class SettingsDialog(QDialog):
         try:
             self._alsa_devices = enumerate_hw_devices()
         except Exception:
-            self._alsa_devices = [{"name": "默认设备 (WASAPI Shared)", "hw": "", "driver": "WASAPI"}]
+            self._alsa_devices = [{"name": _("engine.default_device"), "hw": "", "driver": "WASAPI"}]
         self._device_combo.clear()
         for dev in self._alsa_devices:
             driver_tag = dev.get("driver", "")
@@ -858,6 +1133,15 @@ class SettingsDialog(QDialog):
         dsd = self._dsd_combo.currentData()
         if dsd:
             self._settings.setValue("dsd_mode", dsd)
+        self._settings.setValue("replaygain_enabled", self._rg_cb.isChecked())
+        # Online lyrics settings
+        self._settings.setValue("online_lyrics_enabled", self._online_lyrics_cb.isChecked())
+        self._settings.setValue("lyrics_source_lrclib", self._lrclib_cb.isChecked())
+        self._settings.setValue("lyrics_source_custom", self._custom_api_cb.isChecked())
+        self._settings.setValue("lyrics_custom_url", self._custom_url_input.text())
+        self._settings.setValue("lyrics_custom_token", self._custom_token_input.text())
+        self._settings.setValue("auto_save_lyrics", self._auto_save_cb.isChecked())
+        self._settings.setValue("show_translation", self._show_translation_cb.isChecked())
         self.themeChanged.emit(mode, accent)
         self.accept()
 

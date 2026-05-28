@@ -3,6 +3,7 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 
 from audio_player.player.engine_base import _BaseAudioEngine, BAND_FREQUENCIES
+from audio_player.i18n import _
 
 
 def enumerate_hw_devices() -> list[dict]:
@@ -16,11 +17,11 @@ def enumerate_hw_devices() -> list[dict]:
         mon.start()
 
         _BUS_LABELS = {
-            "USB": "USB",
-            "BTHENUM": "蓝牙",
-            "INTELAUDIO": "内置",
+            "USB": _("engine.bus_usb"),
+            "BTHENUM": _("engine.bus_bluetooth"),
+            "INTELAUDIO": _("engine.bus_builtin"),
             "TUSBAUDIO_ENUM": "USB Audio",
-            "ROOT": "虚拟",
+            "ROOT": _("engine.bus_virtual"),
         }
 
         for i, d in enumerate(mon.get_devices()):
@@ -61,7 +62,7 @@ def enumerate_hw_devices() -> list[dict]:
         pass
 
     return devices if devices else [{"card": 0, "device": 0, "hw": "",
-                                     "name": "默认设备 (WASAPI Shared)", "driver": "WASAPI"}]
+                                     "name": _("engine.default_device"), "driver": "WASAPI"}]
 
 
 class AudioEngine(_BaseAudioEngine):
@@ -80,6 +81,19 @@ class AudioEngine(_BaseAudioEngine):
         self._kill_ffmpeg_proc()
         super()._teardown_pipeline()
 
+    def _cleanup_preloaded(self):
+        """Kill any ffmpeg subprocess from the preloaded pipeline."""
+        # The preloaded pipeline might have used the DSD ffmpeg fallback path
+        # which spawns a subprocess. Kill it if present.
+        if getattr(self, '_preload_ffmpeg_proc', None) is not None:
+            try:
+                self._preload_ffmpeg_proc.kill()
+                self._preload_ffmpeg_proc.wait(timeout=3)
+            except Exception:
+                pass
+            self._preload_ffmpeg_proc = None
+        super()._cleanup_preloaded()
+
     def _create_sink(self) -> Gst.Element:
         if self._exclusive_mode:
             hw = self._exclusive_device or ""
@@ -87,12 +101,13 @@ class AudioEngine(_BaseAudioEngine):
                 clsid = hw[5:]
                 sink = Gst.ElementFactory.make("asiosink", None)
                 if sink is None:
-                    raise RuntimeError("asiosink 不可用 — 请安装 GStreamer ASIO 插件")
+                    raise RuntimeError(_("engine.asio_unavailable"))
                 sink.set_property("device-clsid", clsid)
             else:
                 sink = Gst.ElementFactory.make("wasapi2sink", None)
                 if sink is None:
-                    raise RuntimeError("wasapi2sink 不可用 — 请安装 GStreamer WASAPI 插件")
+                    raise RuntimeError(_("engine.wasapi_unavailable"))
+                sink.set_property("exclusive", True)
                 sink.set_property("low-latency", True)
                 sink.set_property("buffer-time", 10000)
                 sink.set_property("latency-time", 3333)
@@ -101,7 +116,7 @@ class AudioEngine(_BaseAudioEngine):
         else:
             sink = Gst.ElementFactory.make("autoaudiosink", None)
             if sink is None:
-                raise RuntimeError("autoaudiosink 不可用")
+                raise RuntimeError(_("engine.auto_unavailable"))
         return sink
 
     def _output_info_dict(self) -> dict:
@@ -110,27 +125,27 @@ class AudioEngine(_BaseAudioEngine):
             if hw.startswith("asio:"):
                 return {
                     "name": hw,
-                    "driver": "ASIO (低延迟模式)",
-                    "mode": "ASIO 独占",
+                    "driver": _("engine.asio_driver"),
+                    "mode": _("engine.asio_exclusive"),
                     "is_exclusive": True,
                     "api": "asio",
-                    "latency": "ASIO 驱动决定",
+                    "latency": _("engine.asio_latency"),
                 }
             return {
-                "name": hw or "WASAPI 默认设备",
-                "driver": "WASAPI (低延迟模式)",
-                "mode": "低延迟模式 (Low-Latency)",
+                "name": hw or _("engine.wasapi_default"),
+                "driver": _("engine.wasapi_driver"),
+                "mode": _("engine.low_latency"),
                 "is_exclusive": True,
                 "api": "wasapi",
                 "latency": "buffer=10ms, latency≈3.3ms",
             }
         return {
-            "name": "系统默认",
+            "name": _("output.system_default"),
             "driver": "WASAPI Shared",
-            "mode": "共享模式 (Shared)",
+            "mode": _("engine.shared_mode"),
             "is_exclusive": False,
             "api": "wasapi",
-            "latency": "系统混音器控制",
+            "latency": _("engine.mixer_control"),
         }
 
     # ── DSD pipeline (native / DoP / PCM decode) ─────────────────────
@@ -235,6 +250,10 @@ class AudioEngine(_BaseAudioEngine):
             volume = Gst.ElementFactory.make("volume", None)
             volume.set_property("volume", self._volume_level)
 
+            rgvolume = None
+            if self._replaygain_enabled:
+                rgvolume = Gst.ElementFactory.make("rgvolume", None)
+
             eq = Gst.ElementFactory.make("equalizer-nbands", None)
             eq.set_property("num-bands", 10)
             for i, freq in enumerate(BAND_FREQUENCIES):
@@ -251,8 +270,10 @@ class AudioEngine(_BaseAudioEngine):
             if sink is None:
                 return False
 
-            elems = [filesrc, demux, audio_queue, capsfilter, resample, conv1,
-                     volume, eq, conv2, resample2, sink]
+            elems = [filesrc, demux, audio_queue, capsfilter, resample, conv1]
+            if rgvolume is not None:
+                elems.append(rgvolume)
+            elems.extend([volume, eq, conv2, resample2, sink])
             for elem in elems:
                 if elem is None:
                     return False
@@ -263,7 +284,11 @@ class AudioEngine(_BaseAudioEngine):
             audio_queue.link(capsfilter)
             capsfilter.link(resample)
             resample.link(conv1)
-            conv1.link(volume)
+            if rgvolume is not None:
+                conv1.link(rgvolume)
+                rgvolume.link(volume)
+            else:
+                conv1.link(volume)
             volume.link(eq)
             eq.link(conv2)
             conv2.link(resample2)
@@ -343,9 +368,8 @@ class AudioEngine(_BaseAudioEngine):
     def _build_dsd_ffmpeg_fallback(self, filepath: str) -> bool:
         """Stream DSD→PCM via external ffmpeg + GStreamer appsrc.
 
-        TODO: feed loop starts before pipeline → PLAYING; appsrc push-buffer
-        may fail due to race condition. Needs bus watch to delay feed until
-        PLAYING state is confirmed.
+        The feed thread waits for the pipeline to reach PLAYING state
+        before pushing buffers, avoiding the appsrc race condition.
         """
         import subprocess
         import os
@@ -399,6 +423,10 @@ class AudioEngine(_BaseAudioEngine):
         volume = Gst.ElementFactory.make("volume", None)
         volume.set_property("volume", self._volume_level)
 
+        rgvolume = None
+        if self._replaygain_enabled:
+            rgvolume = Gst.ElementFactory.make("rgvolume", None)
+
         eq = Gst.ElementFactory.make("equalizer-nbands", None)
         if eq is not None:
             eq.set_property("num-bands", 10)
@@ -418,7 +446,10 @@ class AudioEngine(_BaseAudioEngine):
             self._ffmpeg_proc = None
             return False
 
-        elems = [appsrc, audio_queue, conv1, resample1, volume, eq, conv2, resample2, sink]
+        elems = [appsrc, audio_queue, conv1, resample1]
+        if rgvolume is not None:
+            elems.append(rgvolume)
+        elems.extend([volume, eq, conv2, resample2, sink])
         for elem in elems:
             if elem is None:
                 self._ffmpeg_proc.kill()
@@ -429,16 +460,26 @@ class AudioEngine(_BaseAudioEngine):
         appsrc.link(audio_queue)
         audio_queue.link(conv1)
         conv1.link(resample1)
-        resample1.link(volume)
+        if rgvolume is not None:
+            resample1.link(rgvolume)
+            rgvolume.link(volume)
+        else:
+            resample1.link(volume)
         volume.link(eq)
         eq.link(conv2)
         conv2.link(resample2)
         resample2.link(sink)
 
-        # Feed thread
+        # Feed thread — gated: waits for pipeline PLAYING before pushing
         stop_flag = threading.Event()
+        playing_event = threading.Event()
 
         def _feed_loop():
+            # Wait until pipeline reaches PLAYING state (signaled by _poll)
+            if not playing_event.wait(timeout=10):
+                # Timeout — pipeline never reached PLAYING
+                appsrc.emit("end-of-stream")
+                return
             chunk_size = 65536
             while not stop_flag.is_set():
                 data = self._ffmpeg_proc.stdout.read(chunk_size)
@@ -452,6 +493,7 @@ class AudioEngine(_BaseAudioEngine):
             appsrc.emit("end-of-stream")
 
         self._ffmpeg_stop_flag = stop_flag
+        self._ffmpeg_playing_event = playing_event
         self._ffmpeg_thread = threading.Thread(target=_feed_loop, daemon=True)
         self._ffmpeg_thread.start()
 
@@ -470,10 +512,23 @@ class AudioEngine(_BaseAudioEngine):
 
         return True
 
+    def _handle_message(self, msg):
+        super()._handle_message(msg)
+        # Signal the ffmpeg feed thread once pipeline reaches PLAYING
+        if (msg.type == Gst.MessageType.STATE_CHANGED
+                and isinstance(msg.src, Gst.Pipeline)
+                and self._ffmpeg_playing_event is not None):
+            old, new, pending = msg.parse_state_changed()
+            if new == Gst.State.PLAYING:
+                self._ffmpeg_playing_event.set()
+
     def _kill_ffmpeg_proc(self):
         if getattr(self, '_ffmpeg_proc', None) is not None:
             if getattr(self, '_ffmpeg_stop_flag', None) is not None:
                 self._ffmpeg_stop_flag.set()
+            # Unblock feed thread if it's still waiting for PLAYING
+            if getattr(self, '_ffmpeg_playing_event', None) is not None:
+                self._ffmpeg_playing_event.set()
             try:
                 self._ffmpeg_proc.stdout.close()
             except Exception:
@@ -485,10 +540,16 @@ class AudioEngine(_BaseAudioEngine):
                 pass
             self._ffmpeg_proc = None
             self._ffmpeg_stop_flag = None
+            self._ffmpeg_playing_event = None
 
     # ── Override _build_pipeline to add DSD support ──────────────────
 
     def _build_pipeline(self, filepath: str):
+        # URL streams — delegate to base class playbin pipeline
+        if self._is_url(filepath):
+            self._build_url_pipeline(filepath)
+            return
+
         ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
         is_dsd = ext in ("dsf", "dff")
         self._source_is_dsd = is_dsd
@@ -499,8 +560,8 @@ class AudioEngine(_BaseAudioEngine):
                 return
             self._dsd_decode_mode = "pcm"
 
-        # Manual DSD→PCM for DSF (bypasses decodebin, caps max rate at 768kHz)
-        if ext == "dsf":
+        # Manual DSD→PCM (bypasses decodebin, caps max rate at 768kHz)
+        if is_dsd:
             if self._build_dsd_pcm_pipeline(filepath):
                 return
 
@@ -550,11 +611,11 @@ class AudioEngine(_BaseAudioEngine):
 
             sink = self._create_sink()
             if sink is None:
-                raise RuntimeError("GStreamer 音频输出不可用")
+                raise RuntimeError(_("engine.gst_unavailable"))
 
             for elem in [filesrc, decodebin, audio_queue, conv1, resample1, volume, eq, conv2, resample2, sink]:
                 if elem is None:
-                    raise RuntimeError("GStreamer 插件缺失，无法创建音频管道")
+                    raise RuntimeError(_("engine.gst_plugins_missing"))
                 pipeline.add(elem)
 
             filesrc.link(decodebin)

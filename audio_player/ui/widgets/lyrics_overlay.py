@@ -18,6 +18,7 @@ class LyricsLine:
 class LyricsOverlay(QWidget):
     VISIBLE_LINES = 7  # odd number for centering
     fullscreenRequested = pyqtSignal()
+    searchRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,7 +52,15 @@ class LyricsOverlay(QWidget):
         self._fullscreen_btn.clicked.connect(self.fullscreenRequested)
         self._fullscreen_btn.hide()
 
+        self._search_btn = QPushButton("?", self)
+        self._search_btn.setFixedSize(24, 24)
+        self._search_btn.setStyleSheet(btn_style)
+        self._search_btn.setToolTip(_("lyrics.search_online"))
+        self._search_btn.clicked.connect(self.searchRequested)
+        self._search_btn.hide()
+
         self._overlay_hovered = False
+        self._loading = False
 
     def set_lyrics(self, lines: List[LyricsLine]):
         self._lyrics = sorted(lines, key=lambda x: x.time_ms)
@@ -94,6 +103,15 @@ class LyricsOverlay(QWidget):
         self._translation_gap = px
         self.update()
 
+    def set_loading_state(self, loading: bool):
+        self._loading = loading
+        if loading:
+            self._search_btn.hide()
+            self._search_btn.setEnabled(False)
+        else:
+            self._search_btn.setEnabled(True)
+        self.update()
+
     def _update_anim(self):
         """Smooth exponential ease-out toward zero."""
         self._anim_offset_y *= 0.82
@@ -105,15 +123,19 @@ class LyricsOverlay(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fullscreen_btn.move(self.width() - 32, 8)
+        self._search_btn.move(self.width() - 60, 8)
 
     def enterEvent(self, event):
         self._overlay_hovered = True
+        if not self._loading:
+            self._search_btn.show()
         if self._lyrics:
             self._fullscreen_btn.show()
 
     def leaveEvent(self, event):
         self._overlay_hovered = False
         self._fullscreen_btn.hide()
+        self._search_btn.hide()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -121,6 +143,7 @@ class LyricsOverlay(QWidget):
     def hideEvent(self, event):
         super().hideEvent(event)
         self._fullscreen_btn.hide()
+        self._search_btn.hide()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -145,7 +168,10 @@ class LyricsOverlay(QWidget):
             font = QFont()
             font.setPointSize(14)
             painter.setFont(font)
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无歌词")
+            if self._loading:
+                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, _("lyrics.searching"))
+            else:
+                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, _("lyrics.no_lyrics"))
             painter.end()
             return
 

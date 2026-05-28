@@ -5,6 +5,7 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 
 from audio_player.player.engine_base import _BaseAudioEngine
+from audio_player.i18n import _
 
 
 def enumerate_hw_devices() -> list[dict]:
@@ -36,7 +37,7 @@ def enumerate_hw_devices() -> list[dict]:
                             'name': f'{name} ({hw})', 'driver': 'ALSA'})
     if not devices:
         devices.append({'card': 0, 'device': 0, 'hw': 'hw:0,0',
-                        'name': '默认设备 (hw:0,0)', 'driver': 'ALSA'})
+                        'name': 'hw:0,0', 'driver': 'ALSA'})
     return devices
 
 
@@ -50,29 +51,29 @@ class AudioEngine(_BaseAudioEngine):
         if self._exclusive_mode:
             sink = Gst.ElementFactory.make("alsasink", None)
             if sink is None:
-                raise RuntimeError("alsasink 不可用 — 请安装 gstreamer1.0-alsa")
+                raise RuntimeError(_("engine.alsa_unavailable"))
             sink.set_property("device", self._exclusive_device)
         else:
             sink = Gst.ElementFactory.make("autoaudiosink", None)
             if sink is None:
-                raise RuntimeError("autoaudiosink 不可用")
+                raise RuntimeError(_("engine.auto_unavailable"))
         return sink
 
     def _output_info_dict(self) -> dict:
         if self._exclusive_mode:
             return {
                 "name": self._exclusive_device,
-                "driver": "ALSA (硬件直通)",
-                "mode": "独占模式 (Exclusive)",
+                "driver": _("engine.alsa_driver"),
+                "mode": _("engine.exclusive_mode"),
                 "is_exclusive": True,
                 "api": "alsa",
-                "latency": "ALSA 硬件缓冲",
+                "latency": _("engine.alsa_buffer"),
             }
         return {
-            "name": "系统默认",
+            "name": _("output.system_default"),
             "driver": "PipeWire / PulseAudio",
-            "mode": "共享模式 (Shared)",
+            "mode": _("engine.shared_mode"),
             "is_exclusive": False,
             "api": "pulse",
-            "latency": "声音服务器控制",
+            "latency": _("engine.sound_server"),
         }

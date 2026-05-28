@@ -1,15 +1,24 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QFrame, QTextEdit)
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor, QFont, QPalette
 from audio_player.app import current_theme_mode, current_accent
 from audio_player.i18n import _, languageChanged
+from audio_player.ui.icons import (
+    NAV_SONGS, NAV_ALBUMS, NAV_FAVORITES, NAV_PLAYLISTS,
+    NAV_NETWORK, NAV_MANAGE, NAV_SETTINGS,
+    SIDEBAR_TOGGLE, SIDEBAR_EXPAND, RELOAD,
+    _icon, _accent_icon,
+)
 
 NAV_ITEMS = [
-    ("📋", "nav.all_songs", "songs"),
-    ("💿", "nav.albums", "albums"),
-    ("⚙", "nav.manage", "manage"),
-    ("🔧", "nav.settings", "settings"),
+    (NAV_SONGS,     "nav.all_songs",  "songs"),
+    (NAV_ALBUMS,    "nav.albums",     "albums"),
+    (NAV_FAVORITES, "nav.favorites",  "favorites"),
+    (NAV_PLAYLISTS, "nav.playlists",  "playlists"),
+    (NAV_NETWORK,   "nav.network",    "network"),
+    (NAV_MANAGE,    "nav.manage",     "manage"),
+    (NAV_SETTINGS,  "nav.settings",   "settings"),
 ]
 
 
@@ -32,6 +41,15 @@ class Sidebar(QWidget):
         self._track_count = 0
         self._album_count = 0
 
+        # Animation state
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(16)
+        self._anim_timer.timeout.connect(self._anim_tick)
+        self._anim_start: float = 0.0
+        self._anim_target: float = 0.0
+        self._anim_elapsed: int = 0
+        self._anim_duration: int = 200
+
         self._setup_ui()
         languageChanged.connect(self.refresh_language)
 
@@ -45,12 +63,12 @@ class Sidebar(QWidget):
         # Toggle button row
         toggle_row = QHBoxLayout()
         toggle_row.setContentsMargins(10, 8, 4, 4)
-        self._toggle_btn = QPushButton("☰")
+        self._toggle_btn = QPushButton()
+        self._toggle_btn.setIcon(_icon(SIDEBAR_TOGGLE, color="#94a3b8"))
         self._toggle_btn.setObjectName("sidebarToggle")
         self._toggle_btn.setFixedSize(40, 40)
         self._toggle_btn.setToolTip(_("sidebar.collapse"))
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._apply_toggle_btn_style()
         self._toggle_btn.clicked.connect(self.toggle)
         toggle_row.addWidget(self._toggle_btn)
         toggle_row.addStretch()
@@ -62,12 +80,13 @@ class Sidebar(QWidget):
         self._nav_layout.setContentsMargins(4, 4, 4, 4)
         self._nav_layout.setSpacing(2)
 
-        for icon, tr_key, nav_key in NAV_ITEMS:
+        for icon_name, tr_key, nav_key in NAV_ITEMS:
             row = QHBoxLayout()
             row.setContentsMargins(6, 2, 6, 2)
             row.setSpacing(10)
 
-            btn = QPushButton(icon)
+            btn = QPushButton()
+            btn.setIcon(_icon(icon_name, color="#94a3b8"))
             btn.setFixedSize(40, 40)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(_(tr_key))
@@ -75,6 +94,8 @@ class Sidebar(QWidget):
             row.addWidget(btn)
 
             lbl = QLabel(_(tr_key))
+            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            lbl.mousePressEvent = lambda e, k=nav_key: self._on_nav(k)
             row.addWidget(lbl, 1)
             row.addStretch()
 
@@ -85,22 +106,22 @@ class Sidebar(QWidget):
 
         # Separator
         self._sep = QFrame()
+        self._sep.setObjectName("sidebarSeparator")
         self._sep.setFrameShape(QFrame.Shape.HLine)
-        self._apply_sep_style()
         main.addWidget(self._sep)
 
         # Stats
-        muted = "#555555" if self._is_light else "#64748b"
         self._track_count_label = QLabel(_("stats.tracks", count=0))
-        self._track_count_label.setStyleSheet(f"color:{muted};font-size:12px;padding:4px 10px;")
+        self._track_count_label.setObjectName("statsLabel")
         main.addWidget(self._track_count_label)
 
         self._album_count_label = QLabel(_("stats.albums", count=0))
-        self._album_count_label.setStyleSheet(f"color:{muted};font-size:12px;padding:0px 10px;")
+        self._album_count_label.setObjectName("statsLabel")
         main.addWidget(self._album_count_label)
 
         # Reload button
         self._reload_btn = QPushButton(_("manage.reload_albums"))
+        self._reload_btn.setIcon(_icon(RELOAD, color="#fff"))
         self._reload_btn.clicked.connect(self.reloadAlbums)
         self._apply_reload_btn_style()
         main.addWidget(self._reload_btn)
@@ -142,11 +163,12 @@ class Sidebar(QWidget):
             btn = row["btn"]
             lbl = row["lbl"]
 
+            icon_color = accent.lighter(160).name() if is_current else icon_inactive
+            btn.setIcon(_icon(NAV_ITEMS[[r["key"] for r in self._nav_rows].index(row["key"])][0], color=icon_color))
             btn.setStyleSheet(
                 f"QPushButton{{"
                 f"background:{cur_bg if is_current else 'transparent'};"
-                f"color:{accent.lighter(160).name() if is_current else icon_inactive};"
-                f"border:none;border-radius:8px;font-size:18px;"
+                f"border:none;border-radius:8px;"
                 f"}}"
                 f"QPushButton:hover{{"
                 f"background:{cur_hover_bg if is_current else hover_bg};"
@@ -156,18 +178,51 @@ class Sidebar(QWidget):
 
     def toggle(self):
         self._collapsed = not self._collapsed
-        self._apply_collapsed_state()
-        self._toggle_btn.setText("☰" if not self._collapsed else "→")
+        self._start_animation()
 
     def expand(self):
+        if not self._collapsed:
+            return
         self._collapsed = False
-        self._apply_collapsed_state()
-        self._toggle_btn.setText("☰")
+        self._start_animation()
 
     def collapse(self):
+        if self._collapsed:
+            return
         self._collapsed = True
-        self._apply_collapsed_state()
-        self._toggle_btn.setText("→")
+        self._start_animation()
+
+    def _start_animation(self):
+        icon_name = SIDEBAR_TOGGLE if not self._collapsed else SIDEBAR_EXPAND
+        self._toggle_btn.setIcon(_icon(icon_name, color="#94a3b8"))
+        # If animation is running, start from current animated position
+        current = self.width()
+        target = self.COLLAPSED_W if self._collapsed else self._expanded_width
+        if abs(current - target) < 2:
+            self._apply_collapsed_state()
+            return
+        # Show labels immediately when expanding
+        if not self._collapsed:
+            for row in self._nav_rows:
+                row["lbl"].show()
+            self._track_count_label.show()
+            self._album_count_label.show()
+            self._reload_btn.show()
+        self._anim_start = float(current)
+        self._anim_target = float(target)
+        self._anim_elapsed = 0
+        self._anim_timer.start()
+
+    def _anim_tick(self):
+        self._anim_elapsed += 16
+        t = min(1.0, self._anim_elapsed / self._anim_duration)
+        # ease-out cubic
+        t = 1.0 - (1.0 - t) ** 3
+        w = self._anim_start + (self._anim_target - self._anim_start) * t
+        self.setFixedWidth(int(w))
+        if t >= 1.0:
+            self._anim_timer.stop()
+            self._apply_collapsed_state()
 
     def _apply_collapsed_state(self):
         if self._collapsed:
@@ -180,6 +235,7 @@ class Sidebar(QWidget):
             self._reload_btn.hide()
             self.widthToggled.emit(self.COLLAPSED_W)
         else:
+            # Clear fixed width constraint so splitter can manage sizing
             self.setMinimumWidth(self.EXPANDED_MIN_W)
             self.setMaximumWidth(420)
             for row in self._nav_rows:
@@ -218,20 +274,6 @@ class Sidebar(QWidget):
     # Styling helpers
     # ------------------------------------------------------------------
 
-    def _apply_toggle_btn_style(self):
-        toggle_color = "#555555" if self._is_light else "#aaaaaa"
-        toggle_hover_bg = "#e0e0e0" if self._is_light else "#1a1a2e"
-        toggle_hover_color = "#333" if self._is_light else "#fff"
-        self._toggle_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{toggle_color};border:none;"
-            f"font-size:20px;border-radius:6px;}}"
-            f"QPushButton:hover{{background:{toggle_hover_bg};color:{toggle_hover_color};}}"
-        )
-
-    def _apply_sep_style(self):
-        sep_color = "#d0d0d0" if self._is_light else "#141414"
-        self._sep.setStyleSheet(f"background:{sep_color};max-height:1px;margin:4px 8px;")
-
     def _apply_log_style(self):
         log_bg = "#f5f5f5" if self._is_light else "#050508"
         log_text = "#555555" if self._is_light else "#555555"
@@ -256,13 +298,7 @@ class Sidebar(QWidget):
 
     def refresh_theme_mode(self, is_light: bool):
         self._is_light = is_light
-        muted = "#555555" if is_light else "#64748b"
-
-        self._apply_toggle_btn_style()
-        self._apply_sep_style()
         self._apply_log_style()
-        self._track_count_label.setStyleSheet(f"color:{muted};font-size:12px;padding:4px 10px;")
-        self._album_count_label.setStyleSheet(f"color:{muted};font-size:12px;padding:0px 10px;")
         self._update_nav_highlight()
 
     def append_log(self, message: str):

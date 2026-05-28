@@ -2,6 +2,22 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSlider,
                              QLabel, QComboBox, QPushButton, QFrame, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
+
+
+class _NoWheelSlider(QSlider):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class _NoWheelComboBox(QComboBox):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    def wheelEvent(self, e):
+        e.ignore()
 _EQ_ACCENT_03 = "#2e185e"
 
 STYLE = """
@@ -100,7 +116,7 @@ class EqualizerWidget(QWidget):
         header.addWidget(self._enabled_cb)
         header.addStretch()
 
-        self._preset_combo = QComboBox()
+        self._preset_combo = _NoWheelComboBox()
         self._preset_combo.addItems([
             "Flat", "Rock", "Pop", "Classical", "Jazz",
             "Hip Hop", "Electronic", "Vocal Boost", "Bass Boost", "Treble Boost"
@@ -134,7 +150,7 @@ class EqualizerWidget(QWidget):
             band_widget.addWidget(val_label)
 
             # Slider
-            slider = QSlider(Qt.Orientation.Vertical)
+            slider = _NoWheelSlider(Qt.Orientation.Vertical)
             slider.setRange(-120, 120)  # -12.0 to +12.0 dB, scaled by 10
             slider.setValue(0)
             slider.setFixedWidth(28)

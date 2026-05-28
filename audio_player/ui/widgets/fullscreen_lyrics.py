@@ -21,7 +21,7 @@ class FullscreenLyricsWindow(QWidget):
             Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setStyleSheet("background:#0a0a0f;")
+        self.setObjectName("fullscreenLyrics")
 
         self._lyrics: list[LyricsLine] = []
         self._current_ms = 0
@@ -52,12 +52,8 @@ class FullscreenLyricsWindow(QWidget):
 
         # Close button (top-right, hidden until mouse moves)
         self._close_btn = QPushButton("✕", self)
+        self._close_btn.setObjectName("fullscreenCloseBtn")
         self._close_btn.setFixedSize(36, 36)
-        self._close_btn.setStyleSheet(
-            "QPushButton{background:#1a1a2e;color:#888;border:none;"
-            "border-radius:18px;font-size:16px;}"
-            "QPushButton:hover{background:#2a2a4a;color:#fff;}"
-        )
         self._close_btn.clicked.connect(self.hide)
         self._close_btn_effect = QGraphicsOpacityEffect(self)
         self._close_btn_effect.setOpacity(0.0)
@@ -66,11 +62,8 @@ class FullscreenLyricsWindow(QWidget):
 
         # Audio spec bar at bottom
         self._spec_bar = QLabel(self)
+        self._spec_bar.setObjectName("fullscreenSpecBar")
         self._spec_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._spec_bar.setStyleSheet(
-            "color:#444;font-size:11px;font-family:monospace;"
-            "background:transparent;padding:8px;"
-        )
         self._spec_bar_effect = QGraphicsOpacityEffect(self)
         self._spec_bar_effect.setOpacity(0.0)
         self._spec_bar.setGraphicsEffect(self._spec_bar_effect)

@@ -3,22 +3,27 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from audio_player.app import current_accent
 from audio_player.i18n import _
 from audio_player.player.playlist import RepeatMode
+from audio_player.ui.icons import (
+    MODE_SEQUENTIAL, MODE_REPEAT_ALL, MODE_REPEAT_ONE, MODE_SHUFFLE, MODE_MORE, _icon,
+)
 
 
 _MODES = [
-    # (icon, repeat_mode, shuffle, tooltip_key)
-    ("▶",     RepeatMode.Off, False, "playback.sequential"),
-    ("\U0001f501", RepeatMode.All, False, "playback.repeat_all"),
-    ("\U0001f502", RepeatMode.One, False, "playback.repeat_one"),
-    ("\U0001f500", RepeatMode.Off, True,  "playback.shuffle_on"),
+    # (icon_name, repeat_mode, shuffle, tooltip_key)
+    (MODE_SEQUENTIAL, RepeatMode.Off, False, "playback.sequential"),
+    (MODE_REPEAT_ALL, RepeatMode.All, False, "playback.repeat_all"),
+    (MODE_REPEAT_ONE, RepeatMode.One, False, "playback.repeat_one"),
+    (MODE_SHUFFLE,    RepeatMode.Off, True,  "playback.shuffle_on"),
 ]
 
 
 class PlaybackModeControl(QWidget):
-    """Single button that cycles: sequential → repeat all → repeat one → shuffle."""
+    """Single button that cycles: sequential → repeat all → repeat one → shuffle.
+    Below it: a 'more options' button (⋯)."""
 
     repeatModeChanged = pyqtSignal(int)
     shuffleChanged = pyqtSignal(bool)
+    moreClicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -29,9 +34,18 @@ class PlaybackModeControl(QWidget):
         self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn.clicked.connect(self._cycle)
 
+        self._more_btn = QPushButton()
+        self._more_btn.setIcon(_icon(MODE_MORE, color="#64748b"))
+        self._more_btn.setFixedSize(44, 36)
+        self._more_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._more_btn.setToolTip("⋯")
+        self._more_btn.clicked.connect(self.moreClicked)
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(4, 6, 4, 6)
+        layout.setSpacing(4)
         layout.addWidget(self._btn, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._more_btn, 0, Qt.AlignmentFlag.AlignCenter)
         layout.addStretch()
         self._apply_style()
 
@@ -77,29 +91,39 @@ class PlaybackModeControl(QWidget):
         al = accent.lighter(115).name()
         ad = accent.darker(120).name()
 
-        icon, _rm, _shuf, tooltip_key = _MODES[self._mode_idx]
+        icon_name, _rm, _shuf, tooltip_key = _MODES[self._mode_idx]
         active = self._mode_idx != 0
+
+        icon_color = "#ffffff" if active else "#64748b"
+        self._btn.setIcon(_icon(icon_name, color=icon_color))
 
         if active:
             qss = (
                 f"QPushButton {{"
-                f"background:{ac}; color:#ffffff; border:none;"
-                f"border-radius:8px; font-size:15px; }}"
+                f"background:{ac}; border:none;"
+                f"border-radius:8px; }}"
                 f"QPushButton:hover {{ background:{al}; }}"
                 f"QPushButton:pressed {{ background:{ad}; }}"
             )
         else:
             qss = (
                 f"QPushButton {{"
-                f"background:transparent; color:#64748b;"
-                f"border:1px solid #2a2a4a; border-radius:8px; font-size:15px; }}"
-                f"QPushButton:hover {{ background:#2a2a4a; color:#cccccc; }}"
-                f"QPushButton:pressed {{ background:#3a3a5a; }}"
+                f"background:transparent;"
+                f"border:1px solid #2a2a4a; border-radius:8px; }}"
+                f"QPushButton:hover {{ background:#2a2a4a; }}"
+                f"QPushButton:pressed {{ background:{ad}; }}"
             )
 
-        self._btn.setText(icon)
         self._btn.setToolTip(_(tooltip_key))
         self._btn.setStyleSheet(qss)
+
+        # More button — same border style, accent pressed
+        self._more_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;"
+            f"border:1px solid #2a2a4a;border-radius:8px;}}"
+            f"QPushButton:hover{{background:#2a2a4a;}}"
+            f"QPushButton:pressed{{background:{ad};}}"
+        )
 
     def _apply_style_light(self):
         accent = current_accent()
@@ -107,29 +131,39 @@ class PlaybackModeControl(QWidget):
         al = accent.lighter(115).name()
         ad = accent.darker(120).name()
 
-        icon, _rm, _shuf, tooltip_key = _MODES[self._mode_idx]
+        icon_name, _rm, _shuf, tooltip_key = _MODES[self._mode_idx]
         active = self._mode_idx != 0
+
+        icon_color = "#ffffff" if active else "#888888"
+        self._btn.setIcon(_icon(icon_name, color=icon_color))
 
         if active:
             qss = (
                 f"QPushButton {{"
-                f"background:{ac}; color:#ffffff; border:none;"
-                f"border-radius:8px; font-size:15px; }}"
+                f"background:{ac}; border:none;"
+                f"border-radius:8px; }}"
                 f"QPushButton:hover {{ background:{al}; }}"
                 f"QPushButton:pressed {{ background:{ad}; }}"
             )
         else:
             qss = (
                 f"QPushButton {{"
-                f"background:transparent; color:#888888;"
-                f"border:1px solid #d0d0d8; border-radius:8px; font-size:15px; }}"
-                f"QPushButton:hover {{ background:#dcdce4; color:#555555; }}"
-                f"QPushButton:pressed {{ background:#ccccd4; }}"
+                f"background:transparent;"
+                f"border:1px solid #d0d0d8; border-radius:8px; }}"
+                f"QPushButton:hover {{ background:#dcdce4; }}"
+                f"QPushButton:pressed {{ background:{ad}; }}"
             )
 
-        self._btn.setText(icon)
         self._btn.setToolTip(_(tooltip_key))
         self._btn.setStyleSheet(qss)
+
+        # More button — light variant
+        self._more_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;"
+            f"border:1px solid #d0d0d8;border-radius:8px;}}"
+            f"QPushButton:hover{{background:#dcdce4;}}"
+            f"QPushButton:pressed{{background:{ad};}}"
+        )
 
     def refresh_accent(self):
         self._apply_style()

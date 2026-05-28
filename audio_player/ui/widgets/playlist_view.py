@@ -1,12 +1,28 @@
+from typing import Callable
 from PyQt6.QtWidgets import (QListView, QStyledItemDelegate, QStyle,
-                             QAbstractItemView)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QModelIndex
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+                             QAbstractItemView, QMenu)
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QModelIndex, QSortFilterProxyModel
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QAction
 from audio_player.app import current_accent
+from audio_player.i18n import _
+
+
+def _source_model(model):
+    """Return the source model if *model* is a QSortFilterProxyModel, else *model*."""
+    if isinstance(model, QSortFilterProxyModel):
+        return model.sourceModel()
+    return model
+
+
+def _source_row(model, proxy_index):
+    """Map a proxy index to source row. Returns proxy_index.row() if no proxy."""
+    if isinstance(model, QSortFilterProxyModel):
+        return model.mapToSource(proxy_index).row()
+    return proxy_index.row()
 
 
 class _PlaylistDelegate(QStyledItemDelegate):
-    MARGIN = 3
+    MARGIN = 2
 
     def paint(self, painter: QPainter, option, index: QModelIndex):
         painter.save()
@@ -14,9 +30,11 @@ class _PlaylistDelegate(QStyledItemDelegate):
 
         rect = option.rect.adjusted(self.MARGIN, 2, -self.MARGIN, -2)
         is_selected = option.state & QStyle.StateFlag.State_Selected
-        model = index.model()
+        proxy = index.model()
         row = index.row()
         accent = current_accent()
+        src = _source_model(proxy)
+        src_row = _source_row(proxy, index)
 
         # Background
         if is_selected:
@@ -27,7 +45,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(rect, 6, 6)
 
         # Playing indicator
-        is_current = model and model.current_index == row
+        is_current = src and hasattr(src, 'current_index') and src.current_index == src_row
         if is_current:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(accent)
@@ -38,16 +56,16 @@ class _PlaylistDelegate(QStyledItemDelegate):
         num_font.setPointSize(9)
         painter.setFont(num_font)
         painter.setPen(QColor("#64748b") if not is_current else accent)
-        painter.drawText(QRect(rect.x() + 14, rect.y(), 28, rect.height()),
-                         Qt.AlignmentFlag.AlignVCenter, str(row + 1))
+        painter.drawText(QRect(rect.x() + 9, rect.y(), 30, rect.height()),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, str(row + 1))
 
         # Text
-        text_x = rect.x() + 44
-        text_w = rect.width() - 44 - 50
+        text_x = rect.x() + 50
+        text_w = rect.width() - 50 - 50
 
-        title = (index.data(model.TitleRole) if model else "") or "Unknown"
-        artist = (index.data(model.ArtistRole) if model else "") or ""
-        dur_sec = (index.data(model.DurationRole) if model else 0) or 0
+        title = (index.data(src.TitleRole) if src else "") or "Unknown"
+        artist = (index.data(src.ArtistRole) if src else "") or ""
+        dur_sec = (index.data(src.DurationRole) if src else 0) or 0
 
         # Title
         title_font = QFont(painter.font())
@@ -76,7 +94,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
 
         # Missing file indicator
         import os
-        filepath = (index.data(model.FilePathRole) if model else "") or ""
+        filepath = (index.data(src.FilePathRole) if src else "") or ""
         if filepath and not os.path.exists(filepath):
             painter.setPen(QColor("#ef4444"))
             painter.drawText(rect.adjusted(0, 0, -8, 0),
@@ -107,6 +125,10 @@ class PlaylistView(QListView):
     trackClicked = pyqtSignal(int)
     trackDoubleClicked = pyqtSignal(int)
     tracksDropped = pyqtSignal(list)
+    addToFavorites = pyqtSignal(list)       # file paths
+    removeFromFavorites = pyqtSignal(list)  # file paths
+    addToPlaylist = pyqtSignal(str, list)   # (playlist_name, file paths)
+    editTags = pyqtSignal(str)             # single file path
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,15 +145,84 @@ class PlaylistView(QListView):
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setMouseTracking(True)
         self.setSpacing(0)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         self.clicked.connect(self._on_click)
         self.doubleClicked.connect(self._on_double_click)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+        # External callbacks for context menu state queries
+        self._is_favorite_fn: Callable[[str], bool] | None = None
+        self._get_playlist_names_fn: Callable[[], list[str]] | None = None
+
+    def setFilterText(self, text: str):
+        """Filter visible rows by *text* against title/artist/album."""
+        from PyQt6.QtCore import QRegularExpression
+        proxy = self.model()
+        if isinstance(proxy, QSortFilterProxyModel):
+            proxy.setFilterRegularExpression(QRegularExpression(text, QRegularExpression.PatternOption.CaseInsensitiveOption))
 
     def _on_click(self, idx: QModelIndex):
-        self.trackClicked.emit(idx.row())
+        self.trackClicked.emit(_source_row(self.model(), idx))
 
     def _on_double_click(self, idx: QModelIndex):
-        self.trackDoubleClicked.emit(idx.row())
+        self.trackDoubleClicked.emit(_source_row(self.model(), idx))
+
+    def _show_context_menu(self, pos):
+        proxy = self.model()
+        model = _source_model(proxy)
+        if not model or not hasattr(model, 'FilePathRole'):
+            return
+        indices = self.selectedIndexes()
+        if not indices:
+            return
+
+        paths = []
+        for idx in indices:
+            p = idx.data(model.FilePathRole)
+            if p:
+                paths.append(p)
+        if not paths:
+            return
+
+        from audio_player.ui.theme_helpers import menu_style
+        menu = QMenu(self)
+        menu.setStyleSheet(menu_style())
+
+        # Favorites toggle
+        all_fav = self._is_favorite_fn and all(self._is_favorite_fn(p) for p in paths)
+        fav_text = _("context.unfavorite") if all_fav else _("context.favorite")
+        fav_action = QAction(fav_text, self)
+        fav_action.triggered.connect(lambda: (
+            self.removeFromFavorites.emit(paths) if all_fav
+            else self.addToFavorites.emit(paths)
+        ))
+        menu.addAction(fav_action)
+
+        # Add to playlist submenu
+        if self._get_playlist_names_fn:
+            names = self._get_playlist_names_fn()
+            if names:
+                menu.addSeparator()
+                pls_menu = menu.addMenu(_("context.add_to_playlist"))
+                pls_menu.setStyleSheet(menu.styleSheet())
+                for name in names:
+                    act = QAction(name, self)
+                    act.triggered.connect(lambda checked, n=name: self.addToPlaylist.emit(n, paths))
+                    pls_menu.addAction(act)
+                pls_menu.addSeparator()
+                new_act = QAction(_("context.new_playlist"), self)
+                new_act.triggered.connect(lambda: self.addToPlaylist.emit("", paths))
+                pls_menu.addAction(new_act)
+
+        # Edit tags (single file only)
+        if len(paths) == 1:
+            menu.addSeparator()
+            edit_tags_act = QAction(_("context.edit_tags"), self)
+            edit_tags_act.triggered.connect(lambda: self.editTags.emit(paths[0]))
+            menu.addAction(edit_tags_act)
+
+        menu.exec(self.viewport().mapToGlobal(pos))
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():

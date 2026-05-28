@@ -39,6 +39,10 @@ if _qt6_lib.exists():
     else:
         os.environ["LD_LIBRARY_PATH"] = str(_qt6_lib) + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
 
+# First-run: install missing platform dependencies (system media controls, etc.)
+from audio_player.bootstrap import ensure_dependencies
+ensure_dependencies()
+
 from audio_player.app import create_app
 from audio_player.main_window import MainWindow
 
