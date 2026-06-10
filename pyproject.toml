@@ -1,0 +1,27 @@
+[project]
+name = "vb-player"
+version = "0.2.0"
+description = "Cross-platform HIFI audio player with PyQt6 + GStreamer"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+dependencies = [
+    "PyQt6>=6.5",
+    "numpy>=1.24",
+    "mutagen>=1.47",
+    # System media controls — platform-specific, auto-selected by pip
+    "pyobjc-framework-MediaPlayer>=10.0; sys_platform == 'darwin'",
+    "winsdk>=1.0.0b9; sys_platform == 'win32'",
+    # PyGObject on Linux is typically installed via apt, not pip
+    # (apt install python3-gi gir1.2-gstreamer-1.0)
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-qt>=4.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyqt6"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
