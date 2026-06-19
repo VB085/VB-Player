@@ -83,7 +83,7 @@ if [ "$MODE" = "onefile" ]; then
         --onefile \
         --name="VB Player" \
         --noconfirm \
-        --console=disable \
+        --noconsole \
         "${HIDDEN_FLAGS[@]}" \
         "${EXTRA_DATAS[@]}" \
         --exclude-module tkinter --exclude-module unittest --exclude-module test \
@@ -97,7 +97,7 @@ else
     $PYTHON -m PyInstaller \
         --name="VB Player" \
         --noconfirm \
-        --console=disable \
+        --noconsole \
         "${HIDDEN_FLAGS[@]}" \
         "${EXTRA_DATAS[@]}" \
         --exclude-module tkinter --exclude-module unittest --exclude-module test \
