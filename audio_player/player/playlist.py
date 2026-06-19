@@ -1,5 +1,5 @@
 from PyQt6.QtCore import (
-    QAbstractListModel, QModelIndex, Qt, pyqtSignal, QThreadPool, QRunnable, QObject
+    QAbstractListModel, QModelIndex, Qt, pyqtSignal, QThread, QObject
 )
 from PyQt6.QtGui import QIcon
 from pathlib import Path
@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import random
 import json
 from enum import IntEnum
+from queue import Queue
 
 from .metadata import read_metadata, TrackMetadata
 
@@ -23,23 +24,38 @@ class RepeatMode(IntEnum):
     One = 2
 
 
-class _MetadataWorker(QRunnable):
-    def __init__(self, model, row, filepath):
-        super().__init__()
-        self.model = model
-        self.row = row
-        self.filepath = filepath
+class _MetaLoader(QThread):
+    """Single persistent thread for metadata loading. Queue-based, no repeated create/destroy."""
+    loaded = pyqtSignal(int, object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._queue: Queue = Queue()
+        self._running = True
+
+    def enqueue(self, row: int, filepath: str):
+        self._queue.put((row, filepath))
+        if not self.isRunning():
+            self.start()
 
     def run(self):
-        try:
-            meta = read_metadata(self.filepath)
-            self.model._metadata_ready(self.row, meta)
-        except Exception as _e:
-            import sys; print(f"[{__name__}] {_e}", file=sys.stderr)
+        while self._running:
+            try:
+                row, filepath = self._queue.get(timeout=1)
+            except Exception:
+                continue  # timeout, check _running
+            if not self._running:
+                break
+            try:
+                meta = read_metadata(filepath)
+            except Exception:
+                meta = TrackMetadata()
+            self.loaded.emit(row, meta)
 
-
-class _MetadataSignalBridge(QObject):
-    ready = pyqtSignal(int, object)
+    def stop(self):
+        self._running = False
+        self._queue.put((-1, ""))  # unblock get()
+        self.wait(3000)
 
 
 class PlaylistManager(QAbstractListModel):
@@ -51,6 +67,7 @@ class PlaylistManager(QAbstractListModel):
     HasCoverRole = Qt.ItemDataRole.UserRole + 6
     MetadataReadyRole = Qt.ItemDataRole.UserRole + 7
     SourceTypeRole = Qt.ItemDataRole.UserRole + 8
+    CoverDataRole = Qt.ItemDataRole.UserRole + 9
 
     currentIndexChanged = pyqtSignal(int)
     metadataLoaded = pyqtSignal(int, object)
@@ -62,20 +79,27 @@ class PlaylistManager(QAbstractListModel):
         self._shuffle = False
         self._repeat = RepeatMode.Off
         self._shuffle_order: list[int] = []
-        self._pool = QThreadPool.globalInstance()
-        self._pool.setMaxThreadCount(4)
-        self._bridge = _MetadataSignalBridge()
-        self._bridge.ready.connect(self._on_metadata_ready)
+        self._loader = _MetaLoader(self)
+        self._loader.loaded.connect(self._on_meta_loaded)
 
-    def _metadata_ready(self, row, meta):
-        self._bridge.ready.emit(row, meta)
+    def track_metadata(self, index: int):
+        """Return cached TrackMetadata for row *index*, or None if not loaded yet."""
+        if 0 <= index < len(self._tracks):
+            return self._tracks[index].get("metadata")
+        return None
 
-    def _on_metadata_ready(self, row, meta):
+    def shutdown(self):
+        """Stop the metadata loader thread cleanly."""
+        self._loader.stop()
+
+    def _on_meta_loaded(self, row: int, meta):
+        """Receive metadata from loader thread, update model."""
         if 0 <= row < len(self._tracks):
             self._tracks[row]["metadata"] = meta
             self._tracks[row]["has_metadata"] = True
             idx = self.index(row, 0)
             self.dataChanged.emit(idx, idx, [])
+            self.metadataLoaded.emit(row, meta)
 
     def refresh_metadata_for(self, filepath: str):
         """Re-read metadata for a single file and update the model."""
@@ -125,6 +149,8 @@ class PlaylistManager(QAbstractListModel):
             return track["path"]
         if role == self.HasCoverRole:
             return bool(meta and meta.cover_data)
+        if role == self.CoverDataRole:
+            return meta.cover_data if meta else None
         if role == self.MetadataReadyRole:
             return track.get("has_metadata", False)
         if role == self.SourceTypeRole:
@@ -144,8 +170,7 @@ class PlaylistManager(QAbstractListModel):
             self.insertRows(start, len(self._tracks) - start, QModelIndex())
             for i in range(start, len(self._tracks)):
                 if self._tracks[i].get("source_type") != "url":
-                    worker = _MetadataWorker(self, i, self._tracks[i]["path"])
-                    self._pool.start(worker)
+                    self._loader.enqueue(i, self._tracks[i]["path"])
 
     def add_url(self, url: str, title: str = None):
         """Add a single stream URL to the playlist."""
@@ -189,8 +214,7 @@ class PlaylistManager(QAbstractListModel):
             self._current_index += 1
 
         if entry["source_type"] != "url":
-            worker = _MetadataWorker(self, pos, filepath)
-            self._pool.start(worker)
+            self._loader.enqueue(pos, filepath)
 
     def add_folder(self, path: str):
         folder = Path(path)
@@ -224,7 +248,15 @@ class PlaylistManager(QAbstractListModel):
     @current_index.setter
     def current_index(self, idx):
         if idx != self._current_index:
+            old = self._current_index
             self._current_index = idx
+            # Repaint old and new rows so playing indicator moves
+            if 0 <= old < len(self._tracks):
+                qi = self.index(old, 0)
+                self.dataChanged.emit(qi, qi, [])
+            if 0 <= idx < len(self._tracks):
+                qi = self.index(idx, 0)
+                self.dataChanged.emit(qi, qi, [])
             self.currentIndexChanged.emit(idx)
 
     @property

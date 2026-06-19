@@ -2,7 +2,34 @@
 import os
 import sys
 import sysconfig
+import traceback
+import signal
+import faulthandler
 from pathlib import Path
+
+# Enable faulthandler for native crash stack traces
+faulthandler.enable()
+
+# Catch SIGABRT — exit cleanly instead of core dump (Qt 6.11 QThread bug)
+def _abort_handler(signum, frame):
+    print("\nSIGABRT caught — exiting cleanly", file=sys.stderr)
+    os._exit(0)
+
+signal.signal(signal.SIGABRT, _abort_handler)
+
+# Global Qt message handler to catch Qt warnings and prevent fatal abort
+def _qt_message_handler(mode, context, message):
+    if mode == QtMsgType.QtFatalMsg:
+        sys.stderr.write(f"\n!!! Qt FATAL — {message}\n")
+        sys.stderr.write(f"    file={context.file!r} line={context.line} func={context.function!r}\n")
+        sys.stderr.flush()
+        traceback.print_stack(file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(0)  # clean exit, prevent Qt's abort() + core dump
+    elif "QThread" in message:
+        print(f"[Qt WARNING] {message}", file=sys.stderr)
+    else:
+        print(f"[Qt:{mode}] {message}", file=sys.stderr)
 
 # If the project .venv exists but we're not running from it, re-exec with venv Python
 _PROJECT_VENV = Path(__file__).resolve().parent / ".venv"
@@ -57,6 +84,15 @@ if _qt6_lib.exists():
 
 
 
+# --- Initialize GStreamer BEFORE Qt (prevents GLib threads being mistaken for QThread) ---
+try:
+    import gi
+    gi.require_version('Gst', '1.0')
+    from gi.repository import Gst
+    Gst.init(None)
+except Exception:
+    pass
+
 # --- Single-instance lock via fcntl (kernel-enforced, survives crashes) ---
 import fcntl
 _LOCK_FILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "vbplayer.lock"
@@ -73,6 +109,10 @@ except BlockingIOError:
 # First-run: install missing platform dependencies (system media controls, etc.)
 from audio_player.bootstrap import ensure_dependencies
 ensure_dependencies()
+
+# Install Qt message handler
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+qInstallMessageHandler(_qt_message_handler)
 
 from audio_player.app import create_app
 from audio_player.main_window import MainWindow

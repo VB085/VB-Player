@@ -22,11 +22,14 @@ _IS_WINDOWS = _PLATFORM == "win32"
 
 # Detect Wayland on Linux
 _IS_WAYLAND = False
+_IS_KDE = False
 if _IS_LINUX:
     _IS_WAYLAND = os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
     if not _IS_WAYLAND:
-        # Also check WAYLAND_DISPLAY
         _IS_WAYLAND = bool(os.environ.get("WAYLAND_DISPLAY"))
+    # Detect KDE Plasma
+    xdg_desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    _IS_KDE = "kde" in xdg_desktop or os.environ.get("KDE_FULL_SESSION", "") == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +74,14 @@ def _build_capabilities() -> CapabilityMatrix:
             supports_app_indicator=not _IS_WAYLAND,
             supports_dbus_notifications=True,
             wayland_csd_fallback=_IS_WAYLAND,
+            supports_acrylic=(_IS_KDE and not _IS_WAYLAND),  # KWin blur on X11
         )
 
 
 def _build_policy(caps: CapabilityMatrix) -> UIBehaviorPolicy:
-    """Build UI behavior policy from capabilities."""
+    """Build UI behavior policy from capabilities, with user overrides from QSettings."""
     if _IS_MACOS:
-        return UIBehaviorPolicy(
+        policy = UIBehaviorPolicy(
             titlebar_style="native",
             material="vibrancy",
             font_family="SF Pro Display",
@@ -88,7 +92,7 @@ def _build_policy(caps: CapabilityMatrix) -> UIBehaviorPolicy:
             recommended_audio_sink="osxaudiosink",
         )
     elif _IS_WINDOWS:
-        return UIBehaviorPolicy(
+        policy = UIBehaviorPolicy(
             titlebar_style="frameless",
             material="mica",
             font_family="Segoe UI Variable",
@@ -99,14 +103,32 @@ def _build_policy(caps: CapabilityMatrix) -> UIBehaviorPolicy:
             recommended_audio_sink="wasapi2sink",
         )
     else:  # Linux
-        return UIBehaviorPolicy(
+        policy = UIBehaviorPolicy(
             titlebar_style="csd" if _IS_WAYLAND else "frameless",
+            material="acrylic" if caps.supports_acrylic else "glass",
             font_family="sans-serif",
             font_size=10,
             tray_backend="appindicator" if not _IS_WAYLAND else "qsystemtray",
             notification_backend="dbus",
             recommended_audio_sink="pipewiresink" if _IS_WAYLAND else "pulsesink",
         )
+
+    # ── QSettings user overrides (empty / "auto" = no override) ──
+    from PyQt6.QtCore import QSettings
+    s = QSettings("VBPlayer", "VB Player")
+    user_titlebar = str(s.value("window_titlebar", "") or "").strip()
+    user_material = str(s.value("window_material", "") or "").strip()
+
+    if user_titlebar and user_titlebar != "auto":
+        policy.titlebar_style = user_titlebar
+    if user_material and user_material != "auto":
+        # Safety: acrylic needs X11; fall back to glass on Wayland
+        if user_material == "acrylic" and not caps.supports_acrylic:
+            policy.material = "glass"
+        else:
+            policy.material = user_material
+
+    return policy
 
 
 _caps = _build_capabilities()

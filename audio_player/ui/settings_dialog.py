@@ -5,9 +5,9 @@ from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QGroupBox, QFormLayout,
                              QListWidget, QListWidgetItem, QScrollArea,
                              QSpinBox, QAbstractItemView, QGridLayout, QFrame,
-                             QLineEdit)
-from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QRectF, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPalette, QRegion, QPixmap
+                             QLineEdit, QFileDialog)
+from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QRectF, QTimer, QBuffer, QByteArray
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPalette, QRegion, QPixmap, QIcon
 
 from audio_player.ui.widgets.equalizer_widget import EqualizerWidget
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
@@ -186,6 +186,9 @@ class SettingsDialog(*_SettingsBase):
     onlineLyricsToggled = pyqtSignal(bool)
     autoSaveLyricsToggled = pyqtSignal(bool)
     showTranslationToggled = pyqtSignal(bool)
+    titlebarChanged = pyqtSignal(str)
+    materialChanged = pyqtSignal(str)
+    dynamicAccentToggled = pyqtSignal(bool)
 
     THEME_MODES = {"dark": "深色 (Dark)", "light": "浅色 (Light)"}
     ACCENTS = {
@@ -216,6 +219,9 @@ class SettingsDialog(*_SettingsBase):
         self._settings = QSettings("VBPlayer", "VB Player")
         self._setup_ui()
         self._load_settings()
+        # Connect signals AFTER loading saved values to avoid overwriting QSettings on init
+        self._titlebar_combo.currentIndexChanged.connect(self._on_titlebar_changed)
+        self._material_combo.currentIndexChanged.connect(self._on_material_changed)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -292,8 +298,9 @@ class SettingsDialog(*_SettingsBase):
         self._nav_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._refresh_nav_style()
-        self._nav_labels = ["settings.general", "settings.appearance", "settings.lyrics_tab",
-                           "settings.playback", "settings.advanced", "settings.about"]
+        self._nav_labels = ["settings.general", "settings.account", "settings.appearance",
+                           "settings.lyrics_tab", "settings.playback",
+                           "settings.advanced", "settings.about"]
         for key in self._nav_labels:
             item = QListWidgetItem(_(key))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -303,6 +310,7 @@ class SettingsDialog(*_SettingsBase):
         # Right stacked pages
         self._pages = AnimatedStackedWidget()
         self._pages.addWidget(self._build_general_tab())
+        self._pages.addWidget(self._build_account_tab())
         self._pages.addWidget(self._build_appearance_tab())
         self._pages.addWidget(self._build_lyrics_tab())
         self._pages.addWidget(self._build_playback_tab())
@@ -368,6 +376,8 @@ class SettingsDialog(*_SettingsBase):
                 item.setText(_(key))
         # Tab group boxes
         self._lang_group.setTitle(_("settings.language"))
+        if hasattr(self, '_avatar_hint'):
+            self._avatar_hint.setText(_("settings.avatar_hint"))
         if hasattr(self, '_theme_group'):
             self._theme_group.setTitle(_("settings.theme"))
         if hasattr(self, '_accent_group'):
@@ -390,6 +400,13 @@ class SettingsDialog(*_SettingsBase):
         self._test_conn_btn.setText(_("settings.test_connection"))
         self._cover_group.setTitle(_("settings.album_cover"))
         self._cover_cb.setText(_("settings.cover_radius"))
+        if hasattr(self, '_dynamic_group'):
+            self._dynamic_group.setTitle(_("settings.dynamic_accent"))
+            self._dynamic_cb.setText(_("settings.dynamic_accent_enable"))
+        if hasattr(self, '_titlebar_group'):
+            self._titlebar_group.setTitle(_("settings.titlebar_style"))
+        if hasattr(self, '_material_group'):
+            self._material_group.setTitle(_("settings.material_effect"))
         self._viz_group.setTitle(_("settings.visualization"))
         self._viz_combo.clear()
         for label in [_("viz.bars"), _("viz.line"), _("viz.circular")]:
@@ -417,6 +434,113 @@ class SettingsDialog(*_SettingsBase):
         # Drag bar
         self._drag_label.setText(_("settings.window_title"))
         self._refresh_about_labels()
+
+    def _build_account_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        # Avatar
+        avatar_group = QGroupBox(_("settings.avatar"))
+        avatar_layout = QVBoxLayout(avatar_group)
+        avatar_row = QHBoxLayout()
+        avatar_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._avatar_btn = QPushButton()
+        self._avatar_btn.setFixedSize(96, 96)
+        self._avatar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._avatar_btn.clicked.connect(self._pick_avatar)
+        self._avatar_btn.setStyleSheet(
+            "QPushButton{background:transparent;border:2px dashed #444;border-radius:48px;}"
+            "QPushButton:hover{border-color:#888;}"
+        )
+        avatar_row.addWidget(self._avatar_btn)
+        avatar_layout.addLayout(avatar_row)
+
+        self._avatar_hint = QLabel(_("settings.avatar_hint"))
+        self._avatar_hint.setObjectName("subLabel")
+        self._avatar_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar_layout.addWidget(self._avatar_hint)
+        layout.addWidget(avatar_group)
+
+        # Username
+        name_group = QGroupBox(_("settings.username"))
+        name_layout = QVBoxLayout(name_group)
+        self._username_input = QLineEdit()
+        self._username_input.setPlaceholderText(_("settings.username_placeholder"))
+        self._username_input.textChanged.connect(self._on_username_changed)
+        name_layout.addWidget(self._username_input)
+        layout.addWidget(name_group)
+
+        # Stats
+        stats_group = QGroupBox(_("settings.stats"))
+        stats_layout = QFormLayout(stats_group)
+        stats_layout.setSpacing(8)
+        self._stat_tracks = QLabel("0")
+        self._stat_albums = QLabel("0")
+        self._stat_playlists = QLabel("0")
+        stats_layout.addRow(_("settings.stat_tracks"), self._stat_tracks)
+        stats_layout.addRow(_("settings.stat_albums"), self._stat_albums)
+        stats_layout.addRow(_("settings.stat_playlists"), self._stat_playlists)
+        layout.addWidget(stats_group)
+
+        layout.addStretch()
+        scroll.setWidget(w)
+        return scroll
+
+    def _pick_avatar(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, _("settings.avatar_pick"), "",
+            _("settings.avatar_filter")
+        )
+        if path:
+            pix = QPixmap(path)
+            if not pix.isNull():
+                self._avatar_pixmap = pix
+                self._apply_avatar()
+                # Save to QSettings as base64
+                import base64
+                ba = QByteArray()
+                buf = QBuffer(ba)
+                buf.open(QBuffer.OpenModeFlag.WriteOnly)
+                pix.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation).save(buf, "PNG")
+                self._settings.setValue("account_avatar", base64.b64encode(ba.data()).decode())
+
+    def _apply_avatar(self):
+        if hasattr(self, '_avatar_pixmap') and not self._avatar_pixmap.isNull():
+            scaled = self._avatar_pixmap.scaled(88, 88,
+                                                Qt.AspectRatioMode.KeepAspectRatio,
+                                                Qt.TransformationMode.SmoothTransformation)
+            icon = QIcon(scaled)
+            self._avatar_btn.setIcon(icon)
+            self._avatar_btn.setIconSize(scaled.size())
+            self._avatar_btn.setStyleSheet(
+                "QPushButton{background:transparent;border:2px solid #444;border-radius:48px;}"
+                "QPushButton:hover{border-color:#888;}"
+            )
+
+    def _on_username_changed(self, text: str):
+        self._settings.setValue("account_username", text.strip())
+        self._refresh_drag_label()
+
+    def _refresh_drag_label(self):
+        name = str(self._settings.value("account_username", "") or "")
+        if name:
+            self._drag_label.setText(f"VB Player — {name}")
+        else:
+            self._drag_label.setText(_("settings.window_title"))
+
+    def set_account_stats(self, tracks: int, albums: int, playlists: int):
+        self._stat_tracks.setText(str(tracks))
+        self._stat_albums.setText(str(albums))
+        self._stat_playlists.setText(str(playlists))
 
     def _build_appearance_tab(self) -> QWidget:
         scroll = QScrollArea()
@@ -489,6 +613,65 @@ class SettingsDialog(*_SettingsBase):
         self._cover_cb.toggled.connect(self.albumCoverRadiusToggled)
         cover_layout.addWidget(self._cover_cb)
         layout.addWidget(self._cover_group)
+
+        # Dynamic accent from album art
+        self._dynamic_group = QGroupBox(_("settings.dynamic_accent"))
+        dyn_layout = QVBoxLayout(self._dynamic_group)
+        self._dynamic_cb = QCheckBox(_("settings.dynamic_accent_enable"))
+        self._dynamic_cb.setChecked(True)
+        self._dynamic_cb.toggled.connect(self._on_dynamic_accent_toggled)
+        dyn_layout.addWidget(self._dynamic_cb)
+        layout.addWidget(self._dynamic_group)
+
+        # ── Titlebar style (requires restart) ──
+        self._titlebar_group = QGroupBox(_("settings.titlebar_style"))
+        tb_layout = QVBoxLayout(self._titlebar_group)
+        self._titlebar_combo = _NoWheelComboBox()
+        self._titlebar_combo.addItem(_("settings.titlebar_auto"), "auto")
+        self._titlebar_combo.addItem(_("settings.titlebar_frameless"), "frameless")
+        self._titlebar_combo.addItem(_("settings.titlebar_csd"), "csd")
+        self._titlebar_combo.addItem(_("settings.titlebar_native"), "native")
+        tb_layout.addWidget(self._titlebar_combo)
+        self._titlebar_note = QLabel(_("settings.titlebar_restart_note"))
+        self._titlebar_note.setObjectName("subLabel")
+        tb_layout.addWidget(self._titlebar_note)
+        layout.addWidget(self._titlebar_group)
+
+        # ── Material effect (live preview) ──
+        self._material_group = QGroupBox(_("settings.material_effect"))
+        mat_layout = QVBoxLayout(self._material_group)
+        self._material_combo = _NoWheelComboBox()
+        self._material_combo.addItem(_("settings.material_auto"), "auto")
+        self._material_combo.addItem(_("settings.material_acrylic"), "acrylic")
+        self._material_combo.addItem(_("settings.material_glass"), "glass")
+        self._material_combo.addItem(_("settings.material_none"), "none")
+        mat_layout.addWidget(self._material_combo)
+        self._material_note = QLabel(_("settings.material_desc"))
+        self._material_note.setObjectName("subLabel")
+        mat_layout.addWidget(self._material_note)
+
+        # Opacity slider (applies to glass & acrylic)
+        mat_layout.addSpacing(8)
+        self._opacity_label = QLabel(_("settings.material_opacity"))
+        mat_layout.addWidget(self._opacity_label)
+        self._opacity_slider = _NoWheelSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider.setRange(70, 100)
+        self._opacity_slider.setValue(84)
+        self._opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        self._opacity_slider.sliderReleased.connect(self._emit_material_live)
+        mat_layout.addWidget(self._opacity_slider)
+
+        # Texture slider (acrylic only)
+        self._texture_label = QLabel(_("settings.material_texture"))
+        mat_layout.addWidget(self._texture_label)
+        self._texture_slider = _NoWheelSlider(Qt.Orientation.Horizontal)
+        self._texture_slider.setRange(0, 30)
+        self._texture_slider.setValue(10)
+        self._texture_slider.valueChanged.connect(self._on_texture_changed)
+        self._texture_slider.sliderReleased.connect(self._emit_material_live)
+        mat_layout.addWidget(self._texture_slider)
+
+        layout.addWidget(self._material_group)
 
         layout.addStretch()
         scroll.setWidget(w)
@@ -940,6 +1123,28 @@ class SettingsDialog(*_SettingsBase):
         self.eqResetRequested.emit()
 
     def _load_settings(self):
+        # Block signals during bulk load to prevent spurious save-on-init
+        self._titlebar_combo.blockSignals(True)
+        self._material_combo.blockSignals(True)
+        self._mode_combo.blockSignals(True)
+
+        # Account
+        avatar_b64 = str(self._settings.value("account_avatar", "") or "")
+        if avatar_b64:
+            try:
+                data = base64.b64decode(avatar_b64)
+                pix = QPixmap()
+                pix.loadFromData(data)
+                if not pix.isNull():
+                    self._avatar_pixmap = pix
+                    self._apply_avatar()
+            except Exception:
+                pass
+        username = str(self._settings.value("account_username", "") or "")
+        if username:
+            self._username_input.setText(username)
+            self._refresh_drag_label()
+
         mode = str(self._settings.value("theme_mode", "dark") or "dark")
         idx = self._mode_combo.findData(mode)
         if idx >= 0:
@@ -970,6 +1175,33 @@ class SettingsDialog(*_SettingsBase):
 
         ui_r = int(self._settings.value("ui_radius", 12) or 12)
         self._ui_radius_spin.setValue(ui_r)
+
+        # Titlebar style
+        titlebar = str(self._settings.value("window_titlebar", "auto") or "auto")
+        idx = self._titlebar_combo.findData(titlebar)
+        if idx >= 0:
+            self._titlebar_combo.setCurrentIndex(idx)
+
+        # Dynamic accent
+        dyn = str(self._settings.value("dynamic_accent_enabled", "true")).lower() == "true"
+        self._dynamic_cb.setChecked(dyn)
+
+        # Material effect
+        material = str(self._settings.value("window_material", "auto") or "auto")
+        idx = self._material_combo.findData(material)
+        if idx >= 0:
+            self._material_combo.setCurrentIndex(idx)
+        self._update_texture_visibility()
+
+        # Opacity (percentage 70-100, material defaults used when unset)
+        alpha = int(self._settings.value("material_alpha", 84) or 84)
+        self._opacity_slider.setValue(alpha)
+        self._opacity_label.setText(_("settings.material_opacity_value", pct=alpha))
+
+        # Texture (percentage 0-30, acrylic only)
+        tex = int(self._settings.value("material_texture", 10) or 10)
+        self._texture_slider.setValue(tex)
+        self._texture_label.setText(_("settings.material_texture_value", pct=tex))
 
         lh = int(self._settings.value("lyrics_line_height", 40) or 40)
         self._lyrics_overlay_height_spin.setValue(lh)
@@ -1027,6 +1259,11 @@ class SettingsDialog(*_SettingsBase):
         dsd_idx = self._dsd_combo.findData(dsd_mode)
         if dsd_idx >= 0:
             self._dsd_combo.setCurrentIndex(dsd_idx)
+
+        # Re-enable signals after bulk load
+        self._titlebar_combo.blockSignals(False)
+        self._material_combo.blockSignals(False)
+        self._mode_combo.blockSignals(False)
 
         self._refresh_theme()
 
@@ -1144,6 +1381,40 @@ class SettingsDialog(*_SettingsBase):
         accent = self._current_accent_name()
         self.themeChanged.emit(mode, accent)
         self._refresh_theme()
+
+    def _on_titlebar_changed(self):
+        val = self._titlebar_combo.currentData()
+        self._settings.setValue("window_titlebar", val)
+        self.titlebarChanged.emit(val)
+
+    def _on_dynamic_accent_toggled(self, checked: bool):
+        self._settings.setValue("dynamic_accent_enabled", checked)
+        self.dynamicAccentToggled.emit(checked)
+
+    def _on_material_changed(self):
+        val = self._material_combo.currentData()
+        self._settings.setValue("window_material", val)
+        self._update_texture_visibility()
+        self.materialChanged.emit(val)
+
+    def _on_opacity_changed(self, val: int):
+        self._settings.setValue("material_alpha", val)
+        self._opacity_label.setText(_("settings.material_opacity_value", pct=val))
+
+    def _on_texture_changed(self, val: int):
+        self._settings.setValue("material_texture", val)
+        self._texture_label.setText(_("settings.material_texture_value", pct=val))
+
+    def _emit_material_live(self):
+        """Trigger live repaint after slider drag ends."""
+        self.materialChanged.emit(self._material_combo.currentData())
+
+    def _update_texture_visibility(self):
+        """Show texture slider only for acrylic mode."""
+        mat = self._material_combo.currentData()
+        visible = mat == "acrylic"
+        self._texture_label.setVisible(visible)
+        self._texture_slider.setVisible(visible)
 
     def _current_accent_name(self) -> str:
         for name, sw in self._accent_swatches.items():

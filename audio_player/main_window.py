@@ -15,7 +15,7 @@ from PyQt6.QtGui import (QKeySequence, QShortcut, QFont,
                          QPainterPath, QPainter, QPen, QBrush, QPalette,
                          QAction, QIcon)
 
-from audio_player.app import current_accent, current_theme_mode
+from audio_player.app import current_accent, current_theme_mode, on_anim_tick
 from audio_player.player.engine import AudioEngine
 from audio_player.player.playlist import PlaylistManager
 from audio_player.player.metadata import read_metadata, write_tags
@@ -67,7 +67,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         # Platform-aware window flags: use CSD on Wayland, frameless elsewhere
         if platform_info.policy.titlebar_style == "csd":
-            # Wayland: keep native decorations, no translucent background
             self._use_csd = True
             self._use_frameless = False
         elif platform_info.policy.titlebar_style == "native":
@@ -76,12 +75,23 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         else:
             self._use_csd = False
             self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self._use_frameless = True
 
         self.setAcceptDrops(True)
 
         self._border_radius = 12
+        self._material = platform_info.policy.material  # "acrylic" | "glass" | "vibrancy" | etc
+        self._blur_enabler = None
+        self._noise_pixmap = None  # cached noise texture for acrylic
+
+        # Enable translucent background if material needs it (works on all compositors)
+        self._use_translucent = self._material in ("glass", "acrylic")
+        if self._use_translucent:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        # KDE KWin true blur (X11 only)
+        if self._material == "acrylic":
+            self._init_blur()
         self._ui_radius = 12
         self._mask_dirty = True
         self._engine = AudioEngine(self)
@@ -334,6 +344,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         # ===== Bottom now-playing bar =====
         root.addWidget(self._now_playing_bar)
+
+        # Register inline-styled widgets to refresh during accent animation
+        on_anim_tick(lambda c: self._now_playing_bar.refresh_accent())
+        on_anim_tick(lambda c: self._sidebar.refresh_accent())
+        on_anim_tick(lambda c: self._refresh_manage_accent())
 
     def _build_manage_page(self) -> QWidget:
         from audio_player.app import current_accent as _accent, current_theme_mode
@@ -653,6 +668,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._lyrics_fetcher.cleanup()
         if self._system_media:
             self._system_media.cleanup()
+        if self._blur_enabler:
+            self._blur_enabler.cleanup()
+        for pl in [self._playlist, self._fav_playlist, self._pls_playlist]:
+            if hasattr(pl, 'shutdown'):
+                pl.shutdown()
         self._tray_mgr.hide_tray()
         QApplication.quit()
 
@@ -751,6 +771,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._settings_ctrl.themeChanged.connect(self._on_theme_changed_ui)
         self._settings_ctrl.accentChanged.connect(self._refresh_accent_colors)
         self._settings_ctrl.logMessage.connect(self._log_message)
+        self._settings_ctrl.materialChanged.connect(self._on_material_changed)
         self._settings_ctrl.coverRadiusChanged.connect(self._refresh_covers)
         # Widget control signals (replacing direct widget refs)
         self._settings_ctrl.vizModeChanged.connect(self._spectrum.set_mode)
@@ -905,7 +926,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._lyrics_fetcher.cleanup()
         if self._system_media:
             self._system_media.cleanup()
+        if self._blur_enabler:
+            self._blur_enabler.cleanup()
         self._tray_mgr.hide_tray()
+        # Drain metadata worker pools before Qt destroys them
+        for pl in [self._playlist, self._fav_playlist, self._pls_playlist]:
+            if hasattr(pl, 'shutdown'):
+                pl.shutdown()
         super().closeEvent(event)
 
     def _save_playback_state(self):
@@ -1128,7 +1155,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _on_track_loaded_ui(self, filepath):
         """Called when playback controller loads a new track — update UI."""
-        meta = read_metadata(filepath)
+        # Use already-loaded metadata from playlist model (avoids thread-unsafe
+        # read_metadata call on main thread while workers are also reading files)
+        meta = self._playlist.track_metadata(self._playlist.current_index)
+        if meta is None:
+            meta = read_metadata(filepath)
         self._metadata_panel.show_metadata(meta, filepath)
         title = meta.title or os.path.basename(filepath)
         artist = meta.artist or ""
@@ -1386,7 +1417,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._pls_grid_view.refresh_theme_mode(is_light)
         if hasattr(self, '_pls_detail_page'):
             self._pls_detail_page.refresh_theme_mode(is_light)
-        self._refresh_panel_toggle_style()
         self._refresh_accent_colors()
         accent = current_accent()
         if hasattr(self, '_new_pls_btn'):
@@ -1395,6 +1425,38 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 f"border-radius:5px;padding:5px 12px;font-size:11px;}}"
                 f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
             )
+
+    def _init_blur(self):
+        """Set up KWin blur if on KDE X11."""
+        from audio_player.platform.linux.blur import KWinBlurEnabler
+        self._blur_enabler = KWinBlurEnabler(self)
+        self._blur_enabler.enable()
+
+    def _on_material_changed(self, val: str):
+        """Live update window material — resolve 'auto' to platform default."""
+        from audio_player.platform import platform_info
+        if val and val != "auto":
+            self._material = val
+        else:
+            self._material = platform_info.policy.material
+
+        # Toggle translucent background
+        want_translucent = self._material in ("glass", "acrylic")
+        if want_translucent != self._use_translucent:
+            self._use_translucent = want_translucent
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, want_translucent)
+            # Force window surface recreation
+            if not self.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) and want_translucent:
+                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        # Enable/disable KWin blur
+        if self._blur_enabler:
+            if self._material == "acrylic":
+                self._blur_enabler.enable()
+            else:
+                self._blur_enabler.disable()
+
+        self.update()
 
     def _refresh_accent_colors(self):
         """Re-apply inline accent-dependent styles across all widgets."""
@@ -1434,7 +1496,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if hasattr(self, '_pls_detail_page'):
             self._pls_detail_page.refresh_language()
         self._metadata_panel.refresh_accent()
-        self._output_spec_bar.refresh_accent()
+        if hasattr(self, '_output_spec_bar') and self._output_spec_bar is not None:
+            self._output_spec_bar.refresh_accent()
         self._waveform.update()
         self._spectrum.update()
         self._playlist_view.viewport().update()
@@ -1474,40 +1537,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         visible = self._spectrum.toggle_lyrics()
         self._log_message(_("log.lyrics_on") if visible else _("log.lyrics_off"))
 
-    def _toggle_right_panel(self):
-        self._panel_collapsed = not self._panel_collapsed
-        if self._panel_collapsed:
-            self._panel_stack.setCurrentIndex(1)
-            self._panel_toggle_btn.setIcon(_icon(PANEL_EXPAND, color="#94a3b8"))
-            self._panel_toggle_btn.setToolTip(_("panel.expand"))
-        else:
-            self._panel_stack.setCurrentIndex(0)
-            self._panel_toggle_btn.setIcon(_icon(PANEL_COLLAPSE, color="#94a3b8"))
-            self._panel_toggle_btn.setToolTip(_("panel.collapse"))
-
-    def _update_panel_toggle_pos(self):
-        """Position toggle button at top-left of center panel, avoiding lyrics overlay buttons."""
-        btn = self._panel_toggle_btn
-        parent = btn.parent()
-        if parent:
-            btn.move(6, 6)
-
-    def _refresh_panel_toggle_style(self):
-        is_light = current_theme_mode() == "light"
-        if is_light:
-            self._panel_toggle_btn.setStyleSheet(
-                "QPushButton#panelToggleBtn{background:rgba(0,0,0,0.05);border:none;"
-                "border-radius:14px;}"
-                "QPushButton#panelToggleBtn:hover{background:rgba(0,0,0,0.10);}"
-            )
-        else:
-            self._panel_toggle_btn.setStyleSheet(
-                "QPushButton#panelToggleBtn{background:rgba(255,255,255,0.08);border:none;"
-                "border-radius:14px;}"
-                "QPushButton#panelToggleBtn:hover{background:rgba(255,255,255,0.15);}"
-            )
-
-
     # ================================================================
     #  Border Radius
     # ================================================================
@@ -1527,10 +1556,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._mask_dirty = True
+        if self._blur_enabler:
+            self._blur_enabler.update_rect()
 
     def showEvent(self, event):
         super().showEvent(event)
         self._mask_dirty = True
+        # Blur must be applied after window is mapped; enable() is idempotent
+        if self._blur_enabler:
+            self._blur_enabler.enable()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -1557,20 +1591,113 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         else:
             self.clearMask()
 
+    def _material_alpha(self) -> int:
+        """Read user-configured alpha (0-255 scale) from QSettings percentage (70-100)."""
+        s = QSettings("VBPlayer", "VB Player")
+        user_val = s.value("material_alpha")
+        if user_val is not None:
+            pct = int(user_val)
+            return int(pct * 255 / 100)
+        # Defaults (percentage)
+        if self._material == "acrylic":
+            return int(92 * 255 / 100)  # 92%
+        return int(84 * 255 / 100)  # 84%
+
+    def _material_texture_opacity(self) -> float:
+        """Read user-configured texture strength from QSettings."""
+        if self._material != "acrylic":
+            return 0.0
+        s = QSettings("VBPlayer", "VB Player")
+        user_val = s.value("material_texture")
+        if user_val is not None:
+            return int(user_val) / 100.0
+        return 0.10
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._use_frameless and self._border_radius > 0 and not self.isMaximized() and not self.isFullScreen():
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(self.rect()), self._border_radius, self._border_radius)
-            painter.fillPath(path, self.palette().color(QPalette.ColorRole.Window))
-        else:
-            painter.fillRect(self.rect(), self.palette().color(QPalette.ColorRole.Window))
+        w, h = self.width(), self.height()
+        base = self.palette().color(QPalette.ColorRole.Window)
+        frameless_rounded = (self._use_frameless and self._border_radius > 0
+                             and not self.isMaximized() and not self.isFullScreen())
+
+        # Clip path for rounded corners (used by all layers)
+        if frameless_rounded:
+            clip_path = QPainterPath()
+            clip_path.addRoundedRect(QRectF(self.rect()), self._border_radius, self._border_radius)
+            painter.setClipPath(clip_path)
+
+        # Layer 1 — base fill
+        if self._use_translucent and self._material in ("glass", "acrylic"):
+            alpha = self._material_alpha()
+            base = QColor(base.red(), base.green(), base.blue(), alpha)
+        painter.fillRect(self.rect(), base)
+
+        # Layer 2 — acrylic/mica depth gradient (simulates light scattering)
+        if self._material == "acrylic" and self._use_translucent:
+            accent = current_accent()
+            is_light = current_theme_mode() == "light"
+
+            # Radial gradient: lighter at top-left, fades to transparent
+            gradient = self._acrylic_gradient(w, h, accent, is_light)
+            if gradient is not None:
+                painter.setOpacity(0.12)
+                painter.fillRect(self.rect(), gradient)
+
+            # Accent color wash — very subtle tint
+            tint = QColor(accent.red(), accent.green(), accent.blue(), 12)
+            painter.setOpacity(1.0)
+            painter.fillRect(self.rect(), tint)
+
+            # Noise grain — soft-light blend for natural frosted texture
+            tex_opacity = self._material_texture_opacity()
+            if tex_opacity > 0:
+                if self._noise_pixmap is None or self._noise_pixmap.width() < w or \
+                   self._noise_pixmap.height() < h:
+                    self._noise_pixmap = self._generate_noise(w, h)
+                painter.save()
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SoftLight)
+                painter.setOpacity(tex_opacity)
+                painter.drawPixmap(0, 0, self._noise_pixmap)
+                painter.restore()
+
+        painter.setClipping(False)
         painter.end()
         # Apply mask after painting — guarded by _mask_dirty to prevent recursion
         if self._mask_dirty:
             self._mask_dirty = False
             self._apply_mask()
+
+    def _acrylic_gradient(self, w: int, h: int, accent: QColor, is_light: bool):
+        """Radial gradient from top-left simulating frosted glass light scatter."""
+        from PyQt6.QtGui import QRadialGradient
+        grad = QRadialGradient(w * 0.2, h * 0.15, max(w, h) * 0.7)
+        if is_light:
+            # Light theme: subtle darker edges
+            grad.setColorAt(0.0, QColor(255, 255, 255, 40))
+            grad.setColorAt(0.6, QColor(255, 255, 255, 10))
+            grad.setColorAt(1.0, QColor(0, 0, 0, 25))
+        else:
+            # Dark theme: subtle lighter center, darker edges
+            grad.setColorAt(0.0, QColor(255, 255, 255, 35))
+            grad.setColorAt(0.5, QColor(255, 255, 255, 8))
+            grad.setColorAt(1.0, QColor(0, 0, 0, 50))
+        return grad
+
+    def _generate_noise(self, w: int, h: int):
+        """Fine native-resolution grain for SoftLight blending.
+
+        Full 0–255 range for maximum entropy (no banding),
+        centered on 128 (SoftLight neutral). Opacity controls strength.
+        """
+        import numpy as np
+        from PyQt6.QtGui import QImage
+
+        rng = np.random.default_rng(42)
+        noise = rng.integers(0, 256, (h, w), dtype=np.uint8)
+        data = noise.tobytes()
+        img = QImage(data, w, h, w, QImage.Format.Format_Grayscale8)
+        return QPixmap.fromImage(img)
 
     # ================================================================
     #  Drag & Drop on MainWindow

@@ -85,13 +85,15 @@ class PlaybackController(QObject):
 
     def _on_track_changed(self, filepath):
         is_url = filepath.startswith(("http://", "https://", "smb://"))
+        # Use cached metadata from playlist to avoid thread-unsafe read_metadata
+        meta = self._playlist.track_metadata(self._playlist.current_index)
+        if meta is None:
+            meta = read_metadata(filepath)
         if is_url:
             from urllib.parse import urlparse
-            meta = read_metadata(filepath)
             title = meta.title or urlparse(filepath).hostname or filepath
             artist = meta.artist or ""
         else:
-            meta = read_metadata(filepath)
             title = meta.title or os.path.basename(filepath)
             artist = meta.artist or ""
         if artist:

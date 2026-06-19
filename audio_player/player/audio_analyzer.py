@@ -13,8 +13,8 @@ class LyricsLine:
 class _DecoderWorker(QThread):
     finished = pyqtSignal(object, object, object)  # waveform, spectrum, lyrics
 
-    def __init__(self, filepath: str, bins: int = 64, snapshots_per_sec: int = 30):
-        super().__init__()
+    def __init__(self, filepath: str, parent=None, bins: int = 64, snapshots_per_sec: int = 30):
+        super().__init__(parent)
         self._filepath = filepath
         self._bins = bins
         self._snapshots_per_sec = snapshots_per_sec
@@ -270,23 +270,24 @@ class AudioAnalyzer(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker: _DecoderWorker | None = None
+        self._request_id = 0
 
     def analyze(self, filepath: str):
         self._cancel()
-        # Skip analysis for network streams (no fixed duration, can't decode locally)
         if filepath.startswith(("http://", "https://", "smb://")):
             return
-        self._worker = _DecoderWorker(filepath)
-        self._worker.finished.connect(self._on_finished)
+        req_id = self._request_id
+        self._worker = _DecoderWorker(filepath, parent=self)
+        self._worker.finished.connect(lambda *args: self._on_finished(req_id, *args))
         self._worker.start()
 
     def _cancel(self):
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.finished.disconnect()
-            self._worker.quit()
-            self._worker.wait(1000)
+        """Mark current worker as stale — its results will be ignored."""
+        self._request_id += 1
 
-    def _on_finished(self, waveform, spectrum, lyrics):
+    def _on_finished(self, req_id: int, waveform, spectrum, lyrics):
+        if req_id != self._request_id:
+            return  # stale result, ignore
         if waveform is not None:
             self.waveformReady.emit(waveform)
         if spectrum is not None:

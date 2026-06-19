@@ -29,8 +29,8 @@ class LyricsFetchWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, providers: list[LyricsProvider], title: str,
-                 artist: str, duration_sec: float, timeout: float = 10.0):
-        super().__init__()
+                 artist: str, duration_sec: float, timeout: float = 10.0, parent=None):
+        super().__init__(parent)
         self._providers = providers
         self._title = title
         self._artist = artist
@@ -108,7 +108,7 @@ class LyricsFetcher(QObject):
         self._current_title = title
         self._set_state(LyricsState.LOADING)
         self._worker = LyricsFetchWorker(
-            self._providers, title, artist, duration_sec,
+            self._providers, title, artist, duration_sec, parent=self,
         )
         self._worker.finished.connect(lambda r: self._on_finished(r, req_id))
         self._worker.error.connect(self._on_error)
@@ -161,20 +161,21 @@ class LyricsFetcher(QObject):
             self._worker = None
 
     def _cancel_worker(self) -> None:
-        if self._worker and self._worker.isRunning():
-            try:
-                self._worker.finished.disconnect()
-                self._worker.error.disconnect()
-            except TypeError:
-                pass
-            self._worker.quit()
-            self._worker.wait(1000)
-            self._worker.deleteLater()
-            self._worker = None
+        if self._worker:
+            if self._worker.isRunning():
+                try:
+                    self._worker.finished.disconnect()
+                    self._worker.error.disconnect()
+                except TypeError:
+                    pass
+                self._worker.quit()
+            # Don't null — let caller overwrite; deleteLater handles cleanup
 
     def _cleanup_worker(self) -> None:
         if self._worker:
-            self._worker.deleteLater()
+            if self._worker.isRunning():
+                self._worker.quit()
+                self._worker.wait(3000)
             self._worker = None
 
     def cache_result(self, artist: str, title: str,

@@ -253,7 +253,9 @@ class LibraryManager(QObject):
         worker.start()
 
     def _on_scan_finished(self, paths: list[str]):
-        self._scan_worker = None
+        if self._scan_worker:
+            self._scan_worker.deleteLater()
+            self._scan_worker = None
         self.scanFinished.emit(paths)
 
     # ---- Album Cache ----

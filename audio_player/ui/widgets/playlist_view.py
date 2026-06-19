@@ -2,9 +2,15 @@ from typing import Callable
 from PyQt6.QtWidgets import (QListView, QStyledItemDelegate, QStyle,
                              QAbstractItemView, QMenu)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QModelIndex, QSortFilterProxyModel
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QAction
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QAction, QPixmap, QPainterPath
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
+
+# Per-delegate thumbnail cache: filepath → (cover_data_hash, QPixmap)
+_cover_cache: dict[str, tuple[int, QPixmap]] = {}
+
+THUMB_SIZE = 40
+THUMB_RADIUS = 6
 
 
 def _source_model(model):
@@ -21,8 +27,46 @@ def _source_row(model, proxy_index):
     return proxy_index.row()
 
 
+def _thumbnail(src, index: QModelIndex, filepath: str) -> QPixmap | None:
+    """Return cached 28×28 rounded cover thumbnail, or generate and cache."""
+    cover_data = index.data(src.CoverDataRole) if src else None
+    if not cover_data:
+        return None
+    # Use filepath as cache key; bust if cover_data changes
+    h = hash(cover_data)
+    if filepath in _cover_cache:
+        old_h, pix = _cover_cache[filepath]
+        if old_h == h:
+            return pix
+    pix = QPixmap()
+    pix.loadFromData(cover_data)
+    if pix.isNull():
+        return None
+    scaled = pix.scaled(THUMB_SIZE, THUMB_SIZE,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
+    # Make rounded
+    rounded = QPixmap(THUMB_SIZE, THUMB_SIZE)
+    rounded.fill(Qt.GlobalColor.transparent)
+    pp = QPainter(rounded)
+    pp.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(0, 0, THUMB_SIZE, THUMB_SIZE, THUMB_RADIUS, THUMB_RADIUS)
+    pp.setClipPath(path)
+    pp.drawPixmap((THUMB_SIZE - scaled.width()) // 2,
+                  (THUMB_SIZE - scaled.height()) // 2, scaled)
+    pp.end()
+    _cover_cache[filepath] = (h, rounded)
+    # Limit cache size
+    if len(_cover_cache) > 500:
+        for k in list(_cover_cache.keys())[:50]:
+            del _cover_cache[k]
+    return rounded
+
+
 class _PlaylistDelegate(QStyledItemDelegate):
     MARGIN = 2
+    ROW_H = 58
 
     def paint(self, painter: QPainter, option, index: QModelIndex):
         painter.save()
@@ -43,61 +87,66 @@ class _PlaylistDelegate(QStyledItemDelegate):
             c = QColor(accent)
             c.setAlpha(40)
             painter.setBrush(c)
-            painter.drawRoundedRect(rect, 6, 6)
+            painter.drawRoundedRect(rect, 8, 8)
 
-        # Playing indicator
+        # Playing indicator — taller accent bar
         is_current = src and hasattr(src, 'current_index') and src.current_index == src_row
         if is_current:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(accent)
-            painter.drawRoundedRect(QRect(rect.x() + 4, rect.y() + 8, 3, rect.height() - 16), 1.5, 1.5)
+            painter.drawRoundedRect(QRect(rect.x() + 4, rect.y() + 8, 4, rect.height() - 16), 2, 2)
 
-        # Track number
-        num_font = QFont(painter.font())
-        num_font.setPointSize(9)
-        painter.setFont(num_font)
-        num_c = QColor("#888") if is_light else QColor("#64748b")
-        painter.setPen(num_c if not is_current else accent)
-        painter.drawText(QRect(rect.x() + 9, rect.y(), 30, rect.height()),
-                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, str(row + 1))
+        # Cover thumbnail
+        filepath = (index.data(src.FilePathRole) if src else "") or ""
+        thumb = _thumbnail(src, index, filepath) if src else None
+        cover_x = rect.x() + 14
+        cover_y = rect.y() + (rect.height() - THUMB_SIZE) // 2
+        if thumb and not thumb.isNull():
+            painter.drawPixmap(cover_x, cover_y, thumb)
+        else:
+            placeholder = QColor("#2a2a2a") if not is_light else QColor("#e0e0e0")
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(placeholder)
+            ppath = QPainterPath()
+            ppath.addRoundedRect(cover_x, cover_y, THUMB_SIZE, THUMB_SIZE, THUMB_RADIUS, THUMB_RADIUS)
+            painter.drawPath(ppath)
 
-        # Text
-        text_x = rect.x() + 50
-        text_w = rect.width() - 50 - 50
+        # Text layout
+        text_x = cover_x + THUMB_SIZE + 12
+        text_w = rect.width() - (text_x - rect.x()) - 30
 
         title = (index.data(src.TitleRole) if src else "") or "Unknown"
         artist = (index.data(src.ArtistRole) if src else "") or ""
         dur_sec = (index.data(src.DurationRole) if src else 0) or 0
 
-        # Title
+        # Title — 12pt
         title_font = QFont(painter.font())
-        title_font.setPointSize(10)
+        title_font.setPointSize(12)
         title_font.setBold(is_current)
         painter.setFont(title_font)
-        title_c = QColor("#333") if is_light else QColor("#e2e8f0")
+        title_c = QColor("#1a1a1a") if is_light else QColor("#e2e8f0")
         painter.setPen(title_c if not is_current else accent.lighter(130))
         title_text = painter.fontMetrics().elidedText(
             title, Qt.TextElideMode.ElideRight, text_w)
-        painter.drawText(text_x, rect.y() + 4, text_w, 20,
+        painter.drawText(text_x, rect.y() + 6, text_w, 22,
                          Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, title_text)
 
-        # Artist + Duration
+        # Artist + Duration — 10pt
         sub_font = QFont(painter.font())
-        sub_font.setPointSize(9)
+        sub_font.setPointSize(10)
         painter.setFont(sub_font)
-        painter.setPen(QColor("#888") if is_light else QColor("#64748b"))
+        painter.setPen(QColor("#888") if is_light else QColor("#94a3b8"))
         sub_text = artist
         if dur_sec:
             m, s = divmod(int(dur_sec), 60)
             sub_text = f"{artist}  ·  {m}:{s:02d}" if artist else f"{m}:{s:02d}"
         sub_text = painter.fontMetrics().elidedText(
             sub_text, Qt.TextElideMode.ElideRight, text_w)
-        painter.drawText(text_x, rect.y() + 22, text_w, 20,
+        painter.drawText(text_x, rect.y() + 28, text_w, 22,
                          Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, sub_text)
 
         # Missing file indicator
         import os
-        filepath = (index.data(src.FilePathRole) if src else "") or ""
         if filepath and not os.path.exists(filepath):
             painter.setPen(QColor("#ef4444"))
             painter.drawText(rect.adjusted(0, 0, -8, 0),
@@ -107,7 +156,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
         painter.restore()
 
     def sizeHint(self, option, index):
-        return QSize(200, 52)
+        return QSize(200, self.ROW_H)
 
 
 STYLE = """

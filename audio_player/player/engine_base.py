@@ -324,8 +324,14 @@ class _BaseAudioEngine(QObject):
     def _teardown_pipeline(self):
         self._cleanup_preloaded()
         if self._pipeline is not None:
-            self._pipeline.set_state(Gst.State.NULL)
+            old = self._pipeline
             self._pipeline = None
+            old.set_state(Gst.State.NULL)
+            # Poll until NULL — don't block longer than 100ms on main thread
+            for _ in range(20):
+                ok, state, _ = old.get_state(5 * Gst.MSECOND)
+                if ok == Gst.StateChangeReturn.SUCCESS and state == Gst.State.NULL:
+                    break
         self._playbin = None
         self._is_stream = False
         self._stream_buffering = False
@@ -726,8 +732,13 @@ class _BaseAudioEngine(QObject):
     def _cleanup_preloaded(self):
         """Destroy the preloaded pipeline if it exists."""
         if self._preload_pipeline is not None:
-            self._preload_pipeline.set_state(Gst.State.NULL)
+            old = self._preload_pipeline
             self._preload_pipeline = None
+            old.set_state(Gst.State.NULL)
+            for _ in range(10):
+                ok, state, _ = old.get_state(5 * Gst.MSECOND)
+                if ok == Gst.StateChangeReturn.SUCCESS and state == Gst.State.NULL:
+                    break
         self._preload_file = ""
         self._preload_sink = None
         self._preload_volume = None
@@ -773,6 +784,10 @@ class _BaseAudioEngine(QObject):
         # Tear down old pipeline
         if old_pipeline is not None:
             old_pipeline.set_state(Gst.State.NULL)
+            for _ in range(10):
+                ok, state, _ = old_pipeline.get_state(5 * Gst.MSECOND)
+                if ok == Gst.StateChangeReturn.SUCCESS and state == Gst.State.NULL:
+                    break
         # Reset position/duration for new track
         self._position_ms = 0
         self._duration_ms = 0

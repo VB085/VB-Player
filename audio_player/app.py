@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QPalette, QColor, QFont, QPainter, QPainterPath, QPixmap, QIcon
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QTimer
 import sys
 from pathlib import Path
 
@@ -74,41 +74,147 @@ def apply_theme(app: QApplication, mode: str = "dark", accent_name: str = "purpl
     accent = ACCENTS.get(accent_name, ACCENTS["purple"])
     if mode == "light":
         app.setPalette(_build_light_palette(accent))
-        qss = (THEME_DIR / "light.qss").read_text(encoding="utf-8")
     else:
         app.setPalette(_build_dark_palette(accent))
-        qss = (THEME_DIR / "dark_purple.qss").read_text(encoding="utf-8")
-    # Inject accent into QSS via placeholders
+    # Inject accent into cached QSS
+    qss = _qss_text(mode)
     qss = qss.replace("@ACCENT_DARKER@", accent.darker(150).name())
     qss = qss.replace("@ACCENT_DARK@", accent.darker(120).name())
     qss = qss.replace("@ACCENT_LIGHT@", accent.lighter(130).name())
     qss = qss.replace("@ACCENT@", accent.name())
     app.setStyleSheet(qss)
 
+_qss_cache: dict[str, str] = {}
+
+def _qss_text(mode: str) -> str:
+    if mode not in _qss_cache:
+        path = THEME_DIR / ("light.qss" if mode == "light" else "dark_purple.qss")
+        _qss_cache[mode] = path.read_text(encoding="utf-8")
+    return _qss_cache[mode]
+
 _dynamic_accent: QColor | None = None
+_pending_color: QColor | None = None
+_pending_timer: QTimer | None = None
+_anim_timer: QTimer | None = None
+_anim_from: QColor | None = None
+_anim_to: QColor | None = None
+_anim_step: int = 0
+_DEBOUNCE = 200
+_ANIM_STEPS = 12
+_ANIM_MS = 50  # 600ms total
+_on_anim_tick: list = []  # callbacks called each animation frame with current QColor
+
+
+def _color_distance(a: QColor, b: QColor) -> float:
+    return ((a.red() - b.red()) ** 2 + (a.green() - b.green()) ** 2 +
+            (a.blue() - b.blue()) ** 2) ** 0.5
 
 
 def set_dynamic_accent(color: QColor):
-    """Apply an album-art-derived accent. Cleared when user manually picks accent."""
-    global _dynamic_accent, _accent_name
-    ACCENTS["dynamic"] = color
-    _dynamic_accent = color
-    # Only apply if user hasn't manually locked in a different accent
+    global _accent_name, _pending_color, _pending_timer
+
     s = QSettings("VBPlayer", "VB Player")
-    accent_source = str(s.value("accent_source", "manual") or "manual")
-    if accent_source != "manual" or _accent_name == "dynamic":
-        _accent_name = "dynamic"
-        apply_theme(QApplication.instance(), _theme_mode, "dynamic")
+    if str(s.value("dynamic_accent_enabled", "true")).lower() != "true":
+        return
+
+    ACCENTS["dynamic"] = color
+    _accent_name = "dynamic"
+
+    current = _dynamic_accent or ACCENTS.get("purple", QColor("#7c3aed"))
+    if _color_distance(current, color) < 20:
+        return
+
+    _pending_color = color
+
+    if _pending_timer is None:
+        app = QApplication.instance()
+        _pending_timer = QTimer(app)
+        _pending_timer.setSingleShot(True)
+        _pending_timer.timeout.connect(_commit_accent)
+    _pending_timer.start(_DEBOUNCE)
+
+
+def _commit_accent():
+    global _pending_color, _dynamic_accent, _anim_timer, _anim_from, _anim_to, _anim_step
+    if _pending_color is None:
+        return
+    to_color = _pending_color
+    _pending_color = None
+
+    from_color = (_dynamic_accent or ACCENTS.get("purple", QColor("#7c3aed"))).toRgb()
+    to_color = to_color.toRgb()
+
+    _anim_from = from_color
+    _anim_to = to_color
+    _anim_step = 0
+
+    app = QApplication.instance()
+    if _anim_timer is None:
+        _anim_timer = QTimer(app)
+        _anim_timer.timeout.connect(_anim_tick)
+    else:
+        _anim_timer.stop()
+    _anim_timer.start(_ANIM_MS)
+
+
+def _anim_tick():
+    global _anim_step, _dynamic_accent, _anim_timer, _anim_from, _anim_to
+    _anim_step += 1
+    t = _anim_step / _ANIM_STEPS
+    t = 1.0 - (1.0 - t) ** 3  # cubic ease-out
+
+    r = int(_anim_from.red() + (_anim_to.red() - _anim_from.red()) * t)
+    g = int(_anim_from.green() + (_anim_to.green() - _anim_from.green()) * t)
+    b = int(_anim_from.blue() + (_anim_to.blue() - _anim_from.blue()) * t)
+    color = QColor(r, g, b)
+
+    _dynamic_accent = color
+    ACCENTS["dynamic"] = color
+
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    p = app.palette()
+    p.setColor(QPalette.ColorRole.Highlight, color)
+    p.setColor(QPalette.ColorRole.Link, color.lighter(130) if _theme_mode != "light" else color.darker(110))
+    app.setPalette(p)
+
+    # QSS update every step — all widgets see the same animated color
+    qss = _qss_text(_theme_mode)
+    qss = qss.replace("@ACCENT_DARKER@", color.darker(150).name())
+    qss = qss.replace("@ACCENT_DARK@", color.darker(120).name())
+    qss = qss.replace("@ACCENT_LIGHT@", color.lighter(130).name())
+    qss = qss.replace("@ACCENT@", color.name())
+    app.setStyleSheet(qss)
+
+    # Notify inline-styled widgets (play button, etc.) to refresh
+    for cb in _on_anim_tick:
+        cb(color)
+
+    if _anim_step >= _ANIM_STEPS:
+        _anim_timer.stop()
+        _dynamic_accent = _anim_to
+        apply_theme(app, _theme_mode, "dynamic")
 
 
 def clear_dynamic_accent():
     """Revert to user's chosen static accent."""
-    global _dynamic_accent, _accent_name
+    global _dynamic_accent, _accent_name, _pending_timer, _pending_color, _anim_timer
+    if _pending_timer:
+        _pending_timer.stop()
+    if _anim_timer:
+        _anim_timer.stop()
+    _pending_color = None
     _dynamic_accent = None
     s = QSettings("VBPlayer", "VB Player")
     _accent_name = str(s.value("accent", "purple") or "purple")
     apply_theme(QApplication.instance(), _theme_mode, _accent_name)
 
+
+def on_anim_tick(callback):
+    """Register a callback(color) called each animation frame."""
+    _on_anim_tick.append(callback)
 
 def current_accent() -> QColor:
     if _dynamic_accent and _accent_name == "dynamic":

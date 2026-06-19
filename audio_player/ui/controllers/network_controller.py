@@ -37,7 +37,7 @@ class NetworkController(QObject):
     def __init__(self, library_mgr, parent=None):
         super().__init__(parent)
         self._library = library_mgr
-        self._pool = QThreadPool.globalInstance()
+        self._pool = QThreadPool(self)
         self._stream_history: list[str] = []
         self._load_history()
 

@@ -28,6 +28,8 @@ class SettingsController(QObject):
     fullscreenLyricsUpdate = pyqtSignal()
     defaultVolumeChanged = pyqtSignal(float)
 
+    materialChanged = pyqtSignal(str)
+
     def __init__(self, equalizer_mgr: EqualizerManager,
                  engine: AudioEngine, parent=None):
         super().__init__(parent)
@@ -55,6 +57,9 @@ class SettingsController(QObject):
         dlg.showTranslationToggled.connect(self.on_show_translation_toggled)
         dlg.sidebarLogToggled.connect(self.on_sidebar_log_toggled)
         dlg.albumCoverRadiusToggled.connect(self.on_album_cover_radius_toggled)
+        dlg.materialChanged.connect(lambda v: self.materialChanged.emit(v))
+        dlg.titlebarChanged.connect(lambda v: self.logMessage.emit(_("log.titlebar_restart")))
+        dlg.dynamicAccentToggled.connect(self._on_dynamic_accent_toggled)
 
         # Equalizer state -> settings dialog
         dlg.set_eq_state(
@@ -84,12 +89,43 @@ class SettingsController(QObject):
         dlg.set_gapless_state(self._engine.gapless_enabled)
         dlg.gaplessToggled.connect(lambda v: setattr(self._engine, 'gapless_enabled', v))
 
+        # Account stats — passed from MainWindow
+        from audio_player.platform import platform_info
+        if hasattr(parent_widget, '_library') and hasattr(parent_widget, '_playlist'):
+            tracks = parent_widget._playlist.count if hasattr(parent_widget, '_playlist') else 0
+            albums = len(parent_widget._album_view._albums) if hasattr(parent_widget, '_album_view') else 0
+            playlists = len(parent_widget._library.get_playlist_names()) if hasattr(parent_widget, '_library') else 0
+            dlg.set_account_stats(tracks, albums, playlists)
+
         if dlg.exec():
             self.logMessage.emit(_("log.settings_saved"))
 
     # ------------------------------------------------------------------
     #  Theme
     # ------------------------------------------------------------------
+
+    def _on_dynamic_accent_toggled(self, enabled: bool):
+        from audio_player.app import clear_dynamic_accent
+        from audio_player.player.metadata import read_metadata
+        from audio_player.app import set_dynamic_accent
+        from audio_player.ui.color_extractor import extract_accent
+        from PyQt6.QtGui import QPixmap
+
+        if not enabled:
+            clear_dynamic_accent()
+            self.logMessage.emit(_("log.dynamic_accent_off"))
+        else:
+            # Re-apply dynamic accent from current track immediately
+            if self._engine and self._engine.current_file:
+                meta = read_metadata(self._engine.current_file)
+                if meta and meta.cover_data:
+                    pix = QPixmap()
+                    pix.loadFromData(meta.cover_data)
+                    if not pix.isNull():
+                        color = extract_accent(pix)
+                        set_dynamic_accent(color)
+            self.logMessage.emit(_("log.dynamic_accent_on"))
+        self.accentChanged.emit()
 
     def _on_theme_changed(self, mode: str, accent_name: str):
         apply_theme(QApplication.instance(), mode, accent_name)
