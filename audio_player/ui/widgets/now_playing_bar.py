@@ -56,21 +56,21 @@ class NowPlayingBar(QWidget):
         prev_btn = QPushButton()
         prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#999"))
         prev_btn.setObjectName("npBtn")
-        prev_btn.setFixedSize(38, 38)
+        prev_btn.setFixedSize(36, 36)
         prev_btn.clicked.connect(self.prevClicked.emit)
         layout.addWidget(prev_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._play_btn = QPushButton()
         self._play_btn.setIcon(_icon(TRANSPORT_PLAY, color="#fff"))
         self._play_btn.setObjectName("npPlayBtn")
-        self._play_btn.setFixedSize(38, 38)
+        self._play_btn.setFixedSize(42, 42)
         self._play_btn.clicked.connect(self.playPauseClicked.emit)
         layout.addWidget(self._play_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         next_btn = QPushButton()
         next_btn.setIcon(_icon(TRANSPORT_NEXT, color="#999"))
         next_btn.setObjectName("npBtn")
-        next_btn.setFixedSize(38, 38)
+        next_btn.setFixedSize(36, 36)
         next_btn.clicked.connect(self.nextClicked.emit)
         layout.addWidget(next_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addStretch()
@@ -97,7 +97,7 @@ class NowPlayingBar(QWidget):
             QLabel#npArtist {{ color: {sub_c}; }}
             QLabel#npTime {{ color: {sub_c}; }}
             QPushButton#npBtn {{
-                background: transparent; border: none; border-radius: 19px;
+                background: transparent; border: none; border-radius: 18px;
                 color: {sub_c}; font-size: 14px;
             }}
             QPushButton#npBtn:hover {{
@@ -105,7 +105,7 @@ class NowPlayingBar(QWidget):
             }}
             QPushButton#npPlayBtn {{
                 background: {accent.name()}; color: #fff;
-                border: none; border-radius: 19px;
+                border: none; border-radius: 21px;
             }}
             QPushButton#npPlayBtn:hover {{
                 background: {accent.lighter(120).name()};
