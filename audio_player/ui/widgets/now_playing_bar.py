@@ -118,8 +118,9 @@ class NowPlayingBar(QWidget):
 
     def _apply_style(self):
         is_light = current_theme_mode() == "light"
-        bar_bg = "#f0f0f0" if is_light else "#1a1a1a"
-        bar_border = "#d0d0d0" if is_light else "#2a2a2a"
+        accent = current_accent()
+        bar_bg = "rgba(240,240,240,0.92)" if is_light else "rgba(26,26,26,0.92)"
+        bar_border = "rgba(0,0,0,0.06)" if is_light else "rgba(255,255,255,0.06)"
         title_c = "#1a1a1a" if is_light else "#eee"
         artist_c = "#666" if is_light else "#999"
 
@@ -130,28 +131,32 @@ class NowPlayingBar(QWidget):
             }}
             QLabel#npTitle {{ color: {title_c}; }}
             QLabel#npArtist {{ color: {artist_c}; }}
-            QLabel#npTime {{ color: {artist_c}; font-size: 9px; }}
+            QLabel#npTime {{ color: {artist_c}; font-size: 9px; font-family: monospace; }}
             QPushButton#npBtn {{
                 background: transparent; border: none; border-radius: 18px;
                 color: {artist_c}; font-size: 14px;
             }}
-            QPushButton#npBtn:hover {{ background: {"#ddd" if is_light else "#333"}; }}
+            QPushButton#npBtn:hover {{ background: {"rgba(0,0,0,0.06)" if is_light else "rgba(255,255,255,0.08)"}; }}
             QPushButton#npPlayBtn {{
-                background: {current_accent().name()}; color: #fff;
+                background: {accent.name()}; color: #fff;
                 border: none; border-radius: 20px;
             }}
             QPushButton#npPlayBtn:hover {{
-                background: {current_accent().lighter(120).name()};
+                background: {accent.lighter(120).name()};
             }}
             QSlider#npProgress::groove:horizontal {{
-                background: {"#ddd" if is_light else "#333"}; height: 3px; border-radius: 1px;
+                background: {"#ddd" if is_light else "#444"};
+                height: 4px; border-radius: 2px;
             }}
             QSlider#npProgress::sub-page:horizontal {{
-                background: {current_accent().name()}; border-radius: 1px;
+                background: {accent.name()}; border-radius: 2px;
             }}
             QSlider#npProgress::handle:horizontal {{
-                background: {current_accent().name()}; width: 10px; height: 10px;
-                border-radius: 5px; margin: -4px 0;
+                background: {accent.name()}; width: 12px; height: 12px;
+                border-radius: 6px; margin: -4px 0;
+            }}
+            QSlider#npProgress::handle:horizontal:hover {{
+                width: 16px; height: 16px; border-radius: 8px; margin: -6px 0;
             }}
         """)
 

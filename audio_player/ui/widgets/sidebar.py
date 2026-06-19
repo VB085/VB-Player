@@ -101,7 +101,7 @@ class Sidebar(QWidget):
             row.addStretch()
 
             self._nav_layout.addLayout(row)
-            self._nav_rows.append({"key": nav_key, "tr_key": tr_key, "btn": btn, "lbl": lbl})
+            self._nav_rows.append({"key": nav_key, "tr_key": tr_key, "btn": btn, "lbl": lbl, "icon": icon_name})
 
         main.addLayout(self._nav_layout)
 
@@ -141,7 +141,7 @@ class Sidebar(QWidget):
         self.navChanged.emit(key)
 
     def _update_nav_highlight(self):
-        """Apply accent-colored background to selected item via QSS properties."""
+        """Highlight selected nav item. Active icon = white, background via QSS."""
         accent = current_accent()
         is_light = current_theme_mode() == "light"
         icon_inactive = "#555" if is_light else "#888"
@@ -151,14 +151,16 @@ class Sidebar(QWidget):
             btn = row["btn"]
             lbl = row["lbl"]
 
-            icon_color = accent.name() if is_current else icon_inactive
-            btn.setIcon(_icon(NAV_ITEMS[[r["key"] for r in self._nav_rows].index(row["key"])][0], color=icon_color))
+            # Active: white icon on accent background → always readable
+            icon_color = "#fff" if is_current else icon_inactive
+            btn.setIcon(_icon(row["icon"], color=icon_color))
             btn.setProperty("current", is_current)
             lbl.setProperty("current", is_current)
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-            lbl.style().unpolish(lbl)
-            lbl.style().polish(lbl)
+
+        # Re-apply QSS for child buttons/labels via individual polish
+        for row in self._nav_rows:
+            row["btn"].style().polish(row["btn"])
+            row["lbl"].style().polish(row["lbl"])
 
     def toggle(self):
         self._collapsed = not self._collapsed

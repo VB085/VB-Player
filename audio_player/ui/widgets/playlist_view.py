@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QListView, QStyledItemDelegate, QStyle,
                              QAbstractItemView, QMenu)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QModelIndex, QSortFilterProxyModel
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QAction
-from audio_player.app import current_accent
+from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
 
 
@@ -33,6 +33,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
         proxy = index.model()
         row = index.row()
         accent = current_accent()
+        is_light = current_theme_mode() == "light"
         src = _source_model(proxy)
         src_row = _source_row(proxy, index)
 
@@ -55,7 +56,8 @@ class _PlaylistDelegate(QStyledItemDelegate):
         num_font = QFont(painter.font())
         num_font.setPointSize(9)
         painter.setFont(num_font)
-        painter.setPen(QColor("#64748b") if not is_current else accent)
+        num_c = QColor("#888") if is_light else QColor("#64748b")
+        painter.setPen(num_c if not is_current else accent)
         painter.drawText(QRect(rect.x() + 9, rect.y(), 30, rect.height()),
                          Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, str(row + 1))
 
@@ -72,7 +74,8 @@ class _PlaylistDelegate(QStyledItemDelegate):
         title_font.setPointSize(10)
         title_font.setBold(is_current)
         painter.setFont(title_font)
-        painter.setPen(QColor("#e2e8f0") if not is_current else accent.lighter(130))
+        title_c = QColor("#333") if is_light else QColor("#e2e8f0")
+        painter.setPen(title_c if not is_current else accent.lighter(130))
         title_text = painter.fontMetrics().elidedText(
             title, Qt.TextElideMode.ElideRight, text_w)
         painter.drawText(text_x, rect.y() + 4, text_w, 20,
@@ -82,7 +85,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
         sub_font = QFont(painter.font())
         sub_font.setPointSize(9)
         painter.setFont(sub_font)
-        painter.setPen(QColor("#64748b"))
+        painter.setPen(QColor("#888") if is_light else QColor("#64748b"))
         sub_text = artist
         if dur_sec:
             m, s = divmod(int(dur_sec), 60)

@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QPalette, QColor, QFont
+from PyQt6.QtGui import QPalette, QColor, QFont, QPainter, QPainterPath, QPixmap, QIcon
 from PyQt6.QtCore import Qt, QSettings
 import sys
 from pathlib import Path
@@ -168,11 +168,30 @@ def _on_system_accent_changed(accent: QColor):
         apply_theme(QApplication.instance(), _theme_mode, _accent_name)
 
 
+def _generate_icon() -> QIcon:
+    pix = QPixmap(256, 256)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(12, 12, 232, 232, 48, 48)
+    p.fillPath(path, QColor("#7c3aed"))
+    f = QFont()
+    f.setPointSize(120)
+    f.setBold(True)
+    p.setFont(f)
+    p.setPen(QColor("#ffffff"))
+    p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "V")
+    p.end()
+    return QIcon(pix)
+
+
 def create_app() -> QApplication:
     from audio_player.platform import get_system_font
     app = QApplication(sys.argv)
     app.setApplicationName("VB Player")
     app.setOrganizationName("VBPlayer")
+    app.setWindowIcon(_generate_icon())
     app.setFont(get_system_font())
     _init_theme_cache()
     apply_theme(app, _theme_mode, _accent_name)
