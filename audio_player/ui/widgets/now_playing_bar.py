@@ -31,13 +31,15 @@ class NowPlayingBar(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 3, 16, 0)
-        layout.setSpacing(10)
-        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        layout.setSpacing(0)
 
         # ── Left: cover + info ──
+        left = QHBoxLayout()
+        left.setSpacing(8)
+        left.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self._cover_label = QLabel()
         self._cover_label.setFixedSize(48, 48)
-        layout.addWidget(self._cover_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        left.addWidget(self._cover_label)
 
         info = QVBoxLayout()
         info.setSpacing(0)
@@ -49,38 +51,47 @@ class NowPlayingBar(QWidget):
         self._artist_label.setObjectName("npArtist")
         f2 = QFont(); f2.setPointSize(8); self._artist_label.setFont(f2)
         info.addWidget(self._artist_label)
-        layout.addLayout(info, 0)
+        left.addLayout(info, 1)
+        layout.addLayout(left, 1)
 
-        # ── Center: controls ──
-        layout.addStretch()
+        # ── Center: controls (truly centered) ──
+        center = QHBoxLayout()
+        center.setAlignment(Qt.AlignmentFlag.AlignCenter)
         prev_btn = QPushButton()
         prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#999"))
         prev_btn.setObjectName("npBtn")
         prev_btn.setFixedSize(36, 36)
         prev_btn.clicked.connect(self.prevClicked.emit)
-        layout.addWidget(prev_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        center.addWidget(prev_btn)
 
         self._play_btn = QPushButton()
         self._play_btn.setIcon(_icon(TRANSPORT_PLAY, color="#fff"))
         self._play_btn.setObjectName("npPlayBtn")
         self._play_btn.setFixedSize(42, 42)
         self._play_btn.clicked.connect(self.playPauseClicked.emit)
-        layout.addWidget(self._play_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        center.addWidget(self._play_btn)
 
         next_btn = QPushButton()
         next_btn.setIcon(_icon(TRANSPORT_NEXT, color="#999"))
         next_btn.setObjectName("npBtn")
         next_btn.setFixedSize(36, 36)
         next_btn.clicked.connect(self.nextClicked.emit)
-        layout.addWidget(next_btn, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addStretch()
+        center.addWidget(next_btn)
+        layout.addLayout(center, 1)
 
-        # ── Right: time ──
+        # ── Right: time (right-aligned) ──
+        right = QHBoxLayout()
+        right.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._time_label = QLabel("0:00 / 0:00")
         self._time_label.setObjectName("npTime")
         tf = QFont(); tf.setPointSize(9); tf.setFamily("monospace")
         self._time_label.setFont(tf)
-        layout.addWidget(self._time_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        right.addWidget(self._time_label)
+        layout.addLayout(right, 1)
+
+        layout.setStretch(0, 1)
+        layout.setStretch(1, 1)
+        layout.setStretch(2, 1)
 
         self._apply_style()
 
