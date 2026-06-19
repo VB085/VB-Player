@@ -30,7 +30,7 @@ class NowPlayingBar(QWidget):
         self._cover_pix = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setContentsMargins(16, 3, 16, 0)
         layout.setSpacing(10)
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
@@ -49,7 +49,7 @@ class NowPlayingBar(QWidget):
         self._artist_label.setObjectName("npArtist")
         f2 = QFont(); f2.setPointSize(8); self._artist_label.setFont(f2)
         info.addWidget(self._artist_label)
-        layout.addLayout(info)
+        layout.addLayout(info, 0)
 
         # ── Center: controls ──
         layout.addStretch()
