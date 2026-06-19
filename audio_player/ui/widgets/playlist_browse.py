@@ -19,20 +19,16 @@ from audio_player.i18n import _
 from audio_player.player.metadata import read_metadata
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.ui.icons import ALBUM_PLACEHOLDER, _icon
-
-
-def _set_placeholder_icon(label: QLabel, size: int = 48):
-    """Set a placeholder album icon on a QLabel."""
-    pixmap = _icon(ALBUM_PLACEHOLDER, color="#555555").pixmap(size, size)
-    label.setPixmap(pixmap)
-from audio_player.ui.widgets.album_view import (
-    FlowLayout, _AlbumTrackModel, _AlbumTrackDelegate, _format_dur, _format_size, TRACK_LIST_STYLE,
+from audio_player.ui.shared import (
+    FlowLayout, AlbumTrackModel as _AlbumTrackModel,
+    AlbumTrackDelegate as _AlbumTrackDelegate,
+    TRACK_LIST_STYLE, set_placeholder_icon as _set_placeholder_icon,
+)
+from audio_player.ui.utils import (
+    format_duration as _format_dur, format_size as _format_size,
+    is_light_mode as _is_light_mode,
 )
 import os
-
-
-def _is_light_mode() -> bool:
-    return current_theme_mode() == "light"
 
 
 # ---------------------------------------------------------------------------
@@ -826,8 +822,10 @@ class PlaylistEditDialog(QDialog):
         self._cover_data = info.cover_data
         self.setWindowTitle(_("playlist.edit_title"))
         self.setMinimumWidth(400)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        from audio_player.platform import platform_info
+        if platform_info.policy.titlebar_style == "frameless":
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         is_light = _is_light_mode()
         bg = "#ffffff" if is_light else "#0f0f0f"

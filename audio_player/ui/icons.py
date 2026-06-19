@@ -16,13 +16,14 @@ def _accent_icon(name: str, **kwargs) -> QIcon:
 
 # ── Sidebar navigation ──────────────────────────────────────────────
 # Prefix: fa6s = solid, fa6r = regular, fa6b = brands
-NAV_SONGS     = "fa6s.list"
-NAV_ALBUMS    = "fa6s.compact-disc"
-NAV_FAVORITES = "fa6s.star"
-NAV_PLAYLISTS = "fa6s.rectangle-list"
-NAV_NETWORK   = "fa6s.globe"
-NAV_MANAGE    = "fa6s.gear"
-NAV_SETTINGS  = "fa6s.wrench"
+NAV_SONGS       = "fa6s.list"
+NAV_NOW_PLAYING = "fa6s.music"
+NAV_ALBUMS      = "fa6s.compact-disc"
+NAV_FAVORITES   = "fa6s.star"
+NAV_PLAYLISTS   = "fa6s.rectangle-list"
+NAV_NETWORK     = "fa6s.globe"
+NAV_MANAGE      = "fa6s.gear"
+NAV_SETTINGS    = "fa6s.wrench"
 
 SIDEBAR_TOGGLE  = "fa6s.bars"
 SIDEBAR_EXPAND  = "fa6s.chevron-right"

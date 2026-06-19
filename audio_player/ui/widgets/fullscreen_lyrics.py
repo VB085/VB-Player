@@ -243,8 +243,10 @@ class FullscreenLyricsWindow(QWidget):
         w = self.width()
         h = self.height()
 
-        # Background
-        painter.fillRect(self.rect(), QColor("#0a0a0f"))
+        # Background — follow theme
+        is_light = current_theme_mode() == "light"
+        bg = QColor("#fafafa") if is_light else QColor("#1a1a1a")
+        painter.fillRect(self.rect(), bg)
 
         if not self._lyrics:
             painter.setPen(QColor("#555"))

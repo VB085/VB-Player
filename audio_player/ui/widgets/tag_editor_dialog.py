@@ -11,10 +11,7 @@ from PyQt6.QtCore import Qt
 from audio_player.i18n import _
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.player.metadata import TrackMetadata
-
-
-def _is_light_mode() -> bool:
-    return current_theme_mode() == "light"
+from audio_player.ui.utils import is_light_mode as _is_light_mode
 
 
 class TagEditorDialog(QDialog):
@@ -25,8 +22,10 @@ class TagEditorDialog(QDialog):
         self._filepath = filepath
         self.setWindowTitle(_("tags.edit_title"))
         self.setMinimumWidth(420)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        from audio_player.platform import platform_info
+        if platform_info.policy.titlebar_style == "frameless":
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         is_light = _is_light_mode()
         bg = "#ffffff" if is_light else "#0f0f0f"

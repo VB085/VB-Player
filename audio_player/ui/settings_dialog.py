@@ -150,7 +150,13 @@ class _NoWheelComboBox(QComboBox):
         event.ignore()
 
 
-class SettingsDialog(FramelessResizeMixin, QDialog):
+from audio_player.platform import platform_info
+
+
+_SettingsBase = (FramelessResizeMixin, QDialog) if platform_info.policy.titlebar_style == "frameless" else (QDialog,)
+
+
+class SettingsDialog(*_SettingsBase):
     themeChanged = pyqtSignal(str, str)  # mode, accent_name
     vizModeChanged = pyqtSignal(int)
     defaultVolumeChanged = pyqtSignal(float)
@@ -197,11 +203,14 @@ class SettingsDialog(FramelessResizeMixin, QDialog):
         self.setWindowTitle(_("settings.window_title"))
         self.setMinimumSize(560, 520)
         self.resize(600, 660)
-        self.setWindowFlags(
-            Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        if platform_info.policy.titlebar_style == "frameless":
+            self.setWindowFlags(
+                Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint |
+                Qt.WindowType.WindowStaysOnTopHint
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        else:
+            self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
         self._border_radius = 12
         self._mask_dirty = True
         self._settings = QSettings("VBPlayer", "VB Player")
@@ -211,7 +220,7 @@ class SettingsDialog(FramelessResizeMixin, QDialog):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._border_radius > 0:
+        if platform_info.policy.titlebar_style == "frameless" and self._border_radius > 0:
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), self._border_radius, self._border_radius)
             painter.fillPath(path, self.palette().color(QPalette.ColorRole.Window))
@@ -223,6 +232,8 @@ class SettingsDialog(FramelessResizeMixin, QDialog):
             self._apply_mask()
 
     def _apply_mask(self):
+        if platform_info.policy.titlebar_style != "frameless":
+            return
         r = self._border_radius
         w, h = self.width(), self.height()
         if r > 0 and w > 0 and h > 0:
@@ -392,7 +403,8 @@ class SettingsDialog(FramelessResizeMixin, QDialog):
         self._dsd_combo.blockSignals(True)
         self._dsd_combo.clear()
         self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
-        if sys.platform == "win32":
+        from audio_player.platform import platform_info
+        if platform_info.capabilities.supports_dsd_native:
             self._dsd_combo.addItem(_("settings.dsd_native"), "native")
             self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
         else:
@@ -719,7 +731,8 @@ class SettingsDialog(FramelessResizeMixin, QDialog):
 
         self._dsd_combo = _NoWheelComboBox()
         self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
-        if sys.platform == "win32":
+        from audio_player.platform import platform_info
+        if platform_info.capabilities.supports_dsd_native:
             self._dsd_combo.addItem(_("settings.dsd_native"), "native")
             self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
         else:
@@ -775,7 +788,7 @@ class SettingsDialog(FramelessResizeMixin, QDialog):
         self._about_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_title)
 
-        self._about_ver = QLabel("v0.5")
+        self._about_ver = QLabel("v0.6")
         self._about_ver.setStyleSheet("font-size: 13px; color: #888;")
         self._about_ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_ver)
@@ -840,16 +853,17 @@ class SettingsDialog(FramelessResizeMixin, QDialog):
             checks.append(("GStreamer", False, str(e)))
 
         # Platform media controls
-        if _sys.platform == "linux":
+        from audio_player.platform import platform_info
+        if platform_info.is_linux:
             try:
                 from gi.repository import Gio
                 checks.append(("MPRIS2", True, ""))
             except Exception as e:
                 checks.append(("MPRIS2", False, str(e)))
-        elif _sys.platform == "darwin":
+        elif platform_info.is_macos:
             ok = _il_util.find_spec("MediaPlayer") is not None
             checks.append(("Now Playing", ok, "" if ok else "pip install pyobjc-framework-MediaPlayer"))
-        elif _sys.platform == "win32":
+        elif platform_info.is_windows:
             ok = _il_util.find_spec("winsdk.windows.media") is not None
             checks.append(("SMTC", ok, "" if ok else "pip install winsdk"))
 

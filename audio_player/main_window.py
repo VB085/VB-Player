@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (
     QSplitter, QScrollArea, QInputDialog, QSystemTrayIcon, QLineEdit,
     QStackedWidget
 )
-from PyQt6.QtCore import Qt, QSize, QTimer, QPoint, QSettings, QEvent, QRectF
+from PyQt6.QtCore import (Qt, QSize, QTimer, QPoint, QRect, QSettings, QEvent, QRectF,
+                          QPropertyAnimation, QEasingCurve)
 from PyQt6.QtGui import (QKeySequence, QShortcut, QFont,
                          QDragEnterEvent, QDropEvent, QMouseEvent, QColor,
                          QRegion, QPixmap,
@@ -24,23 +25,20 @@ from audio_player.player.lrc_parser import export_lrc
 from audio_player.player.equalizer import EqualizerManager
 from audio_player.player.library import LibraryManager
 
-from audio_player.ui.widgets.transport_bar import TransportBar
-from audio_player.ui.widgets.seek_slider import SeekSlider
-from audio_player.ui.widgets.output_spec_bar import OutputSpecBar
-from audio_player.ui.widgets.volume_control import VolumeControl
-from audio_player.ui.widgets.playback_mode import PlaybackModeControl
 from audio_player.ui.widgets.playlist_view import PlaylistView
 from audio_player.ui.widgets.spectrum import SpectrumWidget
 from audio_player.ui.widgets.waveform import WaveformWidget
 from audio_player.ui.widgets.metadata_panel import MetadataPanel
-from audio_player.ui.widgets.hifi_now_playing import HiFiNowPlayingPage, _format_duration, _format_size
+from audio_player.ui.widgets.hifi_now_playing import HiFiNowPlayingPage
+from audio_player.ui.widgets.now_playing_bar import NowPlayingBar
+from audio_player.ui.utils import format_duration as _format_duration, format_size as _format_size
 from audio_player.ui.widgets.sidebar import Sidebar
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.i18n import _, set_language, languageChanged
 from audio_player.ui.pages import Page
 from audio_player.ui.widgets.album_view import AlbumGridView, AlbumDetailPage
 from audio_player.ui.widgets.search_filter import PlaylistFilterProxy
-from audio_player.ui.icons import PANEL_COLLAPSE, PANEL_EXPAND, _icon
+from audio_player.ui.icons import _icon
 from audio_player.ui.widgets.playlist_browse import (
     PlaylistGridView, PlaylistDetailPage, PlaylistEditDialog, PlaylistInfo, build_playlist_info,
 )
@@ -48,7 +46,7 @@ from audio_player.ui.widgets.fullscreen_lyrics import FullscreenLyricsWindow
 from audio_player.ui.widgets.frameless_resize import FramelessResizeMixin
 from audio_player.ui.widgets.tag_editor_dialog import TagEditorDialog
 from audio_player.ui.widgets.network_page import NetworkPage
-from audio_player.ui.settings_dialog import SettingsDialog, _CloseButton
+from audio_player.ui.settings_dialog import SettingsDialog
 
 from audio_player.ui.controllers.library_controller import LibraryController
 from audio_player.ui.controllers.playback_controller import PlaybackController
@@ -57,71 +55,7 @@ from audio_player.ui.controllers.cast_controller import CastController
 from audio_player.player.backend import LocalBackend
 from audio_player.player.http_server import EmbeddedHttpServer
 from audio_player.player.dlna.registry import DeviceRegistry
-
-
-class _TitleBar(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("titleBar")
-        self.setFixedHeight(32)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 4, 0)
-        layout.setSpacing(0)
-
-        title = QLabel("VB Player")
-        title.setObjectName("titleLabel")
-        layout.addWidget(title)
-        layout.addStretch()
-
-        for name, icon, obj in [("minBtn", "─", "minBtn"),
-                                ("maxBtn", "□", "maxBtn")]:
-            btn = QPushButton(icon)
-            btn.setObjectName(obj)
-            btn.setFixedSize(36, 24)
-            btn.clicked.connect(
-                lambda checked, n=name: self._on_btn(n))
-            layout.addWidget(btn)
-
-        close_btn = _CloseButton()
-        close_btn.setObjectName("closeBtn")
-        close_btn.clicked.connect(self._minimize_to_tray)
-        layout.addWidget(close_btn)
-
-    def _minimize_to_tray(self):
-        w = self.window()
-        if hasattr(w, '_tray') and w._tray.isVisible():
-            from audio_player.i18n import _
-            w.hide()
-            w._tray.showMessage("VB Player", _("tray.minimized"),
-                               QSystemTrayIcon.MessageIcon.Information, 1500)
-        else:
-            w.close()
-
-    def _on_btn(self, name):
-        w = self.window()
-        if name == "minBtn":
-            w.showMinimized()
-        elif name == "maxBtn":
-            if w.isMaximized():
-                w.showNormal()
-            else:
-                w.showMaximized()
-        elif name == "closeBtn":
-            w.close()
-
-    def mousePressEvent(self, e: QMouseEvent):
-        if e.button() == Qt.MouseButton.LeftButton:
-            wh = self.window().windowHandle()
-            if wh:
-                wh.startSystemMove()
-
-    def mouseDoubleClickEvent(self, e: QMouseEvent):
-        w = self.window()
-        if w.isMaximized():
-            w.showNormal()
-        else:
-            w.showMaximized()
+from audio_player.platform import platform_info
 
 
 class MainWindow(FramelessResizeMixin, QMainWindow):
@@ -130,8 +64,21 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self.setWindowTitle("VB Player")
         self.setMinimumSize(900, 580)
         self.resize(1200, 720)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        # Platform-aware window flags: use CSD on Wayland, frameless elsewhere
+        if platform_info.policy.titlebar_style == "csd":
+            # Wayland: keep native decorations, no translucent background
+            self._use_csd = True
+            self._use_frameless = False
+        elif platform_info.policy.titlebar_style == "native":
+            self._use_csd = False
+            self._use_frameless = False
+        else:
+            self._use_csd = False
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self._use_frameless = True
+
         self.setAcceptDrops(True)
 
         self._border_radius = 12
@@ -166,16 +113,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Controllers
         self._playback_ctrl = PlaybackController(self._local_backend, self._playlist, self._analyzer, self)
         self._library_ctrl = LibraryController(self._library, self._fav_playlist, self._pls_playlist, self)
-        self._settings_ctrl = SettingsController(self._equalizer_mgr, None, None, self._engine, self)
+        self._settings_ctrl = SettingsController(self._equalizer_mgr, self._engine, self)
 
         self._setup_ui()
 
         # Fullscreen lyrics window
         self._fullscreen_lyrics = FullscreenLyricsWindow()
 
-        # Wire settings controller refs that require UI to exist
-        self._settings_ctrl._spectrum = self._spectrum
-        self._settings_ctrl._fullscreen_lyrics = self._fullscreen_lyrics
         self._connect_signals()
         self._connect_analyzer()
         self._spectrum.lyrics_overlay.fullscreenRequested.connect(self._show_fullscreen_lyrics)
@@ -190,9 +134,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         is_light = current_theme_mode() == "light"
         self._sidebar.refresh_theme_mode(is_light)
         self._album_view.refresh_theme_mode(is_light)
-        self._output_spec_bar.refresh_theme_mode(is_light)
-        self._playback_mode.refresh_theme_mode(is_light)
         self._pls_grid_view.refresh_theme_mode(is_light)
+        self._now_playing_bar.refresh_theme()
 
         # React to language changes
         languageChanged.connect(self._refresh_language)
@@ -218,8 +161,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Custom title bar
-        self._title_bar = _TitleBar(self)
+        # Custom title bar — hidden on CSD (Wayland uses compositor decorations)
+        from audio_player.ui.title_bar import TitleBar
+        self._title_bar = TitleBar(self)
+        self._title_bar.minimizeClicked.connect(self.showMinimized)
+        self._title_bar.maximizeClicked.connect(
+            lambda: self.showNormal() if self.isMaximized() else self.showMaximized())
+        self._title_bar.closeClicked.connect(self._on_tray_quit)
+        if self._use_csd:
+            self._title_bar.hide()
         root.addWidget(self._title_bar)
 
         # --- Main content ---
@@ -343,97 +293,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._update_network_devices()  # initial sync
         self._content_stack.addWidget(self._network_page)  # Page.NETWORK
 
-        # ===== RIGHT: viz + controls (splitter) =====
-        center_panel = QWidget()
-        center_panel.setObjectName("centerPanel")
-        center_panel.setMinimumWidth(220)
-        center_layout = QVBoxLayout(center_panel)
-        center_layout.setContentsMargins(0, 4, 0, 0)
-        center_layout.setSpacing(0)
+        # Now Playing overlay — reuses HiFi page (same design)
 
-        # Vertical splitter: viz area | controls area
-        self._center_splitter = QSplitter(Qt.Orientation.Vertical)
-        self._center_splitter.setHandleWidth(3)
-        self._center_splitter.setChildrenCollapsible(False)
-
-        # Top: viz container
-        viz_container = QWidget()
-        viz_layout = QVBoxLayout(viz_container)
-        viz_layout.setContentsMargins(0, 0, 0, 4)
-        viz_layout.setSpacing(0)
-
+        # Hidden viz widgets — used by analyzer, shown on Now Playing page
         self._spectrum = SpectrumWidget()
         self._waveform = WaveformWidget()
         self._waveform.seekRequested.connect(self._engine.seek_ratio)
-
-        viz_layout.addWidget(self._spectrum, 1)
-        viz_layout.addWidget(self._waveform, 0)
-        self._center_splitter.addWidget(viz_container)
-
-        # Bottom: controls container
-        controls_container = QWidget()
-        controls_layout = QVBoxLayout(controls_container)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(0)
-
-        self._seek_slider = SeekSlider()
-        self._seek_slider.seekRequested.connect(
-            lambda pos: self._cast_ctrl.active_backend.seek(pos)
-        )
-        controls_layout.addWidget(self._seek_slider)
-
-        self._output_spec_bar = OutputSpecBar()
-        controls_layout.addWidget(self._output_spec_bar)
-
-        # Transport row — vertical volume on left, play controls centered
-        transport_layout = QHBoxLayout()
-        transport_layout.setContentsMargins(8, 4, 8, 6)
-        self._volume_control = VolumeControl()
-        self._volume_control.valueChanged.connect(lambda v: setattr(self._engine, 'volume', v))
-        transport_layout.addWidget(self._volume_control, 0, Qt.AlignmentFlag.AlignVCenter)
-        transport_layout.addStretch(1)
-        self._transport_bar = TransportBar()
-        self._transport_bar.playPauseClicked.connect(self._playback_ctrl.toggle)
-        self._transport_bar.nextClicked.connect(self._playback_ctrl.next_track)
-        self._transport_bar.prevClicked.connect(self._playback_ctrl.prev_track)
-        transport_layout.addWidget(self._transport_bar, 0, Qt.AlignmentFlag.AlignVCenter)
-        transport_layout.addStretch(1)
-        # Right side: playback mode control (symmetric with volume)
-        self._playback_mode = PlaybackModeControl()
-        self._playback_mode.repeatModeChanged.connect(self._on_repeat_mode_changed)
-        self._playback_mode.shuffleChanged.connect(self._on_shuffle_changed)
-        self._playback_mode.moreClicked.connect(
-            lambda: self._library_ctrl.show_more_menu(self._playback_mode._more_btn, self._engine.current_file))
-        self._playback_mode.expandRequested.connect(self._show_hifi)
-        transport_layout.addWidget(self._playback_mode, 0, Qt.AlignmentFlag.AlignVCenter)
-        controls_layout.addLayout(transport_layout)
-        self._center_splitter.addWidget(controls_container)
-
-        self._center_splitter.setSizes([400, 200])
-
-        # Metadata panel (collapsed view)
         self._metadata_panel = MetadataPanel()
 
-        # Panel toggle button (top-right corner)
-        self._panel_toggle_btn = QPushButton(center_panel)
-        self._panel_toggle_btn.setIcon(_icon(PANEL_COLLAPSE, color="#94a3b8"))
-        self._panel_toggle_btn.setObjectName("panelToggleBtn")
-        self._panel_toggle_btn.setFixedSize(28, 28)
-        self._panel_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._panel_toggle_btn.setToolTip(_("panel.collapse"))
-        self._panel_toggle_btn.clicked.connect(self._toggle_right_panel)
-        self._panel_toggle_btn.raise_()
-        self._refresh_panel_toggle_style()
-
-        # Stacked: page 0 = full, page 1 = metadata-only
-        self._panel_stack = AnimatedStackedWidget()
-        self._panel_stack.addWidget(self._center_splitter)   # index 0: full
-        self._panel_stack.addWidget(self._metadata_panel)     # index 1: collapsed
-        self._panel_collapsed = False
-
-        center_layout.addWidget(self._panel_stack)
-
-        # ===== Layout: sidebar | content stack | viz =====
+        # ===== Layout: sidebar | content stack =====
         body_layout = QHBoxLayout(self._body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
@@ -441,20 +309,33 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._body_splitter.setHandleWidth(3)
         self._body_splitter.addWidget(self._sidebar)
         self._body_splitter.addWidget(self._content_stack)
-        self._body_splitter.addWidget(center_panel)
-        self._body_splitter.setSizes([200, 500, 400])
+        self._body_splitter.setSizes([200, 900])
         self._body_splitter.setChildrenCollapsible(False)
         body_layout.addWidget(self._body_splitter)
 
-        # ===== HiFi Now Playing overlay =====
+        # ===== Bottom bar =====
+        self._now_playing_bar = NowPlayingBar()
+        self._now_playing_bar.playPauseClicked.connect(self._playback_ctrl.toggle)
+        self._now_playing_bar.nextClicked.connect(self._playback_ctrl.next_track)
+        self._now_playing_bar.prevClicked.connect(self._playback_ctrl.prev_track)
+        self._now_playing_bar.seekRequested.connect(
+            lambda pos: self._cast_ctrl.active_backend.seek(pos))
+        self._now_playing_bar.expandRequested.connect(self._show_np_page)
+        # Set default volume — was handled by removed VolumeControl
+        self._engine.volume = 1.0
+
+        # ===== Overlay stack: body | hifi (also used as now-playing overlay) =====
         self._hifi_page = HiFiNowPlayingPage()
         self._hifi_page.hide()
+        self._now_playing_page = self._hifi_page  # same widget, reused
         self._hifi_overlay = QStackedWidget()
-        self._hifi_overlay.addWidget(self._body)      # index 0: normal
-        self._hifi_overlay.addWidget(self._hifi_page)  # index 1: hifi
+        self._hifi_overlay.addWidget(self._body)       # 0: normal
+        self._hifi_overlay.addWidget(self._hifi_page)  # 1: overlay
         self._hifi_overlay.setCurrentIndex(0)
-        # Replace body in root layout
         root.addWidget(self._hifi_overlay, 1)
+
+        # ===== Bottom now-playing bar =====
+        root.addWidget(self._now_playing_bar)
 
     def _build_manage_page(self) -> QWidget:
         from audio_player.app import current_accent as _accent, current_theme_mode
@@ -717,28 +598,30 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
 
     def _setup_shortcuts(self):
-        QShortcut(QKeySequence("Space"), self, self._playback_ctrl.toggle)
-        QShortcut(QKeySequence("Ctrl+O"), self, self._open_files)
-        QShortcut(QKeySequence("Ctrl+Shift+O"), self, self._open_folder)
-        QShortcut(QKeySequence("Ctrl+S"), self, self._save_playlist)
-        QShortcut(QKeySequence("Ctrl+L"), self, self._load_playlist)
-        QShortcut(QKeySequence("V"), self, self._spectrum.cycle_mode)
-        QShortcut(QKeySequence("Ctrl+Shift+L"), self, self._toggle_lyrics)
-        QShortcut(QKeySequence("Left"), self, lambda: self._cast_ctrl.active_backend.seek(
-            self._cast_ctrl.active_backend.position - 5000))
-        QShortcut(QKeySequence("Right"), self, lambda: self._cast_ctrl.active_backend.seek(
-            self._cast_ctrl.active_backend.position + 5000))
-        QShortcut(QKeySequence("Up"), self,
-                  lambda: setattr(self._engine, 'volume', min(1.0, self._engine.volume + 0.05)))
-        QShortcut(QKeySequence("Down"), self,
-                  lambda: setattr(self._engine, 'volume', max(0.0, self._engine.volume - 0.05)))
-        QShortcut(QKeySequence("Ctrl+Right"), self, self._playback_ctrl.next_track)
-        QShortcut(QKeySequence("Ctrl+Left"), self, self._playback_ctrl.prev_track)
-        QShortcut(QKeySequence("Delete"), self, self._remove_selected)
-        QShortcut(QKeySequence("R"), self, self._cycle_playback_mode_shortcut)
-        # Number keys 1-9 jump to 10%-90% of track duration
-        for n in range(1, 10):
-            QShortcut(QKeySequence(str(n)), self, lambda n=n: self._jump_to_pct(n * 10))
+        from audio_player.ui.shortcut_manager import ShortcutManager
+        sm = ShortcutManager(self)
+        sm.register_all({
+            "play_pause": self._playback_ctrl.toggle,
+            "open_files": self._open_files,
+            "open_folder": self._open_folder,
+            "save_playlist": self._save_playlist,
+            "load_playlist": self._load_playlist,
+            "cycle_viz": self._spectrum.cycle_mode,
+            "toggle_lyrics": self._toggle_lyrics,
+            "seek_back": lambda: self._cast_ctrl.active_backend.seek(
+                self._cast_ctrl.active_backend.position - 5000),
+            "seek_forward": lambda: self._cast_ctrl.active_backend.seek(
+                self._cast_ctrl.active_backend.position + 5000),
+            "volume_up": lambda: setattr(self._engine, 'volume',
+                                         min(1.0, self._engine.volume + 0.05)),
+            "volume_down": lambda: setattr(self._engine, 'volume',
+                                           max(0.0, self._engine.volume - 0.05)),
+            "prev_track": self._playback_ctrl.prev_track,
+            "next_track": self._playback_ctrl.next_track,
+            "remove_selected": self._remove_selected,
+            "cycle_playback_mode": self._cycle_playback_mode_shortcut,
+            "jump_to_pct": lambda pct: self._jump_to_pct(pct),
+        })
 
     def _jump_to_pct(self, pct: int):
         # Skip if a text input has focus
@@ -751,74 +634,32 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             backend.seek(int(dur * pct / 100))
 
     def _setup_tray(self):
-        self._tray = QSystemTrayIcon(self)
-        app_icon = QApplication.instance().windowIcon()
-        if app_icon.isNull():
-            pix = QPixmap(64, 64)
-            pix.fill(QColor("#7c3aed"))
-            p = QPainter(pix)
-            p.setPen(QColor("#ffffff"))
-            f = QFont()
-            f.setPointSize(32)
-            f.setBold(True)
-            p.setFont(f)
-            p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "V")
-            p.end()
-            app_icon = QIcon(pix)
-        self._tray.setIcon(app_icon)
-        self._tray.setToolTip("VB Player")
+        from audio_player.ui.tray_manager import TrayManager
+        self._tray_mgr = TrayManager(self)
+        self._tray_mgr.showWindowRequested.connect(self._on_tray_show)
+        self._tray_mgr.quitRequested.connect(self._on_tray_quit)
+        self._tray_mgr.playPauseRequested.connect(self._playback_ctrl.toggle)
+        self._tray_mgr.nextRequested.connect(self._playback_ctrl.next_track)
+        self._tray_mgr.prevRequested.connect(self._playback_ctrl.prev_track)
+        self._playback_ctrl.trackLoaded.connect(self._tray_mgr.update_tooltip)
+        self._tray_mgr.setup()
 
-        tray_menu = QMenu()
-        show_act = QAction(_("tray.show_main"), self)
-        show_act.triggered.connect(self._tray_show_window)
-        tray_menu.addAction(show_act)
-        tray_menu.addSeparator()
-        play_act = QAction(_("tray.play_pause"), self)
-        play_act.triggered.connect(self._playback_ctrl.toggle)
-        tray_menu.addAction(play_act)
-        prev_act = QAction(_("tray.prev"), self)
-        prev_act.triggered.connect(self._playback_ctrl.prev_track)
-        tray_menu.addAction(prev_act)
-        next_act = QAction(_("tray.next"), self)
-        next_act.triggered.connect(self._playback_ctrl.next_track)
-        tray_menu.addAction(next_act)
-        tray_menu.addSeparator()
-        quit_act = QAction(_("tray.quit"), self)
-        quit_act.triggered.connect(self._tray_quit)
-        tray_menu.addAction(quit_act)
-
-        self._tray.setContextMenu(tray_menu)
-        self._tray.activated.connect(self._tray_activated)
-        self._playback_ctrl.trackLoaded.connect(self._update_tray_tooltip)
-        self._tray.show()
-
-    def _tray_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self._tray_show_window()
-
-    def _tray_show_window(self):
+    def _on_tray_show(self):
         self.showNormal()
         self.activateWindow()
         self.raise_()
 
-    def _tray_quit(self):
+    def _on_tray_quit(self):
         self._quitting = True
         self._engine.stop()
         self._lyrics_fetcher.cleanup()
         if self._system_media:
             self._system_media.cleanup()
-        self._tray.hide()
+        self._tray_mgr.hide_tray()
         QApplication.quit()
 
-    def _update_tray_tooltip(self, filepath):
-        meta = read_metadata(filepath)
-        title = meta.title or os.path.basename(filepath)
-        artist = meta.artist or ""
-        tip = f"{artist} — {title}" if artist else title
-        self._tray.setToolTip(f"VB Player — {tip}")
-
     def _restore_settings(self):
-        self._settings_ctrl.restore_settings(self._volume_control, self._sidebar)
+        self._settings_ctrl.restore_settings(None, self._sidebar)
 
         # Restore last playback state
         self._restore_playback_state()
@@ -847,8 +688,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         # Propagate loaded UI radius to sliders
         if self._ui_radius != 12:
-            self._seek_slider._apply_sizing(self._ui_radius)
-            self._volume_control._refresh_style(self._ui_radius)
+            pass  # ui_radius applied via QSS now
 
     # ================================================================
     #  Signal Connections
@@ -858,7 +698,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Playback controller — engine signals
         self._playback_ctrl.connect_engine()
         self._playback_ctrl.playbackStateChanged.connect(lambda playing: (
-            self._transport_bar.set_playing(playing),
+            self._now_playing_bar.set_playing(playing),
             self._hifi_page.set_playing(playing),
         ))
         self._playback_ctrl.logMessage.connect(self._log_message)
@@ -870,14 +710,12 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._engine.positionChanged.connect(self._on_position_changed)
         self._engine.durationChanged.connect(self._on_duration_changed)
 
-        # Engine volume/exclusive/output direct connections
-        self._engine.volumeChanged.connect(lambda v: self._volume_control.set_value(v))
+
+        # Engine exclusive mode log
         self._engine.exclusiveModeChanged.connect(lambda enabled: (
-            self._output_spec_bar.set_audio_device(self._engine.output_info),
             self._log_message(_("log.exclusive_mode",
                 mode=_("log.exclusive_alsa") if enabled else _("log.exclusive_shared")))
         ))
-        self._engine.outputInfoChanged.connect(lambda info: self._output_spec_bar.set_audio_device(info))
 
         # Playlist index → playback controller
         self._playlist.currentIndexChanged.connect(self._playback_ctrl.on_playlist_index_changed)
@@ -915,6 +753,22 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._settings_ctrl.themeChanged.connect(self._on_theme_changed_ui)
         self._settings_ctrl.accentChanged.connect(self._refresh_accent_colors)
         self._settings_ctrl.logMessage.connect(self._log_message)
+        # Widget control signals (replacing direct widget refs)
+        self._settings_ctrl.vizModeChanged.connect(self._spectrum.set_mode)
+        self._settings_ctrl.lyricsToggled.connect(
+            lambda on: self._spectrum.show_lyrics() if on else self._spectrum.hide_lyrics())
+        self._settings_ctrl.lyricsLineHeightChanged.connect(
+            self._spectrum.lyrics_overlay.set_line_height)
+        self._settings_ctrl.lyricsFullscreenLineHeightChanged.connect(
+            lambda _: self._fullscreen_lyrics.update())
+        self._settings_ctrl.lyricsFontSizeChanged.connect(
+            lambda _: self._fullscreen_lyrics.update())
+        self._settings_ctrl.lyricsLetterSpacingChanged.connect(
+            lambda _: self._fullscreen_lyrics.update())
+        self._settings_ctrl.lyricsShowSpecToggled.connect(
+            lambda _: self._fullscreen_lyrics._update_spec_bar())
+        self._settings_ctrl.fullscreenLyricsUpdate.connect(
+            self._fullscreen_lyrics.update)
 
     def _connect_analyzer(self):
         self._analyzer.waveformReady.connect(self._waveform.set_waveform_data)
@@ -996,34 +850,16 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         btn.setToolTip(_(label_key))
 
     def _init_system_media(self):
-        if sys.platform == "linux":
-            try:
-                from audio_player.player.mpris2 import Mpris2Service
-                self._system_media = Mpris2Service(
-                    self._engine, self._playback_ctrl, self._playlist, self
-                )
-                self._system_media.raiseRequested.connect(self._on_raise_requested)
+        from audio_player.platform import create_system_media_service
+        try:
+            self._system_media = create_system_media_service(
+                self._engine, self._playback_ctrl, self._playlist, self._settings_ctrl, self)
+            if self._system_media:
+                if hasattr(self._system_media, 'raiseRequested'):
+                    self._system_media.raiseRequested.connect(self._on_raise_requested)
                 self._system_media.connect_signals()
-            except Exception as e:
-                print(f"[mpris2] init failed: {e}", file=sys.stderr)
-        elif sys.platform == "darwin":
-            try:
-                from audio_player.player.macos_media import MacOSSMediaService
-                self._system_media = MacOSSMediaService(
-                    self._engine, self._playback_ctrl, self
-                )
-                self._system_media.connect_signals()
-            except Exception as e:
-                print(f"[macos_media] init failed: {e}", file=sys.stderr)
-        elif sys.platform == "win32":
-            try:
-                from audio_player.player.smtc import SmtcService
-                self._system_media = SmtcService(
-                    self._engine, self._playback_ctrl, self
-                )
-                self._system_media.connect_signals()
-            except Exception as e:
-                print(f"[smtc] init failed: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"[system_media] init failed: {e}", file=sys.stderr)
 
     def _on_raise_requested(self):
         self.showNormal()
@@ -1048,11 +884,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def closeEvent(self, event):
         # If tray is visible and this isn't a tray-quit, hide to tray
-        if hasattr(self, '_tray') and self._tray.isVisible() and not getattr(self, '_quitting', False):
+        if (hasattr(self, '_tray_mgr') and self._tray_mgr.is_visible()
+                and not getattr(self, '_quitting', False)):
             event.ignore()
             self.hide()
-            self._tray.showMessage("VB Player", _("tray.minimized"),
-                                   QSystemTrayIcon.MessageIcon.Information, 1500)
+            self._tray_mgr.show_message("VB Player", _("tray.minimized"))
             return
         self._save_playback_state()
         self._device_registry.stop()
@@ -1061,7 +897,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._lyrics_fetcher.cleanup()
         if self._system_media:
             self._system_media.cleanup()
-        self._tray.hide()
+        self._tray_mgr.hide_tray()
         super().closeEvent(event)
 
     def _save_playback_state(self):
@@ -1292,21 +1128,37 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._log_message(_("log.now_playing", artist=artist, title=title))
         else:
             self._log_message(_("log.now_playing_no_artist", title=title))
-        self._output_spec_bar.set_meta(meta)
-        self._output_spec_bar.set_audio_device(self._engine.output_info)
         self._fullscreen_lyrics.set_meta(meta)
         self._album_detail_page.set_current_playlist_index(self._playlist.current_index)
-        # HiFi page
+        # Bottom bar
+        self._now_playing_bar.set_track(meta.title or "", meta.artist or "", meta.album or "")
+        self._now_playing_bar.update_cover(meta.cover_data)
+        # HiFi page (also serves as Now Playing overlay)
         self._hifi_page.set_track_info(meta.title or "", meta.artist or "", meta.album or "")
         self._hifi_page.set_cover(meta.cover_data)
         self._hifi_page.set_quality(self._build_quality_text(meta))
         self._hifi_page.set_file_info(self._build_file_info(meta, filepath))
+        # Dynamic accent from album art
+        self._apply_album_accent(meta)
+
+    def _apply_album_accent(self, meta):
+        """Extract accent color from album art and apply it dynamically."""
+        from audio_player.ui.color_extractor import extract_accent
+        from audio_player.app import set_dynamic_accent
+        cover_data = getattr(meta, 'cover_data', None)
+        if cover_data:
+            pix = QPixmap()
+            pix.loadFromData(cover_data)
+            if not pix.isNull():
+                color = extract_accent(pix)
+                set_dynamic_accent(color)
+                self._refresh_accent_colors()
 
     def _on_metadata_loaded_ui(self, meta, filepath):
         self._metadata_panel.show_metadata(meta, filepath)
 
     def _on_position_changed(self, ms):
-        self._seek_slider.set_position(ms)
+        self._now_playing_bar.set_position(ms)
         dur = self._engine.duration
         if dur > 0:
             ratio = ms / dur
@@ -1318,31 +1170,49 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._hifi_page.set_lyrics_position(ms)
 
     def _on_duration_changed(self, ms):
-        self._seek_slider.set_duration(ms)
+        self._now_playing_bar.set_duration(ms)
         self._hifi_page.set_duration(ms)
         self._spectrum.lyrics_overlay.set_duration(ms)
         self._fullscreen_lyrics.set_duration(ms)
 
-    def _show_hifi(self):
-        """Switch to HiFi Now Playing overlay."""
+    def _show_np_page(self):
+        """Open Now Playing overlay with slide-up from bottom bar."""
+        self._now_playing_bar.hide()
+        bar_global = self._now_playing_bar.mapToGlobal(QPoint(0, 0))
+        win_global = self.mapToGlobal(QPoint(0, 0))
+        from_rect = QRect(win_global.x(), bar_global.y(),
+                          self.width(), self.height())
         self._hifi_page.show()
-        self._hifi_overlay.setCurrentIndex(1)
+        self._hifi_overlay.setCurrentWidget(self._hifi_page)
+        # Slide-up animation via geometry
+        to_rect = self.geometry()
+        self._hifi_page.setGeometry(from_rect)
+        anim = QPropertyAnimation(self._hifi_page, b"geometry")
+        anim.setDuration(350)
+        anim.setStartValue(from_rect)
+        anim.setEndValue(to_rect)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.start()
+        self._hifi_page._slide_anim = anim  # keep ref
 
     def _collapse_hifi(self):
-        """Return from HiFi Now Playing to normal view."""
-        self._hifi_overlay.setCurrentIndex(0)
+        """Return from overlay to normal view."""
+        self._now_playing_bar.show()
+        self._hifi_overlay.setCurrentWidget(self._body)
         self._hifi_page.hide()
 
     def _toggle_fullscreen(self):
         """Toggle fullscreen mode."""
         if self.isFullScreen():
             self.showNormal()
-            self._title_bar.show()
+            if self._use_frameless:
+                self._title_bar.show()
             self._border_radius = 12
             self._mask_dirty = True
             self.update()
         else:
-            self._title_bar.hide()
+            if self._use_frameless:
+                self._title_bar.hide()
             self._border_radius = 0
             self._mask_dirty = True
             self.showFullScreen()
@@ -1503,8 +1373,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         is_light = mode == "light"
         self._sidebar.refresh_theme_mode(is_light)
         self._album_view.refresh_theme_mode(is_light)
-        self._output_spec_bar.refresh_theme_mode(is_light)
-        self._playback_mode.refresh_theme_mode(is_light)
+        self._now_playing_bar.refresh_theme()
         if hasattr(self, '_pls_grid_view'):
             self._pls_grid_view.refresh_theme_mode(is_light)
         if hasattr(self, '_pls_detail_page'):
@@ -1523,10 +1392,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         """Re-apply inline accent-dependent styles across all widgets."""
         self._sidebar.refresh_accent()
         self._refresh_manage_accent()
-        self._seek_slider._apply_sizing()
-        self._volume_control._refresh_style()
-        self._transport_bar._apply_sizing()
-        self._playback_mode.refresh_accent()
+        self._now_playing_bar.refresh_accent()
         self._album_view.refresh_from_playlist()
 
     def _refresh_language(self, _code: str = ""):
@@ -1653,7 +1519,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._mask_dirty = True
-        self._update_panel_toggle_pos()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1667,6 +1532,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 self.clearMask()
 
     def _apply_mask(self):
+        if not self._use_frameless:
+            return  # CSD/native titlebar: compositor handles corners
         r = self._border_radius
         w, h = self.width(), self.height()
         if r > 0 and not self.isMaximized() and w > 0 and h > 0:
@@ -1685,7 +1552,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._border_radius > 0 and not self.isMaximized() and not self.isFullScreen():
+        if self._use_frameless and self._border_radius > 0 and not self.isMaximized() and not self.isFullScreen():
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), self._border_radius, self._border_radius)
             painter.fillPath(path, self.palette().color(QPalette.ColorRole.Window))

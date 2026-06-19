@@ -6,17 +6,24 @@ from PyQt6.QtGui import QFont, QPainter
 from audio_player.ui.settings_dialog import _CloseButton
 from audio_player.ui.widgets.frameless_resize import FramelessResizeMixin
 from audio_player.i18n import _
+from audio_player.platform import platform_info
 
 
-class _OutputDetailDialog(FramelessResizeMixin, QDialog):
+_OutputBase = (FramelessResizeMixin, QDialog) if platform_info.policy.titlebar_style == "frameless" else (QDialog,)
+
+
+class _OutputDetailDialog(*_OutputBase):
     def __init__(self, meta, output_info: dict | None = None, is_light: bool = False, parent=None):
         super().__init__(parent)
         self.setWindowTitle(_("output.title"))
         self.setMinimumWidth(440)
-        self.setWindowFlags(
-            Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
+        if platform_info.policy.titlebar_style == "frameless":
+            self.setWindowFlags(
+                Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint |
+                Qt.WindowType.WindowStaysOnTopHint
+            )
+        else:
+            self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
         self._is_light = is_light
 
         info = output_info or {}

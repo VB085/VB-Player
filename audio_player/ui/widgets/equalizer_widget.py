@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSlider,
                              QLabel, QComboBox, QPushButton, QFrame, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
+from audio_player.app import current_theme_mode
 
 
 class _NoWheelSlider(QSlider):
@@ -18,80 +19,90 @@ class _NoWheelComboBox(QComboBox):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     def wheelEvent(self, e):
         e.ignore()
-_EQ_ACCENT_03 = "#2e185e"
 
-STYLE = """
-QSlider::groove:vertical {
-    background: #252540;
+
+def _build_eq_style() -> str:
+    """Build equalizer QSS based on current theme mode."""
+    is_light = current_theme_mode() == "light"
+    bg = "#e8e8e8" if is_light else "#1a1a2e"
+    fg = "#333333" if is_light else "#e2e8f0"
+    border = "#d0d0d0" if is_light else "#252540"
+    groove = "#d0d0d0" if is_light else "#252540"
+    label = "#666666" if is_light else "#94a3b8"
+    freq = "#888888" if is_light else "#64748b"
+    cb_border = "#cccccc" if is_light else "#47476e"
+    return """
+QSlider::groove:vertical {{
+    background: {groove};
     width: 4px;
     border-radius: 2px;
-}
-QSlider::sub-page:vertical {
+}}
+QSlider::sub-page:vertical {{
     background: #7c3aed;
     border-radius: 2px;
-}
-QSlider::handle:vertical {
+}}
+QSlider::handle:vertical {{
     background: #a78bfa;
     height: 10px;
     width: 10px;
     border-radius: 5px;
     margin: 0 -3px;
-}
-QSlider::handle:vertical:hover {
+}}
+QSlider::handle:vertical:hover {{
     background: #c4b5fd;
-}
-QComboBox {
-    background: #1a1a2e;
-    color: #e2e8f0;
-    border: 1px solid #252540;
+}}
+QComboBox {{
+    background: {bg};
+    color: {fg};
+    border: 1px solid {border};
     border-radius: 4px;
     padding: 4px 8px;
     min-width: 120px;
-}
-QComboBox:hover {
+}}
+QComboBox:hover {{
     border-color: #7c3aed;
-}
-QComboBox::drop-down {
+}}
+QComboBox::drop-down {{
     border: none;
     width: 20px;
-}
-QComboBox::down-arrow {
+}}
+QComboBox::down-arrow {{
     image: none;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
-    border-top: 6px solid #94a3b8;
+    border-top: 6px solid {label};
     margin-right: 6px;
-}
-QComboBox QAbstractItemView {
-    background: #1a1a2e;
-    color: #e2e8f0;
-    border: 1px solid #252540;
-    selection-background-color: """ + _EQ_ACCENT_03 + """;
-}
-QLabel#bandLabel {
-    color: #94a3b8;
+}}
+QComboBox QAbstractItemView {{
+    background: {bg};
+    color: {fg};
+    border: 1px solid {border};
+    selection-background-color: #2e185e;
+}}
+QLabel#bandLabel {{
+    color: {label};
     font-size: 9px;
-}
-QLabel#freqLabel {
-    color: #64748b;
+}}
+QLabel#freqLabel {{
+    color: {freq};
     font-size: 8px;
-}
-QCheckBox {
-    color: #e2e8f0;
+}}
+QCheckBox {{
+    color: {fg};
     spacing: 8px;
-}
-QCheckBox::indicator {
+}}
+QCheckBox::indicator {{
     width: 16px;
     height: 16px;
     border-radius: 4px;
-    border: 2px solid #47476e;
-    background: #1a1a2e;
-}
-QCheckBox::indicator:checked {
+    border: 2px solid {cb_border};
+    background: {bg};
+}}
+QCheckBox::indicator:checked {{
     background: #7c3aed;
     border-color: #7c3aed;
-}
-"""
+}}
+""".format(bg=bg, fg=fg, border=border, groove=groove, label=label, freq=freq, cb_border=cb_border)
 
 
 class EqualizerWidget(QWidget):
@@ -103,7 +114,7 @@ class EqualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("equalizerWidget")
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(_build_eq_style())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -193,3 +204,7 @@ class EqualizerWidget(QWidget):
     def reset(self):
         for i in range(len(self._sliders)):
             self.set_band_gain(i, 0.0)
+
+    def refresh_theme_mode(self, is_light: bool):
+        """Rebuild QSS when theme changes."""
+        self.setStyleSheet(_build_eq_style())

@@ -4,27 +4,33 @@ from PyQt6.QtWidgets import QApplication
 from audio_player.app import apply_theme, current_accent, current_theme_mode
 from audio_player.player.engine import AudioEngine
 from audio_player.player.equalizer import EqualizerManager
-from audio_player.ui.widgets.spectrum import SpectrumWidget
-from audio_player.ui.widgets.fullscreen_lyrics import FullscreenLyricsWindow
 from audio_player.ui.settings_dialog import SettingsDialog
 from audio_player.i18n import _
 
 
 class SettingsController(QObject):
-    """Controller for settings, theme, and toggle actions (Groups 7+10)."""
+    """Controller for settings, theme, and toggle actions. Emits signals for
+    UI changes instead of directly calling widget methods."""
 
     themeChanged = pyqtSignal(str, str)   # (mode, accent_name)
     accentChanged = pyqtSignal()          # after accent colors refreshed
     logMessage = pyqtSignal(str)          # status bar text
 
+    # Widget control signals — connected in MainWindow
+    vizModeChanged = pyqtSignal(int)
+    lyricsToggled = pyqtSignal(bool)
+    lyricsLineHeightChanged = pyqtSignal(int)
+    lyricsFullscreenLineHeightChanged = pyqtSignal(int)
+    lyricsFontSizeChanged = pyqtSignal(int)
+    lyricsLetterSpacingChanged = pyqtSignal(int)
+    lyricsShowSpecToggled = pyqtSignal(bool)
+    fullscreenLyricsUpdate = pyqtSignal()
+    defaultVolumeChanged = pyqtSignal(float)
+
     def __init__(self, equalizer_mgr: EqualizerManager,
-                 spectrum: SpectrumWidget,
-                 fullscreen_lyrics: FullscreenLyricsWindow,
                  engine: AudioEngine, parent=None):
         super().__init__(parent)
         self._equalizer_mgr = equalizer_mgr
-        self._spectrum = spectrum
-        self._fullscreen_lyrics = fullscreen_lyrics
         self._engine = engine
 
     # ------------------------------------------------------------------
@@ -35,7 +41,7 @@ class SettingsController(QObject):
         """Create and exec the settings dialog, wiring all signals."""
         dlg = SettingsDialog(parent_widget)
         dlg.themeChanged.connect(self._on_theme_changed)
-        dlg.vizModeChanged.connect(lambda m: self._spectrum.set_mode(m))
+        dlg.vizModeChanged.connect(lambda m: self.vizModeChanged.emit(m))
         dlg.defaultVolumeChanged.connect(lambda v: setattr(self._engine, 'volume', v))
         dlg.lyricsToggled.connect(self.on_lyrics_toggled)
         dlg.lyricsLineHeightChanged.connect(self.on_lyrics_line_height)
@@ -93,36 +99,30 @@ class SettingsController(QObject):
     #  Lyrics toggles
     # ------------------------------------------------------------------
 
-    def toggle_lyrics(self):
-        """Toggle spectrum lyrics overlay; return new visibility."""
-        visible = self._spectrum.toggle_lyrics()
-        return visible
+    # Note: toggle_lyrics moved to MainWindow since it needs widget ref
 
     def on_lyrics_toggled(self, enabled: bool):
-        if enabled:
-            self._spectrum.show_lyrics()
-        else:
-            self._spectrum.hide_lyrics()
+        self.lyricsToggled.emit(enabled)
 
     def on_lyrics_line_height(self, px: int):
-        self._spectrum.lyrics_overlay.set_line_height(px)
         QSettings("VBPlayer", "VB Player").setValue("lyrics_line_height", px)
+        self.lyricsLineHeightChanged.emit(px)
 
     def on_lyrics_fullscreen_line_height(self, px: int):
         QSettings("VBPlayer", "VB Player").setValue("lyrics_fullscreen_line_height", px)
-        self._fullscreen_lyrics.update()
+        self.lyricsFullscreenLineHeightChanged.emit(px)
 
     def on_lyrics_font_size(self, pt: int):
         QSettings("VBPlayer", "VB Player").setValue("lyrics_font_size", pt)
-        self._fullscreen_lyrics.update()
+        self.lyricsFontSizeChanged.emit(pt)
 
     def on_lyrics_letter_spacing(self, px: int):
         QSettings("VBPlayer", "VB Player").setValue("lyrics_letter_spacing", px)
-        self._fullscreen_lyrics.update()
+        self.lyricsLetterSpacingChanged.emit(px)
 
     def on_lyrics_show_spec_toggled(self, show: bool):
         QSettings("VBPlayer", "VB Player").setValue("lyrics_show_spec", show)
-        self._fullscreen_lyrics._update_spec_bar()
+        self.lyricsShowSpecToggled.emit(show)
 
     def on_online_lyrics_toggled(self, enabled: bool):
         QSettings("VBPlayer", "VB Player").setValue("online_lyrics_enabled", enabled)
@@ -165,7 +165,8 @@ class SettingsController(QObject):
     # ------------------------------------------------------------------
 
     def restore_settings(self, volume_control=None, sidebar=None):
-        """Read QSettings and apply to engine/spectrum/sidebar."""
+        """Read QSettings and apply to engine/volume/sidebar. Emits signals for
+        UI widgets to pick up."""
         s = QSettings("VBPlayer", "VB Player")
 
         # Volume
@@ -174,9 +175,9 @@ class SettingsController(QObject):
         if volume_control is not None:
             volume_control.set_value(vol)
 
-        # Lyrics line height
+        # Lyrics line height — emit signal, MainWindow connects to spectrum
         lh = int(s.value("lyrics_line_height", 40) or 40)
-        self._spectrum.lyrics_overlay.set_line_height(lh)
+        self.lyricsLineHeightChanged.emit(lh)
 
         # Sidebar log
         sidebar_log = str(s.value("sidebar_log", "false")).lower() == "true"

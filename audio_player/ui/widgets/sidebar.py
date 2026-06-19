@@ -5,20 +5,20 @@ from PyQt6.QtGui import QColor, QFont, QPalette
 from audio_player.app import current_theme_mode, current_accent
 from audio_player.i18n import _, languageChanged
 from audio_player.ui.icons import (
-    NAV_SONGS, NAV_ALBUMS, NAV_FAVORITES, NAV_PLAYLISTS,
+    NAV_SONGS, NAV_NOW_PLAYING, NAV_ALBUMS, NAV_FAVORITES, NAV_PLAYLISTS,
     NAV_NETWORK, NAV_MANAGE, NAV_SETTINGS,
     SIDEBAR_TOGGLE, SIDEBAR_EXPAND,
     _icon, _accent_icon,
 )
 
 NAV_ITEMS = [
-    (NAV_SONGS,     "nav.all_songs",  "songs"),
-    (NAV_ALBUMS,    "nav.albums",     "albums"),
-    (NAV_FAVORITES, "nav.favorites",  "favorites"),
-    (NAV_PLAYLISTS, "nav.playlists",  "playlists"),
-    (NAV_NETWORK,   "nav.network",    "network"),
-    (NAV_MANAGE,    "nav.manage",     "manage"),
-    (NAV_SETTINGS,  "nav.settings",   "settings"),
+    (NAV_SONGS,       "nav.all_songs",    "songs"),
+    (NAV_ALBUMS,      "nav.albums",       "albums"),
+    (NAV_FAVORITES,   "nav.favorites",    "favorites"),
+    (NAV_PLAYLISTS,   "nav.playlists",    "playlists"),
+    (NAV_NETWORK,     "nav.network",      "network"),
+    (NAV_MANAGE,      "nav.manage",       "manage"),
+    (NAV_SETTINGS,    "nav.settings",     "settings"),
 ]
 
 

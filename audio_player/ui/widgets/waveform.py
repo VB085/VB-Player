@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import (QPainter, QColor, QPen, QMouseEvent)
 import numpy as np
-from audio_player.app import current_accent
+from audio_player.app import current_accent, current_theme_mode
 
 
 class WaveformWidget(QWidget):
@@ -59,8 +59,10 @@ class WaveformWidget(QWidget):
         center_y = h / 2
         margin = 4
 
-        # Background
-        painter.fillRect(self.rect(), QColor("#0f0f1a"))
+        # Background — follow theme
+        is_light = current_theme_mode() == "light"
+        bg = QColor("#f8f8f8") if is_light else QColor("#1e1e1e")
+        painter.fillRect(self.rect(), bg)
 
         if self._loading:
             painter.setPen(QColor("#64748b"))

@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSettings
 from PyQt6.QtGui import QFont, QPixmap, QColor
 
 from .cover_art import CoverArtWidget
+from audio_player.ui.utils import format_duration, format_size
 
 
 def _accent_light_hex() -> str:
@@ -18,25 +19,6 @@ def _accent_light_hex() -> str:
         "red":    QColor("#ef4444"),
     }
     return accents.get(name, QColor("#7c3aed")).lighter(130).name()
-
-
-def _format_duration(seconds: float) -> str:
-    if seconds <= 0:
-        return "--:--"
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
-
-
-def _format_size(size_bytes: int) -> str:
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    else:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 class MetadataPanel(QWidget):
@@ -135,7 +117,7 @@ class MetadataPanel(QWidget):
         self._title_label.setText(title)
         self._artist_label.setText(meta.artist or "Unknown Artist")
         self._album_label.setText(meta.album or "")
-        self._duration_label.setText(_format_duration(meta.duration_seconds))
+        self._duration_label.setText(format_duration(meta.duration_seconds))
         self._format_label.setText(meta.format or "—")
         quality_parts = []
         if meta.sample_rate:
@@ -148,7 +130,7 @@ class MetadataPanel(QWidget):
             ch_map = {1: "Mono", 2: "Stereo"}
             quality_parts.append(ch_map.get(meta.channels, f"{meta.channels}ch"))
         self._quality_label.setText(" / ".join(quality_parts) if quality_parts else "—")
-        self._file_size_label.setText(_format_size(meta.file_size) if meta.file_size else "—")
+        self._file_size_label.setText(format_size(meta.file_size) if meta.file_size else "—")
         self._year_label.setText(str(meta.year) if meta.year else "—")
         self._genre_label.setText(meta.genre if meta.genre else "—")
         self._cover.set_cover(meta.cover_data, title)

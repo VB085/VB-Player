@@ -6,10 +6,26 @@ from pathlib import Path
 
 # If the project .venv exists but we're not running from it, re-exec with venv Python
 _PROJECT_VENV = Path(__file__).resolve().parent / ".venv"
-_VENV_PYTHON = _PROJECT_VENV / ("Scripts" if sys.platform == "win32" else "bin") / "python.exe"
-if not _VENV_PYTHON.exists():
-    _VENV_PYTHON = _PROJECT_VENV / "bin" / "python.exe"  # MSYS2/MinGW venv layout
-if _VENV_PYTHON.exists() and Path(sys.executable).resolve() != _VENV_PYTHON.resolve():
+
+# Resolve venv Python binary (python3, python, python.exe on Windows)
+if sys.platform == "win32":
+    _venv_bin = _PROJECT_VENV / "Scripts"
+    _candidates = ["python.exe"]
+else:
+    _venv_bin = _PROJECT_VENV / "bin"
+    _candidates = ["python3", "python"]
+_VENV_PYTHON = None
+for _name in _candidates:
+    _candidate = _venv_bin / _name
+    if _candidate.exists():
+        _VENV_PYTHON = _candidate
+        break
+
+# Detect if we're running from the project venv (compare prefix, not executable
+# path — venv symlinks may point to the same system python).
+_in_venv = (str(Path(sys.prefix).resolve()) == str(_PROJECT_VENV.resolve()))
+
+if not _in_venv and _VENV_PYTHON:
     os.environ["VIRTUAL_ENV"] = str(_PROJECT_VENV)
     os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), __file__] + sys.argv[1:])
 
@@ -38,6 +54,21 @@ if _qt6_lib.exists():
         os.environ["PATH"] = str(_qt6_lib) + os.pathsep + os.environ.get("PATH", "")
     else:
         os.environ["LD_LIBRARY_PATH"] = str(_qt6_lib) + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+
+
+
+# --- Single-instance lock via fcntl (kernel-enforced, survives crashes) ---
+import fcntl
+_LOCK_FILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "vbplayer.lock"
+_LOCK_FD = os.open(str(_LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o644)
+try:
+    fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("VB Player is already running.", file=sys.stderr)
+    os.close(_LOCK_FD)
+    sys.exit(0)
+# _LOCK_FD stays open for the lifetime of the process; kernel auto-releases on exit
+
 
 # First-run: install missing platform dependencies (system media controls, etc.)
 from audio_player.bootstrap import ensure_dependencies

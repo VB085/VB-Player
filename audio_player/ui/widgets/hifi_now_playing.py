@@ -19,6 +19,7 @@ from audio_player.ui.icons import (
     TRANSPORT_PREV, TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT,
     NAV_SONGS, _icon,
 )
+from audio_player.ui.utils import format_duration, format_size
 
 
 class _OpacityHelper(QObject):
@@ -36,23 +37,7 @@ class _OpacityHelper(QObject):
     opacity = pyqtProperty(float, fget=get_opacity, fset=set_opacity)
 
 
-def _format_duration(seconds: float) -> str:
-    if seconds <= 0:
-        return "--:--"
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
-
-
-def _format_size(size_bytes: int) -> str:
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    else:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
+# format_duration, format_size — imported from audio_player.ui.utils
 
 
 def _blur_pixmap(pix: QPixmap, radius: int = 40) -> QPixmap:
@@ -114,6 +99,7 @@ class HiFiNowPlayingPage(QWidget):
         self.setObjectName("hifiNowPlaying")
         self._cover_pixmap: QPixmap | None = None
         self._blurred_bg: QPixmap | None = None
+        self._cached_bg: QPixmap | None = None  # scaled-to-window cached bg
         self._title = ""
         self._artist = ""
         self._album = ""
@@ -135,7 +121,7 @@ class HiFiNowPlayingPage(QWidget):
         self._lyrics_anim_start = 0.0
         self._lyrics_anim_target = 0.0
         self._lyrics_anim_elapsed = 0
-        self._lyrics_anim_duration = 250  # ms
+        self._lyrics_anim_duration = 380  # ms — smoother transition
         self._lyrics_scale = 1.0  # current line scale (0.96→1.0)
         self._lyrics_scale_anim_elapsed = 0
 
@@ -144,7 +130,7 @@ class HiFiNowPlayingPage(QWidget):
         self._lyrics_layout_anim: QPropertyAnimation | None = None
 
         self._lyrics_scroll_timer = QTimer(self)
-        self._lyrics_scroll_timer.setInterval(16)  # ~60fps
+        self._lyrics_scroll_timer.setInterval(33)  # ~30fps — smooth enough, less CPU
         self._lyrics_scroll_timer.timeout.connect(self._tick_lyrics_scroll)
 
         # Hover delay timer
@@ -227,7 +213,8 @@ class HiFiNowPlayingPage(QWidget):
             pix.loadFromData(data)
             if not pix.isNull():
                 self._cover_pixmap = pix
-                self._blurred_bg = None  # invalidate cache
+                self._blurred_bg = None  # invalidate
+                self._cached_bg = None
                 self.update()
                 return
         self._cover_pixmap = None
@@ -272,6 +259,20 @@ class HiFiNowPlayingPage(QWidget):
         if visible == self._lyrics_mode:
             return
         self._lyrics_mode = visible
+        # Update lyrics button style (was in paintEvent — now once only)
+        if visible:
+            accent = self._accent
+            self._lyrics_btn.setStyleSheet(
+                f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
+                f"border-radius:18px;font-size:16px;}}"
+                f"QPushButton:hover{{background:{accent.lighter(120).name()};}}"
+            )
+        else:
+            self._lyrics_btn.setStyleSheet(
+                "QPushButton{background:rgba(255,255,255,0.1);color:#aaa;border:none;"
+                "border-radius:18px;font-size:16px;}"
+                "QPushButton:hover{background:rgba(255,255,255,0.2);color:#fff;}"
+            )
         target = 1.0 if visible else 0.0
         # Animate layout morph
         if self._lyrics_layout_anim and self._lyrics_layout_anim.state() == QAbstractAnimation.State.Running:
@@ -319,10 +320,9 @@ class HiFiNowPlayingPage(QWidget):
             self.update()
 
     def _tick_lyrics_scroll(self):
-        self._lyrics_anim_elapsed += 16
-        self._lyrics_scale_anim_elapsed += 16
+        self._lyrics_anim_elapsed += 33
+        self._lyrics_scale_anim_elapsed += 33
         t = min(1.0, self._lyrics_anim_elapsed / self._lyrics_anim_duration)
-        # Cubic ease-out
         ease = 1.0 - (1.0 - t) ** 3
         self._lyrics_anim_line = self._lyrics_anim_start + (self._lyrics_anim_target - self._lyrics_anim_start) * ease
         # Scale animation: 0.96 → 1.0
@@ -331,7 +331,10 @@ class HiFiNowPlayingPage(QWidget):
         if t >= 1.0:
             self._lyrics_scroll_timer.stop()
             self._lyrics_scale = 1.0
-        self.update()
+        # Only redraw lyrics area, not the entire widget
+        w = self.width()
+        lyrics_rect = QRectF(w * 0.35, 0, w * 0.6, self.height())
+        self.update(lyrics_rect.toRect())
 
     def toggle_lyrics(self):
         self.set_lyrics_visible(not self._lyrics_mode)
@@ -696,15 +699,15 @@ class HiFiNowPlayingPage(QWidget):
 
         w, h = self.width(), self.height()
 
-        # ---- Background: blurred cover ----
+        # ---- Background: blurred cover (cached) ----
         if self._cover_pixmap and not self._cover_pixmap.isNull():
-            # Blur is cached at fixed 80x80, scaled to fill window on paint
             if self._blurred_bg is None:
                 self._blurred_bg = _blur_pixmap(self._cover_pixmap)
-            # Darken the blurred bg
-            scaled_bg = self._blurred_bg.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                                Qt.TransformationMode.SmoothTransformation)
-            p.drawPixmap(0, 0, scaled_bg)
+            if self._cached_bg is None or self._cached_bg.size() != self.size():
+                self._cached_bg = self._blurred_bg.scaled(
+                    w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation)
+            p.drawPixmap(0, 0, self._cached_bg)
             p.fillRect(0, 0, w, h, QColor(0, 0, 0, 160))
         else:
             # Fallback gradient
@@ -717,20 +720,6 @@ class HiFiNowPlayingPage(QWidget):
         self._close_btn.move(w - 50, 16)
         self._fullscreen_btn.move(w - 94, 16)
         self._lyrics_btn.move(w - 138, 16)
-        # Highlight lyrics button when active
-        if self._lyrics_mode:
-            accent = self._accent
-            self._lyrics_btn.setStyleSheet(
-                f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
-                f"border-radius:18px;font-size:16px;}}"
-                f"QPushButton:hover{{background:{accent.lighter(120).name()};}}"
-            )
-        else:
-            self._lyrics_btn.setStyleSheet(
-                "QPushButton{background:rgba(255,255,255,0.1);color:#aaa;border:none;"
-                "border-radius:18px;font-size:16px;}"
-                "QPushButton:hover{background:rgba(255,255,255,0.2);color:#fff;}"
-            )
 
         # ---- Layout morph interpolation ----
         progress = self._lyrics_layout_progress  # 0.0=Artwork, 1.0=Lyrics
@@ -944,10 +933,10 @@ class HiFiNowPlayingPage(QWidget):
                 time_y = bar_y + groove_h + 12
                 p.drawText(QRectF(bar_x, time_y, 48, 16),
                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                           _format_duration(self._position_ms / 1000))
+                           format_duration(self._position_ms / 1000))
                 p.drawText(QRectF(bar_x + bar_w - 48, time_y, 48, 16),
                            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                           _format_duration(self._duration_ms / 1000))
+                           format_duration(self._duration_ms / 1000))
             p.setOpacity(1.0)
 
         # ---- Layer 2: HiFi quality info (above progress bar) ----
