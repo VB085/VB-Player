@@ -5,7 +5,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QFont, QPixmap, QPen
 
 from audio_player.app import current_accent, current_theme_mode
-from audio_player.ui.utils import format_duration
+from audio_player.ui.utils import format_duration, cover_corner_radius
 from audio_player.ui.icons import (
     TRANSPORT_PREV, TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT, _icon,
 )
@@ -23,19 +23,19 @@ class NowPlayingBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("nowPlayingBar")
-        self.setFixedHeight(60)
+        self.setFixedHeight(72)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ratio = 0.0
         self._cover_pix = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 0, 10, 0)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 0, 14, 0)
+        layout.setSpacing(14)
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # ── Cover ──
         self._cover_label = QLabel()
-        self._cover_label.setFixedSize(44, 44)
+        self._cover_label.setFixedSize(56, 56)
         self._cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._cover_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -121,10 +121,22 @@ class NowPlayingBar(QWidget):
             pix = QPixmap()
             pix.loadFromData(cover_data)
             if not pix.isNull():
-                self._cover_pix = pix.scaled(44, 44,
+                raw = pix.scaled(56, 56,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation)
-                self._cover_label.setPixmap(self._cover_pix)
+                # Render rounded based on setting
+                from PyQt6.QtGui import QPainterPath
+                r = cover_corner_radius()
+                rounded = QPixmap(56, 56)
+                rounded.fill(Qt.GlobalColor.transparent)
+                p = QPainter(rounded)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                path = QPainterPath()
+                path.addRoundedRect(0, 0, 56, 56, r, r)
+                p.setClipPath(path)
+                p.drawPixmap((56 - raw.width()) // 2, (56 - raw.height()) // 2, raw)
+                p.end()
+                self._cover_label.setPixmap(rounded)
                 return
         self._cover_pix = None
         self._cover_label.setText("")

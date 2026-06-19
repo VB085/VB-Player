@@ -1,6 +1,16 @@
 """Shared utility functions used across UI widgets."""
 
+from PyQt6.QtCore import QSettings
 from audio_player.app import current_theme_mode
+
+
+def cover_radius_enabled() -> bool:
+    s = QSettings("VBPlayer", "VB Player")
+    return str(s.value("album_cover_radius", "true")).lower() == "true"
+
+
+def cover_corner_radius() -> int:
+    return 8 if cover_radius_enabled() else 0
 
 
 def format_duration(seconds: float) -> str:

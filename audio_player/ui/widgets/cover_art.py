@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import QWidget, QLabel, QGraphicsDropShadowEffect
 from PyQt6.QtCore import Qt, QRectF, QSize
 from PyQt6.QtGui import (QPainter, QColor, QPixmap, QImage, QPainterPath,
                          QLinearGradient, QFont)
-from pathlib import Path
+from audio_player.ui.utils import cover_corner_radius
 
 
 class CoverArtWidget(QWidget):
@@ -40,13 +40,14 @@ class CoverArtWidget(QWidget):
         size = min(w - margin * 2, h - margin * 2)
         x = (w - size) / 2
         y = margin
+        r = cover_corner_radius()
 
         cover_rect = QRectF(x, y, size, size)
 
         # Shadow
         shadow_rect = cover_rect.translated(2, 4)
         shadow_path = QPainterPath()
-        shadow_path.addRoundedRect(shadow_rect, 8, 8)
+        shadow_path.addRoundedRect(shadow_rect, r, r)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(0, 0, 0, 60))
         painter.drawPath(shadow_path)
@@ -54,7 +55,7 @@ class CoverArtWidget(QWidget):
         if self._cover and not self._cover.isNull():
             # Clip to rounded rect
             clip_path = QPainterPath()
-            clip_path.addRoundedRect(cover_rect, 8, 8)
+            clip_path.addRoundedRect(cover_rect, r, r)
             painter.setClipPath(clip_path)
 
             scaled = self._cover.scaled(
@@ -74,7 +75,7 @@ class CoverArtWidget(QWidget):
             overlay.setColorAt(1.0, QColor(0, 0, 0, 30))
             painter.setBrush(overlay)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(cover_rect, 8, 8)
+            painter.drawRoundedRect(cover_rect, r, r)
 
         else:
             # Placeholder
@@ -83,7 +84,7 @@ class CoverArtWidget(QWidget):
             grad.setColorAt(1.0, QColor("#2d1b69"))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(grad)
-            painter.drawRoundedRect(cover_rect, 8, 8)
+            painter.drawRoundedRect(cover_rect, r, r)
 
             # Music note icon
             font = QFont()

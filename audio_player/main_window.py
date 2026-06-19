@@ -754,6 +754,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._settings_ctrl.themeChanged.connect(self._on_theme_changed_ui)
         self._settings_ctrl.accentChanged.connect(self._refresh_accent_colors)
         self._settings_ctrl.logMessage.connect(self._log_message)
+        self._settings_ctrl.coverRadiusChanged.connect(self._refresh_covers)
         # Widget control signals (replacing direct widget refs)
         self._settings_ctrl.vizModeChanged.connect(self._spectrum.set_mode)
         self._settings_ctrl.lyricsToggled.connect(
@@ -781,6 +782,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _log_message(self, msg: str):
         self._sidebar.append_log(msg)
+
+    def _refresh_covers(self):
+        """Re-render album covers after radius setting change."""
+        meta = read_metadata(self._engine.current_file) if self._engine.current_file else None
+        if meta:
+            self._now_playing_bar.update_cover(meta.cover_data)
+            self._hifi_page.set_cover(meta.cover_data)
+        self._album_view.refresh_from_playlist()
+        self._metadata_panel.update()
 
     def _make_search_ui(self):
         """Create a search button + hidden search bar. Returns (button, line_edit)."""

@@ -15,6 +15,7 @@ class SettingsController(QObject):
     themeChanged = pyqtSignal(str, str)   # (mode, accent_name)
     accentChanged = pyqtSignal()          # after accent colors refreshed
     logMessage = pyqtSignal(str)          # status bar text
+    coverRadiusChanged = pyqtSignal()     # album cover corner radius toggled
 
     # Widget control signals — connected in MainWindow
     vizModeChanged = pyqtSignal(int)
@@ -159,6 +160,7 @@ class SettingsController(QObject):
 
     def on_album_cover_radius_toggled(self, enabled: bool):
         QSettings("VBPlayer", "VB Player").setValue("album_cover_radius", enabled)
+        self.coverRadiusChanged.emit()
 
     # ------------------------------------------------------------------
     #  Restore persisted settings
