@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=VB Player
+Comment=Cross-platform HiFi audio player
+Exec=VB Player
+Icon=vb-player
+Type=Application
+Categories=AudioVideo;Player;
+StartupNotify=true
+Terminal=false
