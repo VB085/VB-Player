@@ -318,9 +318,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._now_playing_bar.playPauseClicked.connect(self._playback_ctrl.toggle)
         self._now_playing_bar.nextClicked.connect(self._playback_ctrl.next_track)
         self._now_playing_bar.prevClicked.connect(self._playback_ctrl.prev_track)
-        self._now_playing_bar.seekRequested.connect(
-            lambda ratio: self._cast_ctrl.active_backend.seek(
-                int(ratio * self._cast_ctrl.active_backend.duration)))
         self._now_playing_bar.expandRequested.connect(self._show_np_page)
         # Set default volume — was handled by removed VolumeControl
         self._engine.volume = 1.0
