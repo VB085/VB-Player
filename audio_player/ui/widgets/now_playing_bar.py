@@ -22,7 +22,7 @@ class NowPlayingBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("nowPlayingBar")
-        self.setFixedHeight(56)
+        self.setFixedHeight(68)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ratio = 0.0
         self._duration_ms = 1
@@ -30,13 +30,13 @@ class NowPlayingBar(QWidget):
         self._cover_pix = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 0, 12, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(10)
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # ── Left: cover + info ──
         self._cover_label = QLabel()
-        self._cover_label.setFixedSize(40, 40)
+        self._cover_label.setFixedSize(48, 48)
         layout.addWidget(self._cover_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         info = QVBoxLayout()
@@ -56,21 +56,21 @@ class NowPlayingBar(QWidget):
         prev_btn = QPushButton()
         prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#999"))
         prev_btn.setObjectName("npBtn")
-        prev_btn.setFixedSize(34, 34)
+        prev_btn.setFixedSize(38, 38)
         prev_btn.clicked.connect(self.prevClicked.emit)
         layout.addWidget(prev_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._play_btn = QPushButton()
         self._play_btn.setIcon(_icon(TRANSPORT_PLAY, color="#fff"))
         self._play_btn.setObjectName("npPlayBtn")
-        self._play_btn.setFixedSize(34, 34)
+        self._play_btn.setFixedSize(38, 38)
         self._play_btn.clicked.connect(self.playPauseClicked.emit)
         layout.addWidget(self._play_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         next_btn = QPushButton()
         next_btn.setIcon(_icon(TRANSPORT_NEXT, color="#999"))
         next_btn.setObjectName("npBtn")
-        next_btn.setFixedSize(34, 34)
+        next_btn.setFixedSize(38, 38)
         next_btn.clicked.connect(self.nextClicked.emit)
         layout.addWidget(next_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addStretch()
@@ -97,7 +97,7 @@ class NowPlayingBar(QWidget):
             QLabel#npArtist {{ color: {sub_c}; }}
             QLabel#npTime {{ color: {sub_c}; }}
             QPushButton#npBtn {{
-                background: transparent; border: none; border-radius: 17px;
+                background: transparent; border: none; border-radius: 19px;
                 color: {sub_c}; font-size: 14px;
             }}
             QPushButton#npBtn:hover {{
@@ -105,7 +105,7 @@ class NowPlayingBar(QWidget):
             }}
             QPushButton#npPlayBtn {{
                 background: {accent.name()}; color: #fff;
-                border: none; border-radius: 17px;
+                border: none; border-radius: 19px;
             }}
             QPushButton#npPlayBtn:hover {{
                 background: {accent.lighter(120).name()};
@@ -119,17 +119,17 @@ class NowPlayingBar(QWidget):
             pix = QPixmap()
             pix.loadFromData(cover_data)
             if not pix.isNull():
-                raw = pix.scaled(40, 40, Qt.AspectRatioMode.KeepAspectRatio,
+                raw = pix.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio,
                                  Qt.TransformationMode.SmoothTransformation)
                 from PyQt6.QtGui import QPainterPath
                 r = cover_corner_radius()
-                rounded = QPixmap(40, 40)
+                rounded = QPixmap(48, 48)
                 rounded.fill(Qt.GlobalColor.transparent)
                 p = QPainter(rounded); p.setRenderHint(QPainter.RenderHint.Antialiasing)
                 path = QPainterPath()
                 path.addRoundedRect(0, 0, 40, 40, r, r)
                 p.setClipPath(path)
-                p.drawPixmap((40 - raw.width()) // 2, (40 - raw.height()) // 2, raw)
+                p.drawPixmap((48 - raw.width()) // 2, (48 - raw.height()) // 2, raw)
                 p.end()
                 self._cover_label.setPixmap(rounded)
                 return
