@@ -2,41 +2,37 @@
 
 ## v0.6 (2026-06-19)
 
-### 重大重构
-
-- **平台抽象层** — 新增 `platform/` 模块，`CapabilityMatrix` + `UIBehaviorPolicy` 数据驱动平台决策，替代硬编码 `sys.platform`
-  - Linux: Wayland CSD 支持、gsettings 系统主题追踪、AppIndicator 托盘、D-Bus 通知
-  - macOS/Windows: 预留 vibrancy/Mica 材质、系统 accent 跟随等 stubs
-- **主窗口瘦身** — 拆出 `TitleBar`、`TrayManager`、`ShortcutManager` 独立模块，`main_window.py` 从 1721 行降至 ~1550 行
-- **Controller 解耦** — `SettingsController` 不再直接导入 widget 类，改为信号驱动
-- **消除重复代码** — `format_duration`、`format_size`、`is_light_mode`、`FlowLayout`、`AlbumTrackModel` 等收归 `ui/utils.py` 和 `ui/shared.py`
-
 ### 新功能
 
-- **Apple Music 风格播放界面** — 底部常驻迷你播放条，点击弹起铺满 HiFi 播放页（模糊封面背景 + 大封面 + 歌词 + 完整控制）
-- **专辑封面动态取色** — 切换曲目时自动提取封面主色调，界面强调色跟随变化
-- **单实例锁** — fcntl 内核级文件锁，防止重复启动
-- **原生窗口装饰** — Wayland 下使用 compositor 标题栏（CSD），不再强制 frameless
+- 底部常驻迷你播放条，点击弹起铺满 HiFi 播放页，模糊封面背景 + 大封面 + 歌词 + 完整播放控制
+- 专辑封面动态取色，切换曲目时自动提取封面主色调，界面强调色跟随变化
+- 单实例锁，防止重复启动
+- Wayland 下使用系统原生标题栏，不再强制无边框窗口
+- 平台抽象层，代码自动适配 Linux / macOS / Windows 特性，无需手动判断系统
 
-### UI 改进
+### 界面
 
-- **暗色主题现代化** — 纯黑 `#000` → GNOME Adwaita-dark 色系 `#242424`，圆角增大，接近系统原生应用
-- **亮色主题适配** — 修复全屏歌词、波形、均衡器在亮色模式下仍显示暗色的问题
-- **布局重排** — 移除右侧固定面板，内容区拉满全宽；播放控制移到底部播控条
-- **侧边栏加文字标签** — 导航图标旁显示文字
-- 所有弹窗在 CSD 平台使用系统原生标题栏（设置、标签编辑、歌单编辑、输出详情）
-- 进度条回归底部播控条，支持迷你拖动
+- 暗色主题改用 GNOME Adwaita 配色，圆角增大，更接近系统原生应用
+- 修复亮色模式下全屏歌词、波形图、均衡器等组件仍显示暗色的问题
+- 移除右侧固定面板，内容区拉满全宽，播放控制移到底部播控条
+- 侧边栏导航图标旁增加文字标签
+- 所有弹窗使用系统原生标题栏
 
 ### 国际化
 
-- i18n 翻译字典从 Python 源码拆为独立 JSON 文件（zh_CN/zh_TW/en/ja），非开发者可直接编辑
+- 翻译字典从源码拆为独立 JSON 文件，非开发者可直接编辑和贡献翻译
 
 ### 修复
 
-- bootstrap venv 检测改用 `sys.prefix`，修复 Python 符号链接导致的跳转失败
-- QSS `@ACCENT_DARKER@` 占位符缺失导致样式解析警告
-- 主窗口关闭后 tray_quit 方法命名不一致
-- 沉浸界面歌词滚动性能优化（背景缓存、局部刷新、按钮样式移出 paintEvent）
+- 修复系统 Python 下无法自动跳转 venv 的问题
+- 修复样式解析警告
+- 优化歌词滚动性能
+
+### 架构
+
+- 主窗口拆分为 TitleBar、TrayManager、ShortcutManager 等独立模块
+- Controller 不再直接依赖 Widget，改为信号驱动
+- 公共工具函数和类型收归统一模块，消除重复代码
 
 ## v0.3 (2026-05-29)
 
