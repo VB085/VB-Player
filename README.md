@@ -1,74 +1,102 @@
 # VB Player
 
-跨平台 HIFI 音乐播放器，基于 PyQt6 + GStreamer，为高解析度音频回放设计。支持 Windows、macOS、Linux。
+[![Version](https://img.shields.io/badge/version-0.6.2-7c3aed)](https://github.com/VB085/VB-Player)
+[![License](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-10b981)]()
 
-## 功能
+跨平台 HiFi 音乐播放器，基于 PyQt6 + GStreamer，为高解析度音频回放设计。
 
-- **跨平台** — Windows (WASAPI/ASIO)、macOS (CoreAudio)、Linux (ALSA/PipeWire)
-- **独占模式** — Windows ASIO/WASAPI 独占、macOS CoreAudio Exclusive、Linux ALSA hw: 直通 DAC，bit-perfect 输出
-- **DSD 软解** — 支持 .dsf / .dff 文件，自动解码为 PCM 输出
-- **10 段均衡器** — 实时调节，基于 GStreamer equalizer-nbands
-- **全屏歌词** — 平滑动画歌词显示，支持 LRC 时间轴歌词
-- **多语言** — 简体中文、繁體中文、English、日本語
-- **明暗主题** — 纯黑/纯白双主题，6 种强调色
-- **音频输出流程** — 实时显示格式、采样率、位深度、声道、SRC 状态
-- **播放列表管理** — 文件夹导入、M3U 导入导出
-- **专辑视图** — 网格/列表双视图，自动按专辑归类
-- **频谱可视化** — 实时频谱 + 波形预览
-- **歌词叠加层** — 频谱区上方半透明歌词显示
+<p align="center">
+  <img src="https://github.com/VB085/VB-Player/raw/main/assets/screenshot.png" alt="screenshot" width="800"/>
+</p>
 
-## 系统要求
+## 功能亮点
 
-- Python 3.10+
-- GStreamer 1.28+（含 good/bad/ugly 插件）
-- PyQt6
+### 音频引擎
+- **跨平台后端** — Windows (WASAPI/ASIO)、macOS (CoreAudio)、Linux (ALSA/PipeWire)
+- **独占模式** — bit-perfect DAC 直通
+- **DSD 解码** — .dsf / .dff 支持，PCM 软解 / Native 硬解 / DoP
+- **10 段参数均衡器** — 6 组预设，实时调节
+- **ReplayGain** — 音量标准化
+- **无缝播放** — 曲末预加载，零间隔过渡
+- **DLNA/UPnP** — 局域网设备发现与串流
 
-### Windows
+### 界面
+- **沉浸式播放页** — 封面模糊背景 + 切歌 crossfade 过渡
+- **动态强调色** — 从专辑封面提取主色，800ms 渐变扩散到全界面（可开关）
+- **悬浮胶囊播控栏** — Apple Music 风格，环形/线性进度可选
+- **窗口材质** — 玻璃半透明 / 毛玻璃噪点纹理，不透明度+纹理强度可调
+- **暗/亮双主题** — 6 种强调色，标题栏风格可选
+- **多语言** — 简体中文 / 繁體中文 / English / 日本語
 
-```powershell
-# 安装 GStreamer — 从 https://gstreamer.freedesktop.org/download/ 下载 MSVC 版
-# 需安装 runtime + development 两个包
+### 播放列表
+- 40×40 封面缩略图 + 发光高亮
+- 拖拽排序（收藏 / 歌单）
+- 搜索过滤 + 多字段排序
+- 右键菜单：收藏、添加到歌单、编辑标签
 
-pip install pyqt6 mutagen PyGObject
-```
+### 专辑 & 歌单
+- 网格/列表双视图，自动按专辑归类
+- 详情页：封面、元数据、完整曲目列表
+- 歌单：新建/编辑/删除/搜索
 
-支持 WASAPI Shared/Exclusive 和 ASIO 独占模式。ASIO 需额外安装 GStreamer ASIO 插件。
+### 歌词
+- LRC 时间轴 + 滚动动画
+- 在线搜索 (LRCLIB + 自定义 API），自动保存 .lrc
+- 全屏歌词模式（独立窗口）
+- 双语翻译显示
 
-### macOS
+### 系统集成
+- MPRIS2 / SMTC / macOS Now Playing 系统媒体控制
+- 系统托盘，关闭到托盘可选
+- DLNA 设备发现与输出切换
+- 内嵌 HTTP 服务器（局域网串流）
 
-```bash
-# Intel Mac
-brew install gstreamer gst-plugins-good gst-plugins-bad gst-plugins-ugly
-pip install pyqt6 mutagen PyGObject
-
-# Apple Silicon Mac（同一条命令，Homebrew 自动处理架构）
-brew install gstreamer gst-plugins-good gst-plugins-bad gst-plugins-ugly
-pip install pyqt6 mutagen PyGObject
-```
-
-支持 CoreAudio Shared/Exclusive 模式。如手动安装 GStreamer，请下载对应架构（x86_64 或 arm64）的 `.pkg` 安装包。
+## 快速开始
 
 ### Linux
 
 ```bash
 # Ubuntu/Debian
-sudo apt install python3-pyqt6 gir1.2-gst-plugins-bad-1.0 \
+sudo apt install python3-pyqt6 python3-gi gir1.2-gstreamer-1.0 \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly gstreamer1.0-alsa
 
-# Arch
-sudo pacman -S python-pyqt6 gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-plugin-alsa
-```
-
-## 运行
-
-```bash
+pip install pyqt6 mutagen numpy
 python main.py
 ```
 
+```bash
+# Arch
+sudo pacman -S python-pyqt6 gst-plugins-good gst-plugins-bad gst-plugins-ugly
+pip install pyqt6 mutagen numpy
+python main.py
+```
+
+### macOS
+
+```bash
+brew install gstreamer gst-plugins-good gst-plugins-bad gst-plugins-ugly
+pip install pyqt6 mutagen numpy PyGObject
+python main.py
+```
+
+### Windows
+
+从 [gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/) 下载安装 GStreamer MSVC runtime + development。
+
+```powershell
+pip install pyqt6 mutagen numpy PyGObject
+python main.py
+```
+
+## 直接安装
+
+下载 [Releases](https://github.com/VB085/VB-Player/releases) 中的 `.deb` 或便携 `.tar.gz` 即可运行。
+
 ## 支持格式
 
-MP3, FLAC, WAV, OGG, Opus, AAC, M4A, WMA, AIFF, APE, WavPack, DSD (.dsf/.dff), Musepack, Speex
+MP3 · FLAC · WAV · OGG · Opus · AAC · M4A · ALAC · WMA · AIFF · APE · WavPack · DSD (.dsf/.dff) · Musepack · Speex
 
 ## 许可证
 
