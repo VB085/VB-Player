@@ -103,8 +103,8 @@ QWidget#playlistDetailPage QPushButton { background: transparent; color: #bbb; b
 QWidget#albumDetailPage QPushButton:hover,
 QWidget#playlistDetailPage QPushButton:hover { background: #363636; color: #fff; }
 
-QPushButton#viewToggle { background: #363636; color: #bbb; border: none; border-radius: 8px; font-size: 13px; }
-QPushButton#viewToggle:hover { background: #444; color: #eee; }
+QPushButton#viewToggle, QPushButton#sortBtn { background: rgba(255,255,255,0.06); color: #94a3b8; border: none; border-radius: 8px; font-size: 14px; }
+QPushButton#viewToggle:hover, QPushButton#sortBtn:hover { background: @ACCENT_DARKER@; color: #e2e8f0; }
 
 QPushButton[accent="true"] { background: @ACCENT@; color: #ffffff; border: none; border-radius: 8px; padding: 8px; font-size: 13px; }
 QPushButton[accent="true"]:hover { background: @ACCENT_LIGHT@; }
@@ -129,7 +129,7 @@ QLabel#specLabel:hover { color: #ddd; background: #363636; }
 
 QWidget#outputDetailBar { background: #1e1e1e; }
 QWidget#outputDetailBody { background: #242424; }
-QGroupBox#outputGroup { color: @ACCENT_LIGHT@; font-size: 11px; font-weight: bold; border: 1px solid #363636; border-radius: 8px; margin-top: 12px; padding-top: 18px; }
+QGroupBox#outputGroup { color: @ACCENT_LIGHT@; font-size: 11px; font-weight: bold; border: 1px solid @ACCENT@; border-radius: 8px; margin-top: 12px; padding-top: 18px; }
 QGroupBox#outputGroup::title { subcontrol-origin: margin; left: 12px; }
 QLabel#outputLabel { color: #888; font-size: 11px; }
 QLabel#outputValue { color: #eee; font-size: 12px; font-weight: bold; }

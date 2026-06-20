@@ -35,11 +35,24 @@ class LibraryController(QObject):
         fav_label.setText(_("page.favorites_count", count=len(paths)))
 
     def play_fav_track(self, idx: int):
-        # Load favorites into main playlist and play
-        path = self._fav_playlist.track_at(idx).get("path") if idx < self._fav_playlist.count else None
-        if path:
-            paths = self._library.get_favorites()
-            self.playRequested.emit(paths)
+        paths = self._library.get_favorites()
+        if paths and 0 <= idx < len(paths):
+            parent = self.parent()
+            if hasattr(parent, '_playlist') and hasattr(parent, '_playback_ctrl'):
+                self._add_new_only(parent._playlist, paths)
+                target = paths[idx]
+                for i in range(parent._playlist.count):
+                    if parent._playlist.track_at(i).get("path") == target:
+                        parent._playback_ctrl.play_track_at(i)
+                        break
+                self._fav_playlist.current_index = idx
+
+    @staticmethod
+    def _add_new_only(playlist, paths):
+        existing = {playlist.track_at(i).get("path") for i in range(playlist.count)}
+        new_paths = [p for p in paths if p not in existing]
+        if new_paths:
+            playlist.add_files(new_paths)
 
     # ---- Playlists page ----
 
@@ -73,7 +86,14 @@ class LibraryController(QObject):
     def play_pls_track(self, idx: int):
         paths = self._library.get_playlist_tracks(self._current_pls_name)
         if paths and 0 <= idx < len(paths):
-            self.playRequested.emit(paths)
+            parent = self.parent()
+            if hasattr(parent, '_playlist') and hasattr(parent, '_playback_ctrl'):
+                self._add_new_only(parent._playlist, paths)
+                target = paths[idx]
+                for i in range(parent._playlist.count):
+                    if parent._playlist.track_at(i).get("path") == target:
+                        parent._playback_ctrl.play_track_at(i)
+                        break
 
     # ---- Favorites / playlist add/remove ----
 

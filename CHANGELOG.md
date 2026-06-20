@@ -1,5 +1,37 @@
 # 更新日志
 
+## v0.6.2 (2026-06-20)
+
+### 新功能
+- 悬浮胶囊播控栏（Apple Music 风格），环形/线性进度可选
+- 专辑和歌单详情页统一 PlaylistView（封面缩略图、发光高亮、拖拽排序）
+- 当前曲目高亮风格可选：封面发光边框 / 左侧竖线
+- 搜索框改为玻璃风格常显（5 页面统一）
+- 排序/视图切换按钮统一 accent QSS
+- HiFi 页面切歌 500ms crossfade 过渡
+- 输出详情弹窗重设计（QFormLayout 对齐 + accent 边框）
+- 网络页玻璃质感 + 强调色跟随
+- 沉浸页点击质量文字弹出输出详情
+- 关闭到托盘（设置-通用可开关）
+- 强调色首次播放从灰渐入
+
+### 修复
+- 双击播放逻辑重写（消除重复加载卡顿）
+- 元数据加载 20ms 节流（消除洪水卡顿）
+- GStreamer pipeline 清理 50ms 上限
+- 全部歌曲/专辑/收藏/歌单双击播放统一修复
+- 播放指示条跨页面全局同步
+- 引擎 `play()` 不再跳过状态过渡
+- 侧栏高亮改为 inline style 跟随动画
+- DLNA/gst-launch 日志冗长抑制
+
+### 技术变更
+- 强调色动画重写：单一路径，palette-only 每帧，QSS 仅动画结束时更新
+- QThread 全部加 parent 防 GC 提前析构（最终修复 QThread 崩溃）
+- `beginInsertRows` → `beginResetModel`（Qt 6.7 proxy bug 绕行）
+- `_MetaLoader` 改为持久 QThread + Queue 模式
+- `on_anim_tick` 回调恢复（轻量通知，不调全局 QSS）
+
 ## v0.6.1 (2026-06-20)
 
 ### 新功能

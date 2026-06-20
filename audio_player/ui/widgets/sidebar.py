@@ -141,7 +141,7 @@ class Sidebar(QWidget):
         self.navChanged.emit(key)
 
     def _update_nav_highlight(self):
-        """Highlight selected nav item. Active icon = white, background via QSS."""
+        """Highlight selected nav item. Background follows accent via inline style."""
         accent = current_accent()
         is_light = current_theme_mode() == "light"
         icon_inactive = "#555" if is_light else "#888"
@@ -150,17 +150,19 @@ class Sidebar(QWidget):
             is_current = row["key"] == self._current_nav
             btn = row["btn"]
             lbl = row["lbl"]
-
-            # Active: white icon on accent background → always readable
             icon_color = "#fff" if is_current else icon_inactive
             btn.setIcon(_icon(row["icon"], color=icon_color))
-            btn.setProperty("current", is_current)
             lbl.setProperty("current", is_current)
-
-        # Re-apply QSS for child buttons/labels via individual polish
-        for row in self._nav_rows:
-            row["btn"].style().polish(row["btn"])
-            row["lbl"].style().polish(row["lbl"])
+            if is_current:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{accent.darker(150).name()};border:none;border-radius:8px;}}"
+                    f"QPushButton:hover{{background:{accent.darker(120).name()};}}"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QPushButton{background:transparent;border:none;border-radius:8px;}"
+                    "QPushButton:hover{background:rgba(255,255,255,0.06);}"
+                )
 
     def toggle(self):
         self._collapsed = not self._collapsed

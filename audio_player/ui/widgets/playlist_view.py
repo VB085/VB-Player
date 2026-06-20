@@ -1,13 +1,14 @@
 from typing import Callable
 from PyQt6.QtWidgets import (QListView, QStyledItemDelegate, QStyle,
                              QAbstractItemView, QMenu)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QModelIndex, QSortFilterProxyModel
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QRectF, QModelIndex, QSortFilterProxyModel, QSettings, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QAction, QPixmap, QPainterPath
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
 
 # Per-delegate thumbnail cache: filepath → (cover_data_hash, QPixmap)
 _cover_cache: dict[str, tuple[int, QPixmap]] = {}
+_current_file: str = ""  # globally tracked for playing indicator
 
 THUMB_SIZE = 40
 THUMB_RADIUS = 6
@@ -89,18 +90,44 @@ class _PlaylistDelegate(QStyledItemDelegate):
             painter.setBrush(c)
             painter.drawRoundedRect(rect, 8, 8)
 
-        # Playing indicator — taller accent bar
-        is_current = src and hasattr(src, 'current_index') and src.current_index == src_row
-        if is_current:
+        # Cover thumbnail
+        filepath = (index.data(src.FilePathRole) if src else "") or ""
+
+        # Playing indicator — file path matching across all playlist instances
+        is_current = bool(filepath and filepath == _current_file)
+        highlight = str(QSettings("VBPlayer", "VB Player").value("current_track_highlight", "glow") or "glow")
+        thumb = _thumbnail(src, index, filepath) if src else None
+        cover_x = rect.x() + 14
+        cover_y = rect.y() + (rect.height() - THUMB_SIZE) // 2
+
+        # Glow highlight — backlight bloom behind current track cover
+        if is_current and highlight == "glow":
+            glow_margin = 4
+            glow_rect = QRectF(cover_x - glow_margin, cover_y - glow_margin,
+                               THUMB_SIZE + 2 * glow_margin, THUMB_SIZE + 2 * glow_margin)
+            # Outer glow (large, very faint)
+            glow_c = QColor(accent)
+            glow_c.setAlpha(35)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow_c)
+            gpath = QPainterPath()
+            gpath.addRoundedRect(glow_rect.adjusted(-2, -2, 2, 2), THUMB_RADIUS + 2, THUMB_RADIUS + 2)
+            painter.drawPath(gpath)
+            # Inner glow ring
+            glow_c.setAlpha(80)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            pen = QPen(glow_c, 2)
+            painter.setPen(pen)
+            gpath2 = QPainterPath()
+            gpath2.addRoundedRect(glow_rect, THUMB_RADIUS + 1, THUMB_RADIUS + 1)
+            painter.drawPath(gpath2)
+        elif is_current and highlight == "bar":
+            # Classic accent bar
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(accent)
             painter.drawRoundedRect(QRect(rect.x() + 4, rect.y() + 8, 4, rect.height() - 16), 2, 2)
 
-        # Cover thumbnail
-        filepath = (index.data(src.FilePathRole) if src else "") or ""
-        thumb = _thumbnail(src, index, filepath) if src else None
-        cover_x = rect.x() + 14
-        cover_y = rect.y() + (rect.height() - THUMB_SIZE) // 2
+        # Cover pixmap
         if thumb and not thumb.isNull():
             painter.drawPixmap(cover_x, cover_y, thumb)
         else:
@@ -125,7 +152,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
         title_font.setBold(is_current)
         painter.setFont(title_font)
         title_c = QColor("#1a1a1a") if is_light else QColor("#e2e8f0")
-        painter.setPen(title_c if not is_current else accent.lighter(130))
+        painter.setPen(title_c if not is_current else accent)
         title_text = painter.fontMetrics().elidedText(
             title, Qt.TextElideMode.ElideRight, text_w)
         painter.drawText(text_x, rect.y() + 6, text_w, 22,
@@ -220,6 +247,12 @@ class PlaylistView(QListView):
 
     def _on_double_click(self, idx: QModelIndex):
         self.trackDoubleClicked.emit(_source_row(self.model(), idx))
+
+    def mousePressEvent(self, event):
+        idx = self.indexAt(event.pos())
+        if not idx.isValid():
+            self.clearSelection()
+        super().mousePressEvent(event)
 
     def _show_context_menu(self, pos):
         proxy = self.model()

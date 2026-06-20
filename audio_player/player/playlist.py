@@ -43,7 +43,7 @@ class _MetaLoader(QThread):
             try:
                 row, filepath = self._queue.get(timeout=1)
             except Exception:
-                continue  # timeout, check _running
+                continue
             if not self._running:
                 break
             try:
@@ -51,6 +51,7 @@ class _MetaLoader(QThread):
             except Exception:
                 meta = TrackMetadata()
             self.loaded.emit(row, meta)
+            self.msleep(20)  # throttle — avoid flooding main thread with repaints
 
     def stop(self):
         self._running = False
@@ -167,7 +168,8 @@ class PlaylistManager(QAbstractListModel):
                 if path.suffix.lower() in AUDIO_EXTENSIONS:
                     self._tracks.append({"path": str(path), "source_type": "local", "has_metadata": False, "metadata": None})
         if len(self._tracks) > start:
-            self.insertRows(start, len(self._tracks) - start, QModelIndex())
+            self.beginResetModel()
+            self.endResetModel()
             for i in range(start, len(self._tracks)):
                 if self._tracks[i].get("source_type") != "url":
                     self._loader.enqueue(i, self._tracks[i]["path"])
@@ -180,7 +182,8 @@ class PlaylistManager(QAbstractListModel):
             meta = TrackMetadata()
             meta.title = title
         self._tracks.append({"path": url, "source_type": "url", "has_metadata": bool(meta), "metadata": meta})
-        self.insertRows(row, 1, QModelIndex())
+        self.beginResetModel()
+        self.endResetModel()
 
     def add_urls(self, urls: list[str]):
         """Add multiple stream URLs to the playlist."""
@@ -189,7 +192,9 @@ class PlaylistManager(QAbstractListModel):
         start = len(self._tracks)
         for url in urls:
             self._tracks.append({"path": url, "source_type": "url", "has_metadata": False, "metadata": None})
-        self.insertRows(start, len(self._tracks) - start, QModelIndex())
+        if len(self._tracks) > start:
+            self.beginResetModel()
+            self.endResetModel()
 
     def insert_next(self, filepath: str):
         """Insert a single track right after the current playing index."""
@@ -223,6 +228,35 @@ class PlaylistManager(QAbstractListModel):
             files.extend(str(p) for p in folder.rglob(f"*{ext}"))
         files.sort()
         self.add_files(files)
+
+    def moveRows(self, source_parent, source_row, count, dest_parent, dest_child):
+        """Qt drag-and-drop reorder: move *count* rows starting at *source_row*
+        to *dest_child* (before insertion). Returns True on success."""
+        if source_row == dest_child or source_row + 1 == dest_child:
+            return False  # no-op
+        if count != 1:
+            return False
+        if not (0 <= source_row < len(self._tracks)):
+            return False
+        if dest_child < 0 or dest_child > len(self._tracks):
+            return False
+
+        self.beginMoveRows(QModelIndex(), source_row, source_row,
+                           QModelIndex(), dest_child)
+        track = self._tracks.pop(source_row)
+        # Adjust destination if source was before it
+        if source_row < dest_child:
+            dest_child -= 1
+        self._tracks.insert(dest_child, track)
+        # Update current_index
+        if self._current_index == source_row:
+            self._current_index = dest_child
+        elif source_row < self._current_index <= dest_child:
+            self._current_index -= 1
+        elif dest_child <= self._current_index < source_row:
+            self._current_index += 1
+        self.endMoveRows()
+        return True
 
     def remove_indices(self, indices: list[int]):
         for row in sorted(indices, reverse=True):

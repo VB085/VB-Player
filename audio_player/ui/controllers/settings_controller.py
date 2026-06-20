@@ -60,6 +60,7 @@ class SettingsController(QObject):
         dlg.materialChanged.connect(lambda v: self.materialChanged.emit(v))
         dlg.titlebarChanged.connect(lambda v: self.logMessage.emit(_("log.titlebar_restart")))
         dlg.dynamicAccentToggled.connect(self._on_dynamic_accent_toggled)
+        dlg.barStyleChanged.connect(lambda v: self._on_bar_style_changed(v, parent_widget))
 
         # Equalizer state -> settings dialog
         dlg.set_eq_state(
@@ -103,6 +104,10 @@ class SettingsController(QObject):
     # ------------------------------------------------------------------
     #  Theme
     # ------------------------------------------------------------------
+
+    def _on_bar_style_changed(self, style: str, parent_widget):
+        if hasattr(parent_widget, '_apply_bar_style'):
+            parent_widget._apply_bar_style(style)
 
     def _on_dynamic_accent_toggled(self, enabled: bool):
         from audio_player.app import clear_dynamic_accent

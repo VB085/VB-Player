@@ -113,9 +113,9 @@ QWidget#playlistDetailPage QPushButton { background: transparent; color: #666666
 QWidget#albumDetailPage QPushButton:hover,
 QWidget#playlistDetailPage QPushButton:hover { background: #e0e0e0; color: #333; }
 
-/* View toggle buttons */
-QPushButton#viewToggle { background: #e0e0e0; color: #666666; border: none; border-radius: 5px; font-size: 13px; }
-QPushButton#viewToggle:hover { background: #d0d0d0; color: #333333; }
+/* View toggle + sort buttons */
+QPushButton#viewToggle, QPushButton#sortBtn { background: rgba(0,0,0,0.05); color: #777; border: none; border-radius: 8px; font-size: 14px; }
+QPushButton#viewToggle:hover, QPushButton#sortBtn:hover { background: @ACCENT@; color: #fff; }
 
 /* Accent buttons */
 QPushButton[accent="true"] { background: @ACCENT@; color: #ffffff; border: none; border-radius: 5px; padding: 8px; font-size: 13px; }

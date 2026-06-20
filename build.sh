@@ -21,7 +21,7 @@ for arg in "$@"; do
     esac
 done
 
-echo "=== VB Player v0.6 Build ==="
+echo "=== VB Player v0.6.2 Build ==="
 echo "Platform: $PLATFORM $ARCH"
 echo "Mode:     $MODE"
 echo "Package:  $PACKAGE"

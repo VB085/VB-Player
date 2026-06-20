@@ -31,6 +31,7 @@ from audio_player.ui.widgets.waveform import WaveformWidget
 from audio_player.ui.widgets.metadata_panel import MetadataPanel
 from audio_player.ui.widgets.hifi_now_playing import HiFiNowPlayingPage
 from audio_player.ui.widgets.now_playing_bar import NowPlayingBar
+from audio_player.ui.widgets.floating_pill import FloatingPill
 from audio_player.ui.utils import format_duration as _format_duration, format_size as _format_size
 from audio_player.ui.widgets.sidebar import Sidebar
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
@@ -80,11 +81,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self.setAcceptDrops(True)
 
         self._border_radius = 12
+        self._bar_style = "full"
         self._material = platform_info.policy.material  # "acrylic" | "glass" | "vibrancy" | etc
         self._blur_enabler = None
-        self._noise_pixmap = None  # cached noise texture for acrylic
+        self._noise_pixmap = None
 
-        # Enable translucent background if material needs it (works on all compositors)
         self._use_translucent = self._material in ("glass", "acrylic")
         if self._use_translucent:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -145,7 +146,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._sidebar.refresh_theme_mode(is_light)
         self._album_view.refresh_theme_mode(is_light)
         self._pls_grid_view.refresh_theme_mode(is_light)
-        self._now_playing_bar.refresh_theme()
+        self._bar_update("refresh_theme")
+
+        # Clear playlist selection when clicking away
+        self._body.installEventFilter(self)
 
         # React to language changes
         languageChanged.connect(self._refresh_language)
@@ -177,7 +181,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._title_bar.minimizeClicked.connect(self.showMinimized)
         self._title_bar.maximizeClicked.connect(
             lambda: self.showNormal() if self.isMaximized() else self.showMaximized())
-        self._title_bar.closeClicked.connect(self._on_tray_quit)
+        self._title_bar.closeClicked.connect(self.close)
         if self._use_csd:
             self._title_bar.hide()
         root.addWidget(self._title_bar)
@@ -202,19 +206,17 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         pl_layout.setContentsMargins(0, 0, 0, 0)
         pl_layout.setSpacing(0)
         pl_header = QHBoxLayout()
-        pl_header.setContentsMargins(8, 8, 8, 4)
+        pl_header.setContentsMargins(12, 10, 12, 6)
         self._pl_label = QLabel(_("page.all_songs"))
         self._pl_label.setObjectName("pageTitle")
         pl_header.addWidget(self._pl_label)
         pl_header.addStretch()
-        # Search + Sort
-        self._pl_search_btn, self._pl_search_bar = self._make_search_ui()
+        self._pl_search_bar = self._make_search_bar()
         self._pl_search_bar.textChanged.connect(lambda t: self._playlist_view.setFilterText(t))
-        self._playlist_proxy = PlaylistFilterProxy()
-        self._pl_sort_btn = self._make_sort_btn(self._playlist_proxy)
-        pl_header.addWidget(self._pl_search_btn)
         pl_header.addWidget(self._pl_search_bar)
         pl_header.addSpacing(8)
+        self._playlist_proxy = PlaylistFilterProxy()
+        self._pl_sort_btn = self._make_sort_btn(self._playlist_proxy)
         pl_header.addWidget(self._pl_sort_btn)
         pl_layout.addLayout(pl_header)
         self._playlist_proxy.setSourceModel(self._playlist)
@@ -233,21 +235,18 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         album_layout.setContentsMargins(0, 0, 0, 0)
         album_layout.setSpacing(0)
         album_header = QHBoxLayout()
-        album_header.setContentsMargins(8, 8, 8, 4)
+        album_header.setContentsMargins(12, 10, 12, 6)
         self._album_lbl = QLabel(_("page.albums"))
         self._album_lbl.setObjectName("pageTitle")
         album_header.addWidget(self._album_lbl)
         album_header.addStretch()
-        # Search
-        self._album_search_btn, self._album_search_bar = self._make_search_ui()
+        self._album_search_bar = self._make_search_bar()
         self._album_search_bar.textChanged.connect(lambda t: self._album_view.set_filter(t))
-        album_header.addWidget(self._album_search_btn)
         album_header.addWidget(self._album_search_bar)
         album_header.addSpacing(8)
-        # Grid/list toggle
         self._album_view_btn = QPushButton("◧")
         self._album_view_btn.setObjectName("viewToggle")
-        self._album_view_btn.setFixedSize(28, 28)
+        self._album_view_btn.setFixedSize(32, 32)
         self._album_view_btn.setToolTip(_("album.view_toggle_grid"))
         self._album_view_btn.clicked.connect(self._toggle_album_view_mode)
         album_header.addWidget(self._album_view_btn)
@@ -262,7 +261,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Page 3: Album detail (inline)
         self._album_detail_page = AlbumDetailPage()
         self._album_detail_page.backRequested.connect(lambda: self._content_stack.setCurrentIndex(Page.ALBUMS))
-        self._album_detail_page.trackDoubleClicked.connect(self._playback_ctrl.play_track_at)
+        self._album_detail_page.trackDoubleClicked.connect(self._play_album_track)
         self._album_detail_page._is_favorite_fn = self._library.is_favorite
         self._album_detail_page._get_playlist_names_fn = self._library.get_playlist_names
         self._album_detail_page.addToFavorites.connect(self._library_ctrl.on_add_to_favorites)
@@ -323,13 +322,24 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._body_splitter.setChildrenCollapsible(False)
         body_layout.addWidget(self._body_splitter)
 
-        # ===== Bottom bar =====
+        # ===== Bottom bar (full-width) + Floating pill (centered capsule) =====
         self._now_playing_bar = NowPlayingBar()
-        self._now_playing_bar.playPauseClicked.connect(self._playback_ctrl.toggle)
-        self._now_playing_bar.nextClicked.connect(self._playback_ctrl.next_track)
-        self._now_playing_bar.prevClicked.connect(self._playback_ctrl.prev_track)
-        self._now_playing_bar.expandRequested.connect(self._show_np_page)
-        # Set default volume — was handled by removed VolumeControl
+        self._pill = FloatingPill()
+
+        for bar in (self._now_playing_bar, self._pill):
+            bar.playPauseClicked.connect(self._playback_ctrl.toggle)
+            bar.nextClicked.connect(self._playback_ctrl.next_track)
+            bar.prevClicked.connect(self._playback_ctrl.prev_track)
+            bar.expandRequested.connect(self._show_np_page)
+
+        # Pill wrapper — centers the pill horizontally
+        pill_wrapper = QWidget()
+        pill_layout = QHBoxLayout(pill_wrapper)
+        pill_layout.setContentsMargins(0, 0, 0, 10)
+        pill_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+        pill_layout.addWidget(self._pill)
+        self._pill_wrapper = pill_wrapper
+
         self._engine.volume = 1.0
 
         # ===== Overlay stack: body | hifi (also used as now-playing overlay) =====
@@ -342,13 +352,37 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._hifi_overlay.setCurrentIndex(0)
         root.addWidget(self._hifi_overlay, 1)
 
-        # ===== Bottom now-playing bar =====
+        # ===== Bottom bars =====
         root.addWidget(self._now_playing_bar)
+        # Pill floats over body content — not in root bar area
+        self._pill_wrapper.setParent(self._body)
+        self._pill_wrapper.hide()
 
         # Register inline-styled widgets to refresh during accent animation
-        on_anim_tick(lambda c: self._now_playing_bar.refresh_accent())
+        on_anim_tick(lambda c: self._bar_update("refresh_accent"))
         on_anim_tick(lambda c: self._sidebar.refresh_accent())
         on_anim_tick(lambda c: self._refresh_manage_accent())
+        on_anim_tick(lambda c: self._network_page.refresh_theme())
+        on_anim_tick(lambda c: self._hifi_page.refresh_accent())
+        on_anim_tick(lambda c: self._pls_detail_page.refresh_accent() if hasattr(self._pls_detail_page, 'refresh_accent') else None)
+        on_anim_tick(lambda c: self._album_detail_page.refresh_accent() if hasattr(self._album_detail_page, 'refresh_accent') else None)
+        on_anim_tick(lambda c: self._new_pls_btn.setStyleSheet(
+            f"QPushButton{{background:{c.name()};color:#fff;border:none;"
+            f"border-radius:8px;padding:6px 14px;font-size:12px;}}"
+            f"QPushButton:hover{{background:{c.lighter(115).name()};}}"
+        ))
+        from audio_player.ui.icons import SORT_ALPHA, _icon
+        on_anim_tick(lambda c: self._pl_sort_btn.setIcon(_icon(SORT_ALPHA, color=c.name())))
+        on_anim_tick(lambda c: self._fav_sort_btn.setIcon(_icon(SORT_ALPHA, color=c.name())))
+        # Search bar borders follow accent
+        accent_dark = lambda c: c.darker(160).name()
+        for bar_attr in ('_pl_search_bar', '_album_search_bar', '_fav_search_bar', '_pls_search_bar'):
+            on_anim_tick(lambda c, a=bar_attr: getattr(self, a).setStyleSheet(
+                f"QLineEdit{{background:rgba(0,0,0,0.12);color:#e2e8f0;"
+                f"border:1px solid {c.darker(160).name()};"
+                f"border-radius:10px;padding:6px 10px;font-size:12px;}}"
+                f"QLineEdit:focus{{border:1px solid {c.name()};background:rgba(0,0,0,0.18);}}"
+            ))
 
     def _build_manage_page(self) -> QWidget:
         from audio_player.app import current_accent as _accent, current_theme_mode
@@ -431,19 +465,17 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         header = QHBoxLayout()
-        header.setContentsMargins(8, 8, 8, 4)
+        header.setContentsMargins(12, 10, 12, 6)
         self._fav_label = QLabel(_("page.favorites"))
         self._fav_label.setObjectName("pageTitle")
         header.addWidget(self._fav_label)
         header.addStretch()
-        # Search + Sort
-        self._fav_search_btn, self._fav_search_bar = self._make_search_ui()
+        self._fav_search_bar = self._make_search_bar()
         self._fav_search_bar.textChanged.connect(lambda t: self._fav_view.setFilterText(t))
-        self._fav_proxy = PlaylistFilterProxy()
-        self._fav_sort_btn = self._make_sort_btn(self._fav_proxy)
-        header.addWidget(self._fav_search_btn)
         header.addWidget(self._fav_search_bar)
         header.addSpacing(8)
+        self._fav_proxy = PlaylistFilterProxy()
+        self._fav_sort_btn = self._make_sort_btn(self._fav_proxy)
         header.addWidget(self._fav_sort_btn)
         layout.addLayout(header)
         self._fav_proxy.setSourceModel(self._fav_playlist)
@@ -465,26 +497,33 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         header = QHBoxLayout()
-        header.setContentsMargins(8, 8, 8, 4)
+        header.setContentsMargins(12, 10, 12, 6)
         pls_title = QLabel(_("nav.playlists"))
         pls_title.setObjectName("pageTitle")
         self._pls_title_lbl = pls_title
         header.addWidget(pls_title)
         header.addStretch()
+        # Search
+        self._pls_search_bar = self._make_search_bar()
+        self._pls_search_bar.setPlaceholderText(_("search.playlists"))
+        self._pls_search_bar.textChanged.connect(lambda t: self._pls_grid_view.filter(t))
+        header.addWidget(self._pls_search_bar)
+        header.addSpacing(8)
         # Grid/list toggle
         self._pls_view_btn = QPushButton("◧")
         self._pls_view_btn.setObjectName("viewToggle")
-        self._pls_view_btn.setFixedSize(28, 28)
+        self._pls_view_btn.setFixedSize(32, 32)
         self._pls_view_btn.setToolTip(_("playlist.view_toggle_grid"))
         self._pls_view_btn.clicked.connect(self._toggle_pls_view_mode)
         header.addWidget(self._pls_view_btn)
-        header.addSpacing(8)
+        header.addSpacing(6)
         new_pls_btn = QPushButton(_("playlist.new"))
         self._new_pls_btn = new_pls_btn
+        new_pls_btn.setObjectName("accentBtn")
         accent = current_accent()
         new_pls_btn.setStyleSheet(
             f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
-            f"border-radius:5px;padding:5px 12px;font-size:11px;}}"
+            f"border-radius:8px;padding:6px 14px;font-size:12px;}}"
             f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
         )
         new_pls_btn.clicked.connect(self._create_new_playlist)
@@ -502,6 +541,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._fav_playlist.clear()
         if paths:
             self._fav_playlist.add_files(paths)
+        self._fav_proxy.invalidateFilter()
         self._fav_label.setText(_("page.favorites_count", count=len(paths)))
 
     def _refresh_playlists_page(self):
@@ -704,9 +744,12 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._mask_dirty = True
         self.update()
 
-        # Propagate loaded UI radius to sliders
+        # Playback bar style
+        style = str(s.value("playback_bar_style", "full") or "full")
+        self._apply_bar_style(style)
+
         if self._ui_radius != 12:
-            pass  # ui_radius applied via QSS now
+            pass
 
     # ================================================================
     #  Signal Connections
@@ -716,7 +759,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Playback controller — engine signals
         self._playback_ctrl.connect_engine()
         self._playback_ctrl.playbackStateChanged.connect(lambda playing: (
-            self._now_playing_bar.set_playing(playing),
+            self._bar_update("set_playing", playing),
             self._hifi_page.set_playing(playing),
         ))
         self._playback_ctrl.logMessage.connect(self._log_message)
@@ -761,6 +804,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         # HiFi Now Playing page
         self._hifi_page.collapseRequested.connect(self._collapse_hifi)
+        self._hifi_page.outputDetailRequested.connect(self._show_output_detail)
         self._hifi_page.fullscreenRequested.connect(self._toggle_fullscreen)
         self._hifi_page.playPauseClicked.connect(self._playback_ctrl.toggle)
         self._hifi_page.nextClicked.connect(self._playback_ctrl.next_track)
@@ -801,39 +845,66 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _log_message(self, msg: str):
         self._sidebar.append_log(msg)
 
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            pos = event.globalPosition().toPoint()
+            widget = QApplication.widgetAt(pos)
+            if widget is not self._playlist_view.viewport() and widget is not self._fav_view.viewport():
+                self._playlist_view.clearSelection()
+                if hasattr(self, '_fav_view'):
+                    self._fav_view.clearSelection()
+        return super().eventFilter(obj, event)
+
+    def _apply_bar_style(self, style: str):
+        self._bar_style = style
+        if style == "pill":
+            self._now_playing_bar.hide()
+            self._pill_wrapper.show()
+            self._position_pill()
+        else:
+            self._pill_wrapper.hide()
+            self._now_playing_bar.show()
+
+    def _position_pill(self):
+        """Position pill centered at bottom of body area."""
+        if not self._pill_wrapper.isVisible():
+            return
+        bw = self._body.width()
+        bh = self._body.height()
+        pw = min(self._pill.maximumWidth(), bw - 40)
+        self._pill.setMaximumWidth(pw)
+        self._pill_wrapper.setGeometry(0, bh - self._pill.height() - 16, bw, self._pill.height())
+
+    def _bar_update(self, method: str, *args):
+        """Call method on both bars — hidden bar is no-op."""
+        for bar in (self._now_playing_bar, self._pill):
+            getattr(bar, method)(*args)
+
     def _refresh_covers(self):
         """Re-render album covers after radius setting change."""
         meta = read_metadata(self._engine.current_file) if self._engine.current_file else None
         if meta:
-            self._now_playing_bar.update_cover(meta.cover_data)
+            self._bar_update("update_cover", meta.cover_data)
             self._hifi_page.set_cover(meta.cover_data)
         self._album_view.refresh_from_playlist()
         self._metadata_panel.update()
 
-    def _make_search_ui(self):
-        """Create a search button + hidden search bar. Returns (button, line_edit)."""
-        btn = QPushButton("🔍")
-        btn.setObjectName("searchBtn")
-        btn.setFixedSize(28, 28)
-        btn.setToolTip(_("search.tooltip"))
-        btn.setCheckable(True)
-        btn.setStyleSheet(
-            "QPushButton{background:#1a1a2e;color:#94a3b8;border:none;"
-            "border-radius:5px;font-size:13px;}"
-            "QPushButton:hover{background:#2a2a4a;color:#e2e8f0;}"
-            "QPushButton:checked{background:#2a2a4a;color:#e2e8f0;}"
-        )
+    def _make_search_bar(self):
+        """Create a glass-style search input — matches the floating pill aesthetic."""
+        is_light = current_theme_mode() == "light"
+        accent = current_accent()
+        bg = "rgba(0,0,0,0.12)" if not is_light else "rgba(0,0,0,0.05)"
+        fg = "#e2e8f0" if not is_light else "#333"
+        border = accent.darker(160).name() if not is_light else accent.lighter(130).name()
         bar = QLineEdit()
         bar.setPlaceholderText(_("search.placeholder"))
-        bar.setFixedWidth(180)
+        bar.setFixedWidth(200)
         bar.setStyleSheet(
-            "QLineEdit{background:#1a1a2e;color:#e2e8f0;border:1px solid #333;"
-            "border-radius:5px;padding:4px 8px;font-size:12px;}"
-            "QLineEdit:focus{border:1px solid #7c3aed;}"
+            f"QLineEdit{{background:{bg};color:{fg};border:1px solid {border};"
+            f"border-radius:10px;padding:6px 10px;font-size:12px;}}"
+            f"QLineEdit:focus{{border:1px solid {accent.name()};background:rgba(0,0,0,0.18);}}"
         )
-        bar.setVisible(False)
-        btn.toggled.connect(bar.setVisible)
-        return btn, bar
+        return bar
 
     def _make_sort_btn(self, proxy: PlaylistFilterProxy) -> QPushButton:
         """Create a sort button that shows a dropdown menu."""
@@ -841,15 +912,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         from audio_player.ui.theme_helpers import menu_style
 
         btn = QPushButton()
-        btn.setIcon(_icon(SORT_ALPHA, color="#64748b"))
+        accent = current_accent()
+        btn.setIcon(_icon(SORT_ALPHA, color=accent.name()))
         btn.setObjectName("sortBtn")
-        btn.setFixedSize(28, 28)
+        btn.setFixedSize(32, 32)
         btn.setToolTip(_("sort.default"))
-        btn.setStyleSheet(
-            "QPushButton{background:#1a1a2e;color:#94a3b8;border:none;"
-            "border-radius:5px;}"
-            "QPushButton:hover{background:#2a2a4a;color:#e2e8f0;}"
-        )
 
         def _show_menu():
             from audio_player.player.playlist import PlaylistManager as PM
@@ -912,12 +979,12 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._open_settings()
 
     def closeEvent(self, event):
-        # If tray is visible and this isn't a tray-quit, hide to tray
-        if (hasattr(self, '_tray_mgr') and self._tray_mgr.is_visible()
+        s = QSettings("VBPlayer", "VB Player")
+        close_to_tray = str(s.value("close_to_tray", "true")).lower() == "true"
+        if (close_to_tray and hasattr(self, '_tray_mgr')
                 and not getattr(self, '_quitting', False)):
             event.ignore()
             self.hide()
-            self._tray_mgr.show_message("VB Player", _("tray.minimized"))
             return
         self._save_playback_state()
         self._device_registry.stop()
@@ -1035,6 +1102,21 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if hasattr(self, '_manage_album_label'):
             self._manage_album_label.setText(_("manage.albums_found", count=album_count))
         self._log_message(_("log.library_loaded", count=self._playlist.count, albums=album_count))
+
+    def _play_album_track(self, idx: int):
+        """Load album tracks into main playlist and play at *idx*."""
+        model = self._album_detail_page._track_model
+        paths = [model.track_at(i).get("path", "") for i in range(model.count) if model.track_at(i)]
+        if paths:
+            existing = {self._playlist.track_at(i).get("path") for i in range(self._playlist.count)}
+            new_paths = [p for p in paths if p not in existing]
+            if new_paths:
+                self._playlist.add_files(new_paths)
+            target = paths[idx]
+            for i in range(self._playlist.count):
+                if self._playlist.track_at(i).get("path") == target:
+                    self._playback_ctrl.play_track_at(i)
+                    break
 
     def _on_album_clicked(self, album_info):
         self._album_detail_page.show_album(album_info)
@@ -1155,8 +1237,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _on_track_loaded_ui(self, filepath):
         """Called when playback controller loads a new track — update UI."""
-        # Use already-loaded metadata from playlist model (avoids thread-unsafe
-        # read_metadata call on main thread while workers are also reading files)
+        import audio_player.ui.widgets.playlist_view as _pv
+        _pv._current_file = filepath or ""
+        # Use already-loaded metadata from playlist model
         meta = self._playlist.track_metadata(self._playlist.current_index)
         if meta is None:
             meta = read_metadata(filepath)
@@ -1170,13 +1253,12 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._fullscreen_lyrics.set_meta(meta)
         self._album_detail_page.set_current_playlist_index(self._playlist.current_index)
         # Bottom bar
-        self._now_playing_bar.set_track(meta.title or "", meta.artist or "", meta.album or "")
-        self._now_playing_bar.update_cover(meta.cover_data)
+        self._bar_update("set_track", meta.title or "", meta.artist or "", meta.album or "")
+        self._bar_update("update_cover", meta.cover_data)
         # HiFi page (also serves as Now Playing overlay)
         self._hifi_page.set_track_info(meta.title or "", meta.artist or "", meta.album or "")
         self._hifi_page.set_cover(meta.cover_data)
         self._hifi_page.set_quality(self._build_quality_text(meta))
-        self._hifi_page.set_file_info(self._build_file_info(meta, filepath))
         # Dynamic accent from album art
         self._apply_album_accent(meta)
 
@@ -1191,13 +1273,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             if not pix.isNull():
                 color = extract_accent(pix)
                 set_dynamic_accent(color)
-                self._refresh_accent_colors()
+                # Don't refresh here — animation callbacks handle it
 
     def _on_metadata_loaded_ui(self, meta, filepath):
         self._metadata_panel.show_metadata(meta, filepath)
 
     def _on_position_changed(self, ms):
-        self._now_playing_bar.set_position(ms)
+        self._bar_update("set_position", ms)
         dur = self._engine.duration
         if dur > 0:
             ratio = ms / dur
@@ -1209,15 +1291,30 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._hifi_page.set_lyrics_position(ms)
 
     def _on_duration_changed(self, ms):
-        self._now_playing_bar.set_duration(ms)
+        self._bar_update("set_duration", ms)
         self._hifi_page.set_duration(ms)
         self._spectrum.lyrics_overlay.set_duration(ms)
         self._fullscreen_lyrics.set_duration(ms)
 
+    def _show_output_detail(self):
+        """Open the audio output detail dialog from the HiFi page."""
+        from audio_player.ui.widgets.output_spec_bar import _OutputDetailDialog
+        from audio_player.player.metadata import read_metadata
+        from audio_player.app import current_theme_mode
+        meta = read_metadata(self._engine.current_file) if self._engine.current_file else None
+        info = self._engine.output_info
+        is_light = current_theme_mode() == "light"
+        dlg = _OutputDetailDialog(meta, info, is_light, self)
+        dlg.exec()
+
     def _show_np_page(self):
         """Open Now Playing overlay with slide-up from bottom bar."""
-        self._now_playing_bar.hide()
-        bar_global = self._now_playing_bar.mapToGlobal(QPoint(0, 0))
+        self._pill_wrapper.hide()  # hide pill during HiFi overlay
+        if self._now_playing_bar.isVisible():
+            self._now_playing_bar.hide()
+            bar_global = self._now_playing_bar.mapToGlobal(QPoint(0, 0))
+        else:
+            bar_global = self.mapToGlobal(QPoint(0, self.height()))
         win_global = self.mapToGlobal(QPoint(0, 0))
         from_rect = QRect(win_global.x(), bar_global.y(),
                           self.width(), self.height())
@@ -1236,7 +1333,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _collapse_hifi(self):
         """Return from overlay to normal view."""
-        self._now_playing_bar.show()
+        s = QSettings("VBPlayer", "VB Player")
+        style = str(s.value("playback_bar_style", "full") or "full")
+        if style == "full":
+            self._now_playing_bar.show()
+        elif style == "pill":
+            self._pill_wrapper.show()
+            self._position_pill()
         self._hifi_overlay.setCurrentWidget(self._body)
         self._hifi_page.hide()
 
@@ -1271,20 +1374,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             ch_map = {1: "Mono", 2: "Stereo"}
             parts.append(ch_map.get(meta.channels, f"{meta.channels}ch"))
         return " · ".join(parts) if parts else ""
-
-    def _build_file_info(self, meta, filepath: str) -> str:
-        """Build expanded detail text for HiFi page."""
-        lines = []
-        if meta.duration_seconds:
-            lines.append(f"时长: {_format_duration(meta.duration_seconds)}")
-        if meta.file_size:
-            lines.append(f"大小: {_format_size(meta.file_size)}")
-        if meta.year:
-            lines.append(f"年份: {meta.year}")
-        if meta.genre:
-            lines.append(f"流派: {meta.genre}")
-        lines.append(f"路径: {filepath}")
-        return "\n".join(lines)
 
     def _play_from_paths(self, paths):
         """Load paths into main playlist and play."""
@@ -1412,7 +1501,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         is_light = mode == "light"
         self._sidebar.refresh_theme_mode(is_light)
         self._album_view.refresh_theme_mode(is_light)
-        self._now_playing_bar.refresh_theme()
+        self._bar_update("refresh_theme")
         if hasattr(self, '_pls_grid_view'):
             self._pls_grid_view.refresh_theme_mode(is_light)
         if hasattr(self, '_pls_detail_page'):
@@ -1433,36 +1522,22 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._blur_enabler.enable()
 
     def _on_material_changed(self, val: str):
-        """Live update window material — resolve 'auto' to platform default."""
         from audio_player.platform import platform_info
         if val and val != "auto":
             self._material = val
         else:
             self._material = platform_info.policy.material
-
-        # Toggle translucent background
-        want_translucent = self._material in ("glass", "acrylic")
-        if want_translucent != self._use_translucent:
-            self._use_translucent = want_translucent
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, want_translucent)
-            # Force window surface recreation
-            if not self.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) and want_translucent:
-                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-        # Enable/disable KWin blur
-        if self._blur_enabler:
-            if self._material == "acrylic":
-                self._blur_enabler.enable()
-            else:
-                self._blur_enabler.disable()
-
+        want = self._material in ("glass", "acrylic")
+        if want != self._use_translucent:
+            self._use_translucent = want
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, want)
         self.update()
 
     def _refresh_accent_colors(self):
         """Re-apply inline accent-dependent styles across all widgets."""
         self._sidebar.refresh_accent()
         self._refresh_manage_accent()
-        self._now_playing_bar.refresh_accent()
+        self._bar_update("refresh_accent")
         self._album_view.refresh_from_playlist()
 
     def _refresh_language(self, _code: str = ""):
@@ -1556,13 +1631,14 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._mask_dirty = True
+        self._position_pill()
         if self._blur_enabler:
             self._blur_enabler.update_rect()
 
     def showEvent(self, event):
         super().showEvent(event)
         self._mask_dirty = True
-        # Blur must be applied after window is mapped; enable() is idempotent
+        self._position_pill()
         if self._blur_enabler:
             self._blur_enabler.enable()
 
@@ -1616,54 +1692,33 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
         base = self.palette().color(QPalette.ColorRole.Window)
-        frameless_rounded = (self._use_frameless and self._border_radius > 0
-                             and not self.isMaximized() and not self.isFullScreen())
 
-        # Clip path for rounded corners (used by all layers)
-        if frameless_rounded:
-            clip_path = QPainterPath()
-            clip_path.addRoundedRect(QRectF(self.rect()), self._border_radius, self._border_radius)
-            painter.setClipPath(clip_path)
-
-        # Layer 1 — base fill
         if self._use_translucent and self._material in ("glass", "acrylic"):
             alpha = self._material_alpha()
             base = QColor(base.red(), base.green(), base.blue(), alpha)
-        painter.fillRect(self.rect(), base)
 
-        # Layer 2 — acrylic/mica depth gradient (simulates light scattering)
+        if self._use_frameless and self._border_radius > 0 and not self.isMaximized() and not self.isFullScreen():
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), self._border_radius, self._border_radius)
+            painter.fillPath(path, base)
+        else:
+            painter.fillRect(self.rect(), base)
+
+        # Acrylic noise texture (no accent tint)
         if self._material == "acrylic" and self._use_translucent:
-            accent = current_accent()
-            is_light = current_theme_mode() == "light"
-
-            # Radial gradient: lighter at top-left, fades to transparent
-            gradient = self._acrylic_gradient(w, h, accent, is_light)
-            if gradient is not None:
-                painter.setOpacity(0.12)
-                painter.fillRect(self.rect(), gradient)
-
-            # Accent color wash — very subtle tint
-            tint = QColor(accent.red(), accent.green(), accent.blue(), 12)
-            painter.setOpacity(1.0)
-            painter.fillRect(self.rect(), tint)
-
-            # Noise grain — soft-light blend for natural frosted texture
             tex_opacity = self._material_texture_opacity()
             if tex_opacity > 0:
-                if self._noise_pixmap is None or self._noise_pixmap.width() < w or \
-                   self._noise_pixmap.height() < h:
-                    self._noise_pixmap = self._generate_noise(w, h)
-                painter.save()
+                if self._noise_pixmap is None or self._noise_pixmap.width() < self.width() or \
+                   self._noise_pixmap.height() < self.height():
+                    self._noise_pixmap = self._generate_noise(self.width(), self.height())
                 painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SoftLight)
                 painter.setOpacity(tex_opacity)
                 painter.drawPixmap(0, 0, self._noise_pixmap)
-                painter.restore()
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+                painter.setOpacity(1.0)
 
-        painter.setClipping(False)
         painter.end()
-        # Apply mask after painting — guarded by _mask_dirty to prevent recursion
         if self._mask_dirty:
             self._mask_dirty = False
             self._apply_mask()

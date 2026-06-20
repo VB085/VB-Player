@@ -1,8 +1,4 @@
-"""Playlist browse widgets — grid/list view, detail page, edit dialog.
-
-Mirrors album_view.py structure. Reuses FlowLayout, _AlbumTrackModel,
-_AlbumTrackDelegate from album_view for the detail page track list.
-"""
+"""Playlist browse widgets — grid/list view, detail page, edit dialog."""
 
 from typing import Callable
 from dataclasses import dataclass, field
@@ -18,12 +14,10 @@ from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
 from audio_player.player.metadata import read_metadata
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
+from audio_player.ui.widgets.playlist_view import PlaylistView
+from audio_player.player.playlist import PlaylistManager
+from audio_player.ui.shared import FlowLayout, set_placeholder_icon as _set_placeholder_icon
 from audio_player.ui.icons import ALBUM_PLACEHOLDER, _icon
-from audio_player.ui.shared import (
-    FlowLayout, AlbumTrackModel as _AlbumTrackModel,
-    AlbumTrackDelegate as _AlbumTrackDelegate,
-    TRACK_LIST_STYLE, set_placeholder_icon as _set_placeholder_icon,
-)
 from audio_player.ui.utils import (
     format_duration as _format_dur, format_size as _format_size,
     is_light_mode as _is_light_mode,
@@ -426,6 +420,13 @@ class PlaylistGridView(QWidget):
             self._stack.setCurrentIndex(0)
             self._relayout_grid()
 
+    def filter(self, text: str):
+        """Show/hide cards matching filter text."""
+        t = text.strip().lower()
+        for card in self._cards:
+            name = card._info.name.lower() if hasattr(card, '_info') else ""
+            card.setVisible(t in name if t else True)
+
     def set_playlists(self, items: list[PlaylistInfo]):
         self._playlists = items
         # Destroy old cards
@@ -530,41 +531,37 @@ class PlaylistDetailPage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        is_light = self._is_light
-        back_color = "#666666" if is_light else "#94a3b8"
-        back_hover_bg = "#e0e0e0" if is_light else "#1a1a2e"
-        back_hover_color = "#333333" if is_light else "#fff"
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header: back + edit
+        # Header: circular back ← · title · edit
         header = QHBoxLayout()
-        header.setContentsMargins(8, 8, 8, 4)
+        header.setContentsMargins(12, 10, 12, 6)
 
-        back_btn = QPushButton(_("album.back"))
+        back_btn = QPushButton("←")
         self._back_btn = back_btn
+        back_btn.setFixedSize(32, 32)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setToolTip(_("album.back"))
         back_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{back_color};border:none;"
-            f"font-size:12px;padding:6px 12px;border-radius:4px;}}"
-            f"QPushButton:hover{{background:{back_hover_bg};color:{back_hover_color};}}"
+            "QPushButton{background:rgba(255,255,255,0.06);color:#94a3b8;border:none;"
+            "border-radius:16px;font-size:16px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
         )
         back_btn.clicked.connect(self.backRequested)
         header.addWidget(back_btn)
+        header.addStretch()
 
         edit_btn = QPushButton(_("playlist.edit"))
         self._edit_btn = edit_btn
-        accent = current_accent()
         edit_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{back_color};border:none;"
-            f"font-size:12px;padding:6px 12px;border-radius:4px;}}"
-            f"QPushButton:hover{{background:{back_hover_bg};color:{back_hover_color};}}"
+            "QPushButton{background:transparent;color:#94a3b8;border:1px solid rgba(255,255,255,0.10);"
+            "font-size:12px;padding:5px 14px;border-radius:6px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.06);color:#e2e8f0;}"
         )
         edit_btn.clicked.connect(self._on_edit)
         header.addWidget(edit_btn)
-
-        header.addStretch()
         layout.addLayout(header)
 
         # Body scroll area
@@ -612,25 +609,20 @@ class PlaylistDetailPage(QWidget):
         top.addLayout(info_wrap, 1)
         body_layout.addLayout(top)
 
-        # Track list
+        # Track list — uses shared PlaylistView for cover thumbs, glow, drag reorder
         self._track_label = QLabel(_("album.track_list"))
         self._track_label.setObjectName("sectionLabel")
         body_layout.addWidget(self._track_label)
 
-        self._track_model = _AlbumTrackModel(self)
-        self._track_view = QListView()
+        self._track_model = PlaylistManager(self)
+        self._track_view = PlaylistView()
         self._track_view.setModel(self._track_model)
-        self._track_view.setItemDelegate(_AlbumTrackDelegate())
-        self._track_view.setStyleSheet(TRACK_LIST_STYLE)
-        self._track_view.setSelectionMode(QListView.SelectionMode.SingleSelection)
-        self._track_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._track_view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
-        self._track_view.setMouseTracking(True)
-        self._track_view.setSpacing(0)
-        self._track_view.doubleClicked.connect(self._on_track_double_click)
-        self._track_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._track_view.customContextMenuRequested.connect(self._show_context_menu)
         self._track_view.setMinimumHeight(200)
+        self._track_view.trackDoubleClicked.connect(self._on_track_double_click)
+        # Forward context menu actions
+        self._track_view.addToFavorites.connect(lambda paths: self.addToFavorites.emit(paths))
+        self._track_view.removeFromFavorites.connect(lambda paths: self.removeFromFavorites.emit(paths))
+        self._track_view.addToPlaylist.connect(lambda name, paths: self.addToPlaylist.emit(name, paths))
         body_layout.addWidget(self._track_view, 1)
 
         scroll.setWidget(body)
@@ -638,6 +630,8 @@ class PlaylistDetailPage(QWidget):
 
     def show_playlist(self, info: PlaylistInfo):
         self._info = info
+        self._track_view._is_favorite_fn = self._is_favorite_fn
+        self._track_view._get_playlist_names_fn = self._get_playlist_names_fn
 
         self._name_label.setText(info.name)
         if info.description:
@@ -681,55 +675,14 @@ class PlaylistDetailPage(QWidget):
         # Chips
         self._rebuild_chips()
 
-        # Track list
-        disc_groups: dict[int, list[tuple]] = {}
-        for idx, fp in enumerate(info.tracks):
-            meta = read_metadata(fp)
-            dn = 1
-            tn = meta.track_number if meta and meta.track_number else 0
-            title = meta.title if meta and meta.title else os.path.basename(fp)
-            artist = meta.artist if meta and meta.artist else ""
-            dur = meta.duration_seconds if meta and meta.duration_seconds else 0
-            if dn not in disc_groups:
-                disc_groups[dn] = []
-            disc_groups[dn].append((idx, tn, title, artist, dur))
+        # Track list — load into PlaylistManager
+        self._track_model.clear()
+        paths = list(info.tracks) if info.tracks else []
+        if paths:
+            self._track_model.add_files(paths)
 
-        # Fill missing track numbers
-        for disc, tracks in disc_groups.items():
-            tracks.sort(key=lambda x: x[1] if x[1] else 9999)
-            next_num = 1
-            for i, (idx, tn, title, artist, dur) in enumerate(tracks):
-                if not tn:
-                    while any(t[1] == next_num for t in tracks):
-                        next_num += 1
-                    tracks[i] = (idx, next_num, title, artist, dur)
-                    next_num += 1
-
-        self._track_model.set_tracks(disc_groups)
-
-    def _rebuild_chips(self):
-        info = self._info
-        if info is None:
-            return
-        while self._meta_layout.count():
-            item = self._meta_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        chips = [
-            _("playlist.tracks_unit", count=info.track_count),
-            _format_dur(info.total_duration),
-            _format_size(info.total_size),
-        ]
-        for text in chips:
-            lbl = QLabel(text)
-            lbl.setObjectName("metaChip")
-            self._meta_layout.addWidget(lbl)
-
-    def _on_track_double_click(self, idx: QModelIndex):
-        val = idx.data(Qt.ItemDataRole.UserRole)
-        if val is not None:
-            self.trackDoubleClicked.emit(int(val))
+    def _on_track_double_click(self, idx: int):
+        self.trackDoubleClicked.emit(idx)
 
     def _on_edit(self):
         if self._info:
@@ -739,7 +692,7 @@ class PlaylistDetailPage(QWidget):
         idx = self._track_view.indexAt(pos)
         if not idx.isValid():
             return
-        filepath = idx.data(_AlbumTrackModel.FilePathRole)
+        filepath = idx.data(PlaylistManager.FilePathRole)
         if not filepath:
             return
 
@@ -777,7 +730,7 @@ class PlaylistDetailPage(QWidget):
         if self._info:
             menu.addSeparator()
             rm_act = QAction(_("context.remove"), self)
-            row = idx.data(_AlbumTrackModel.UserRole)
+            row = idx.row()
             rm_act.triggered.connect(lambda: self.removeFromPlaylist.emit([int(row)]))
             menu.addAction(rm_act)
 
@@ -790,7 +743,62 @@ class PlaylistDetailPage(QWidget):
         menu.exec(self._track_view.viewport().mapToGlobal(pos))
 
     def set_current_playlist_index(self, playlist_idx: int | None):
-        self._track_model.set_current_playlist_idx(playlist_idx)
+        if playlist_idx is not None:
+            self._track_model.current_index = playlist_idx
+
+    def refresh_accent(self):
+        """Update inline accent-styled elements."""
+        accent = current_accent()
+        self._back_btn.setStyleSheet(
+            f"QPushButton{{background:rgba(255,255,255,0.06);color:{accent.lighter(130).name()};border:none;"
+            f"border-radius:16px;font-size:16px;}}"
+            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
+        )
+        self._track_view.update()
+        self._track_view.repaint()
+        self.update()
+
+    def _rebuild_chips(self):
+        """Rebuild metadata chips (track count, duration, size, format)."""
+        # Clear existing chips
+        while self._meta_layout.count():
+            item = self._meta_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not self._info or not self._info.tracks:
+            return
+        from audio_player.ui.utils import format_duration as _fd, format_size as _fs
+        total_secs = 0
+        total_size = 0
+        formats = set()
+        for fp in self._info.tracks:
+            if os.path.exists(fp):
+                total_size += os.path.getsize(fp)
+                ext = os.path.splitext(fp)[1].lower().lstrip('.')
+                if ext:
+                    formats.add(ext.upper())
+        # Estimate duration from track metadata if available
+        if self._track_model.rowCount() > 0:
+            for i in range(self._track_model.rowCount()):
+                dur = self._track_model.index(i, 0).data(self._track_model.DurationRole)
+                if dur:
+                    total_secs += dur
+        # Chips
+        count_chip = QLabel(_("album.track_count") + f": {len(self._info.tracks)}")
+        count_chip.setObjectName("metaChip")
+        self._meta_layout.addWidget(count_chip)
+        if total_secs > 0:
+            dur_chip = QLabel(_("album.total_duration") + f": {_fd(int(total_secs))}")
+            dur_chip.setObjectName("metaChip")
+            self._meta_layout.addWidget(dur_chip)
+        if total_size > 0:
+            size_chip = QLabel(_("album.total_size") + f": {_fs(total_size)}")
+            size_chip.setObjectName("metaChip")
+            self._meta_layout.addWidget(size_chip)
+        if formats:
+            fmt_chip = QLabel(_("album.format") + f": {', '.join(sorted(formats))}")
+            fmt_chip.setObjectName("metaChip")
+            self._meta_layout.addWidget(fmt_chip)
 
     def refresh_theme_mode(self, is_light: bool):
         self._is_light = is_light

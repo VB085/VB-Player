@@ -93,12 +93,13 @@ class _DecoderWorker(QThread):
                  "!", "filesink", f'location="{tmp_uri}"'],
                 capture_output=True, timeout=120, env=env,
             )
-            if result.returncode != 0 or not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+            if result.returncode != 0:
                 import sys
-                err = result.stderr.decode(errors='ignore')[:500] if result.stderr else "(no stderr)"
-                sys.stderr.write(f"[gst-launch] rc={result.returncode} stdout={len(result.stdout)} err={err} file={self._filepath}\n")
-                sys.stderr.flush()
+                err = result.stderr.decode(errors='ignore')[:200] if result.stderr else ""
+                sys.stderr.write(f"[gst-launch] FAILED rc={result.returncode} {err}\n")
                 return None
+            if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+                return None  # silent — temp file race, not an error
             with open(tmp_path, "rb") as f:
                 data = f.read()
             os.unlink(tmp_path)

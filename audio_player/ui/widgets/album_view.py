@@ -15,11 +15,7 @@ from audio_player.player.album_manager import AlbumInfo
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.i18n import _
 from audio_player.ui.icons import ALBUM_PLACEHOLDER, _icon
-from audio_player.ui.shared import (
-    FlowLayout, AlbumTrackModel as _AlbumTrackModel,
-    AlbumTrackDelegate as _AlbumTrackDelegate,
-    TRACK_LIST_STYLE, set_placeholder_icon as _set_placeholder_icon,
-)
+from audio_player.ui.shared import FlowLayout, set_placeholder_icon as _set_placeholder_icon
 from audio_player.ui.utils import (
     format_duration as _format_dur, format_size as _format_size,
     is_light_mode as _is_light_mode,
@@ -514,24 +510,22 @@ class AlbumDetailPage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        is_light = self._is_light
-        back_color = "#666666" if is_light else "#94a3b8"
-        back_hover_bg = "#e0e0e0" if is_light else "#1a1a2e"
-        back_hover_color = "#333333" if is_light else "#fff"
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Back button
+        # Back button — circular icon, top-left
         header = QHBoxLayout()
-        header.setContentsMargins(8, 8, 8, 4)
-        back_btn = QPushButton(_("album.back"))
+        header.setContentsMargins(12, 10, 12, 6)
+        back_btn = QPushButton("←")
         self._back_btn = back_btn
+        back_btn.setFixedSize(32, 32)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setToolTip(_("album.back"))
         back_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{back_color};border:none;"
-            f"font-size:12px;padding:6px 12px;border-radius:4px;}}"
-            f"QPushButton:hover{{background:{back_hover_bg};color:{back_hover_color};}}"
+            "QPushButton{background:rgba(255,255,255,0.06);color:#94a3b8;border:none;"
+            "border-radius:16px;font-size:16px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
         )
         back_btn.clicked.connect(self.backRequested)
         header.addWidget(back_btn)
@@ -590,25 +584,21 @@ class AlbumDetailPage(QWidget):
         self._track_label = track_label
         body_layout.addWidget(track_label)
 
-        self._track_model = _AlbumTrackModel(self)
-        self._track_view = QListView()
-        self._track_view.setModel(self._track_model)
-        self._track_view.setItemDelegate(_AlbumTrackDelegate())
-        self._track_view.setStyleSheet(TRACK_LIST_STYLE)
-        self._track_view.setSelectionMode(QListView.SelectionMode.SingleSelection)
-        self._track_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._track_view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
-        self._track_view.setMouseTracking(True)
-        self._track_view.setSpacing(0)
-        self._track_view.doubleClicked.connect(self._on_track_double_click)
-        self._track_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._track_view.customContextMenuRequested.connect(self._show_context_menu)
+        from audio_player.ui.widgets.playlist_view import PlaylistView
+        from audio_player.player.playlist import PlaylistManager
 
-        # External callbacks for context menu state queries
+        self._track_model = PlaylistManager(self)
+        self._track_view = PlaylistView()
+        self._track_view.setModel(self._track_model)
+        self._track_view.setMinimumHeight(200)
+        self._track_view.trackDoubleClicked.connect(self._on_track_double_click)
+
         self._is_favorite_fn: Callable[[str], bool] | None = None
         self._get_playlist_names_fn: Callable[[], list[str]] | None = None
-        # Size policy: take remaining space, minimum 200px height
-        self._track_view.setMinimumHeight(200)
+        # Forward context menu actions from PlaylistView to this page
+        self._track_view.addToFavorites.connect(lambda paths: self.addToFavorites.emit(paths))
+        self._track_view.removeFromFavorites.connect(lambda paths: self.removeFromFavorites.emit(paths))
+        self._track_view.addToPlaylist.connect(lambda name, paths: self.addToPlaylist.emit(name, paths))
         body_layout.addWidget(self._track_view, 1)
 
         scroll.setWidget(body)
@@ -616,6 +606,9 @@ class AlbumDetailPage(QWidget):
 
     def show_album(self, album: AlbumInfo):
         self._album = album
+        # Forward callbacks to the PlaylistView for context menu
+        self._track_view._is_favorite_fn = self._is_favorite_fn
+        self._track_view._get_playlist_names_fn = self._get_playlist_names_fn
 
         self._name_label.setText(album.name or _("album.unknown_album"))
         self._artist_label.setText(album.artist or _("album.unknown_artist"))
@@ -656,42 +649,20 @@ class AlbumDetailPage(QWidget):
         # Metadata chips — build from album + first track audio specs
         self._rebuild_chips()
 
-        # Track list model
-        disc_groups: dict[int, list[tuple]] = {}
-        from audio_player.player.metadata import read_metadata
-        for idx, fp in album.tracks:
-            meta = read_metadata(fp)
-            dn = meta.disc_number if meta and meta.disc_number else 1
-            tn = meta.track_number if meta and meta.track_number else 0
-            title = meta.title if meta and meta.title else os.path.basename(fp)
-            artist = meta.artist if meta and meta.artist else ""
-            dur = meta.duration_seconds if meta and meta.duration_seconds else 0
-            if dn not in disc_groups:
-                disc_groups[dn] = []
-            disc_groups[dn].append((idx, tn, title, artist, dur))
-        # Fill missing track numbers with sequential numbering per disc
-        for disc, tracks in disc_groups.items():
-            tracks.sort(key=lambda x: x[1] if x[1] else 9999)
-            next_num = 1
-            for i, (idx, tn, title, artist, dur) in enumerate(tracks):
-                if not tn:
-                    while any(t[1] == next_num for t in tracks):
-                        next_num += 1
-                    tracks[i] = (idx, next_num, title, artist, dur)
-                    next_num += 1
+        # Load tracks into PlaylistManager
+        self._track_model.clear()
+        paths = [fp for _, fp in album.tracks]
+        if paths:
+            self._track_model.add_files(paths)
 
-        self._track_model.set_tracks(disc_groups)
-
-    def _on_track_double_click(self, idx: QModelIndex):
-        val = idx.data(Qt.ItemDataRole.UserRole)
-        if val is not None:
-            self.trackDoubleClicked.emit(int(val))
+    def _on_track_double_click(self, idx: int):
+        self.trackDoubleClicked.emit(idx)
 
     def _show_context_menu(self, pos):
         idx = self._track_view.indexAt(pos)
         if not idx.isValid():
             return
-        filepath = idx.data(_AlbumTrackModel.FilePathRole)
+        filepath = idx.data(self._track_model.FilePathRole)
         if not filepath:
             return
 
@@ -734,7 +705,17 @@ class AlbumDetailPage(QWidget):
         menu.exec(self._track_view.viewport().mapToGlobal(pos))
 
     def set_current_playlist_index(self, playlist_idx: int | None):
-        self._track_model.set_current_playlist_idx(playlist_idx)
+        if playlist_idx is not None:
+            self._track_model.current_index = playlist_idx
+
+    def refresh_accent(self):
+        accent = current_accent()
+        self._back_btn.setStyleSheet(
+            f"QPushButton{{background:rgba(255,255,255,0.06);color:{accent.lighter(130).name()};border:none;"
+            f"border-radius:16px;font-size:16px;}}"
+            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
+        )
+        self.update()
 
     def refresh_theme_mode(self, is_light: bool):
         self._is_light = is_light

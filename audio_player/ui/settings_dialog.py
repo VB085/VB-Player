@@ -189,6 +189,7 @@ class SettingsDialog(*_SettingsBase):
     titlebarChanged = pyqtSignal(str)
     materialChanged = pyqtSignal(str)
     dynamicAccentToggled = pyqtSignal(bool)
+    barStyleChanged = pyqtSignal(str)
 
     THEME_MODES = {"dark": "深色 (Dark)", "light": "浅色 (Light)"}
     ACCENTS = {
@@ -346,6 +347,12 @@ class SettingsDialog(*_SettingsBase):
         lang_layout.addWidget(self._lang_combo)
         layout.addWidget(self._lang_group)
 
+        # Close to tray
+        self._tray_cb = QCheckBox(_("settings.close_to_tray"))
+        self._tray_cb.setChecked(True)
+        self._tray_cb.toggled.connect(self._on_tray_toggled)
+        layout.addWidget(self._tray_cb)
+
         layout.addStretch()
 
         ok = QPushButton(_("settings.ok"))
@@ -358,6 +365,9 @@ class SettingsDialog(*_SettingsBase):
         ok.clicked.connect(self._save_and_close)
         layout.addWidget(ok, 0, Qt.AlignmentFlag.AlignRight)
         return w
+
+    def _on_tray_toggled(self, checked: bool):
+        self._settings.setValue("close_to_tray", checked)
 
     def _on_language_changed(self):
         code = self._lang_combo.currentData()
@@ -495,7 +505,7 @@ class SettingsDialog(*_SettingsBase):
         return scroll
 
     def _pick_avatar(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _filter = QFileDialog.getOpenFileName(
             self, _("settings.avatar_pick"), "",
             _("settings.avatar_filter")
         )
@@ -672,6 +682,34 @@ class SettingsDialog(*_SettingsBase):
         mat_layout.addWidget(self._texture_slider)
 
         layout.addWidget(self._material_group)
+
+        # ── Playback bar style ──
+        self._barstyle_group = QGroupBox(_("settings.bar_style"))
+        bar_layout = QVBoxLayout(self._barstyle_group)
+        self._barstyle_combo = _NoWheelComboBox()
+        self._barstyle_combo.addItem(_("settings.bar_full"), "full")
+        self._barstyle_combo.addItem(_("settings.bar_pill"), "pill")
+        self._barstyle_combo.currentIndexChanged.connect(self._on_barstyle_changed)
+        bar_layout.addWidget(self._barstyle_combo)
+
+        # Pill progress style (only shown for pill)
+        self._pill_progress_combo = _NoWheelComboBox()
+        self._pill_progress_combo.addItem(_("settings.pill_progress_line"), "line")
+        self._pill_progress_combo.addItem(_("settings.pill_progress_ring"), "ring")
+        self._pill_progress_combo.currentIndexChanged.connect(self._on_pill_progress_changed)
+        bar_layout.addWidget(self._pill_progress_combo)
+
+        layout.addWidget(self._barstyle_group)
+
+        # ── Current track highlight style ──
+        self._highlight_group = QGroupBox(_("settings.highlight_style"))
+        hl_layout = QVBoxLayout(self._highlight_group)
+        self._highlight_combo = _NoWheelComboBox()
+        self._highlight_combo.addItem(_("settings.highlight_glow"), "glow")
+        self._highlight_combo.addItem(_("settings.highlight_bar"), "bar")
+        self._highlight_combo.currentIndexChanged.connect(self._on_highlight_changed)
+        hl_layout.addWidget(self._highlight_combo)
+        layout.addWidget(self._highlight_group)
 
         layout.addStretch()
         scroll.setWidget(w)
@@ -971,7 +1009,7 @@ class SettingsDialog(*_SettingsBase):
         self._about_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_title)
 
-        self._about_ver = QLabel("v0.6")
+        self._about_ver = QLabel("v0.6.2")
         self._about_ver.setStyleSheet("font-size: 13px; color: #888;")
         self._about_ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_ver)
@@ -1155,6 +1193,9 @@ class SettingsDialog(*_SettingsBase):
         if idx >= 0:
             self._lang_combo.setCurrentIndex(idx)
 
+        tray = str(self._settings.value("close_to_tray", "true")).lower() == "true"
+        self._tray_cb.setChecked(tray)
+
         accent = str(self._settings.value("accent", "purple") or "purple")
         for name, sw in self._accent_swatches.items():
             sw.set_selected(name == accent)
@@ -1194,7 +1235,7 @@ class SettingsDialog(*_SettingsBase):
         self._update_texture_visibility()
 
         # Opacity (percentage 70-100, material defaults used when unset)
-        alpha = int(self._settings.value("material_alpha", 84) or 84)
+        alpha = int(self._settings.value("material_alpha", 92) or 92)
         self._opacity_slider.setValue(alpha)
         self._opacity_label.setText(_("settings.material_opacity_value", pct=alpha))
 
@@ -1202,6 +1243,23 @@ class SettingsDialog(*_SettingsBase):
         tex = int(self._settings.value("material_texture", 10) or 10)
         self._texture_slider.setValue(tex)
         self._texture_label.setText(_("settings.material_texture_value", pct=tex))
+
+        # Playback bar style
+        barstyle = str(self._settings.value("playback_bar_style", "full") or "full")
+        idx = self._barstyle_combo.findData(barstyle)
+        if idx >= 0:
+            self._barstyle_combo.setCurrentIndex(idx)
+        self._pill_progress_combo.setVisible(barstyle == "pill")
+
+        pgstyle = str(self._settings.value("pill_progress_style", "line") or "line")
+        idx2 = self._pill_progress_combo.findData(pgstyle)
+        if idx2 >= 0:
+            self._pill_progress_combo.setCurrentIndex(idx2)
+
+        hl = str(self._settings.value("current_track_highlight", "glow") or "glow")
+        idx3 = self._highlight_combo.findData(hl)
+        if idx3 >= 0:
+            self._highlight_combo.setCurrentIndex(idx3)
 
         lh = int(self._settings.value("lyrics_line_height", 40) or 40)
         self._lyrics_overlay_height_spin.setValue(lh)
@@ -1386,6 +1444,20 @@ class SettingsDialog(*_SettingsBase):
         val = self._titlebar_combo.currentData()
         self._settings.setValue("window_titlebar", val)
         self.titlebarChanged.emit(val)
+
+    def _on_barstyle_changed(self):
+        val = self._barstyle_combo.currentData()
+        self._settings.setValue("playback_bar_style", val)
+        self._pill_progress_combo.setVisible(val == "pill")
+        self.barStyleChanged.emit(val)
+
+    def _on_highlight_changed(self):
+        val = self._highlight_combo.currentData()
+        self._settings.setValue("current_track_highlight", val)
+
+    def _on_pill_progress_changed(self):
+        val = self._pill_progress_combo.currentData()
+        self._settings.setValue("pill_progress_style", val)
 
     def _on_dynamic_accent_toggled(self, checked: bool):
         self._settings.setValue("dynamic_accent_enabled", checked)

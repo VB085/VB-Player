@@ -327,9 +327,8 @@ class _BaseAudioEngine(QObject):
             old = self._pipeline
             self._pipeline = None
             old.set_state(Gst.State.NULL)
-            # Poll until NULL — don't block longer than 100ms on main thread
-            for _ in range(20):
-                ok, state, _ = old.get_state(5 * Gst.MSECOND)
+            for _ in range(5):
+                ok, state, _ = old.get_state(10 * Gst.MSECOND)
                 if ok == Gst.StateChangeReturn.SUCCESS and state == Gst.State.NULL:
                     break
         self._playbin = None
@@ -509,12 +508,7 @@ class _BaseAudioEngine(QObject):
             else:
                 self._build_pipeline(self._current_file)
         if self._pipeline is not None:
-            # Check actual pipeline state, not tracked _app_state (may be stale)
-            ok, state, pending = self._pipeline.get_state(0)
-            if ok == Gst.StateChangeReturn.SUCCESS and state != Gst.State.PLAYING:
-                self._pipeline.set_state(Gst.State.PLAYING)
-            elif ok == Gst.StateChangeReturn.FAILURE:
-                pass  # pipeline failed — don't try to play
+            self._pipeline.set_state(Gst.State.PLAYING)
             if not self._poll_timer.isActive():
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()

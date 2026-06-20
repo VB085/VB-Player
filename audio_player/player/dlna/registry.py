@@ -93,7 +93,7 @@ class DeviceRegistry(QObject):
         try:
             results = discover_renderers(timeout=3)
         except Exception as e:
-            import sys; print(f"[dlna] 设备发现失败: {e}", file=sys.stderr)
+            import sys; pass
             return
 
         seen_udns = set()

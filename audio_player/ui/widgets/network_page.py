@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QScrollArea, QSplitter,
     QSizePolicy, QFrame,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThreadPool, QRunnable
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from audio_player.i18n import _, languageChanged
@@ -36,7 +36,7 @@ class NetworkPage(QWidget):
 
         # Header
         header = QHBoxLayout()
-        header.setContentsMargins(8, 8, 8, 4)
+        header.setContentsMargins(12, 10, 12, 6)
         self._title_label = QLabel(_("page.network"))
         self._title_label.setObjectName("pageTitle")
         header.addWidget(self._title_label)
@@ -287,17 +287,17 @@ class NetworkPage(QWidget):
     def _apply_style(self):
         is_light = current_theme_mode() == "light"
         accent = current_accent()
-        bg = "#f8f8f8" if is_light else "#0a0a0f"
-        card_bg = "#ffffff" if is_light else "#12121a"
-        border = "#e0e0e0" if is_light else "#1e1e2e"
-        text = "#333" if is_light else "#e2e8f0"
-        text_dim = "#888" if is_light else "#666"
+        bg = "rgba(0,0,0,0.10)" if not is_light else "rgba(0,0,0,0.03)"
+        card_bg = "rgba(0,0,0,0.08)" if not is_light else "rgba(0,0,0,0.02)"
+        border = f"rgba({accent.red()},{accent.green()},{accent.blue()},0.15)"
+        text = "#e2e8f0" if not is_light else "#333"
+        text_dim = "#888" if not is_light else "#999"
 
         self.setStyleSheet(
             f"QGroupBox#networkGroup {{"
             f"  background: {card_bg};"
             f"  border: 1px solid {border};"
-            f"  border-radius: 8px;"
+            f"  border-radius: 10px;"
             f"  margin-top: 8px;"
             f"  padding: 12px 8px 8px 8px;"
             f"  font-weight: bold;"
@@ -311,7 +311,7 @@ class NetworkPage(QWidget):
             f"QLineEdit#networkUrlInput, QLineEdit#networkNasInput {{"
             f"  background: {bg};"
             f"  border: 1px solid {border};"
-            f"  border-radius: 6px;"
+            f"  border-radius: 8px;"
             f"  padding: 8px 10px;"
             f"  color: {text};"
             f"  font-size: 13px;"
@@ -323,7 +323,7 @@ class NetworkPage(QWidget):
             f"  background: {accent.name()};"
             f"  color: #fff;"
             f"  border: none;"
-            f"  border-radius: 6px;"
+            f"  border-radius: 8px;"
             f"  padding: 8px 16px;"
             f"  font-size: 13px;"
             f"}}"
@@ -348,7 +348,7 @@ class NetworkPage(QWidget):
             f"QListWidget#networkRecentList, QListWidget#networkResultsList, QListWidget#networkDeviceList {{"
             f"  background: {bg};"
             f"  border: 1px solid {border};"
-            f"  border-radius: 6px;"
+            f"  border-radius: 8px;"
             f"  color: {text};"
             f"  font-size: 13px;"
             f"}}"
@@ -361,7 +361,7 @@ class NetworkPage(QWidget):
             f"QTreeWidget#networkShareTree {{"
             f"  background: {bg};"
             f"  border: 1px solid {border};"
-            f"  border-radius: 6px;"
+            f"  border-radius: 8px;"
             f"  color: {text};"
             f"  font-size: 13px;"
             f"}}"

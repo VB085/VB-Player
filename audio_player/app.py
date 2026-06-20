@@ -99,10 +99,10 @@ _anim_timer: QTimer | None = None
 _anim_from: QColor | None = None
 _anim_to: QColor | None = None
 _anim_step: int = 0
-_DEBOUNCE = 200
+_DEBOUNCE = 100
 _ANIM_STEPS = 12
-_ANIM_MS = 50  # 600ms total
-_on_anim_tick: list = []  # callbacks called each animation frame with current QColor
+_ANIM_MS = 50  # 600ms
+_on_anim_tick: list = []  # lightweight — just notifies, no QSS work
 
 
 def _color_distance(a: QColor, b: QColor) -> float:
@@ -112,23 +112,17 @@ def _color_distance(a: QColor, b: QColor) -> float:
 
 def set_dynamic_accent(color: QColor):
     global _accent_name, _pending_color, _pending_timer
-
     s = QSettings("VBPlayer", "VB Player")
     if str(s.value("dynamic_accent_enabled", "true")).lower() != "true":
         return
-
-    ACCENTS["dynamic"] = color
     _accent_name = "dynamic"
-
+    ACCENTS["dynamic"] = color
     current = _dynamic_accent or ACCENTS.get("purple", QColor("#7c3aed"))
     if _color_distance(current, color) < 20:
         return
-
     _pending_color = color
-
     if _pending_timer is None:
-        app = QApplication.instance()
-        _pending_timer = QTimer(app)
+        _pending_timer = QTimer(QApplication.instance())
         _pending_timer.setSingleShot(True)
         _pending_timer.timeout.connect(_commit_accent)
     _pending_timer.start(_DEBOUNCE)
@@ -140,15 +134,33 @@ def _commit_accent():
         return
     to_color = _pending_color
     _pending_color = None
-
-    from_color = (_dynamic_accent or ACCENTS.get("purple", QColor("#7c3aed"))).toRgb()
+    if _dynamic_accent:
+        from_color = _dynamic_accent.toRgb()
+    else:
+        g = int(to_color.red() * 0.3 + to_color.green() * 0.59 + to_color.blue() * 0.11)
+        from_color = QColor(g, g, g).toRgb()
     to_color = to_color.toRgb()
-
     _anim_from = from_color
     _anim_to = to_color
     _anim_step = 0
-
+    _dynamic_accent = QColor(from_color)
+    ACCENTS["dynamic"] = QColor(from_color)
     app = QApplication.instance()
+    c = QColor(from_color)
+    p = app.palette()
+    p.setColor(QPalette.ColorRole.Highlight, c)
+    p.setColor(QPalette.ColorRole.Link, c.lighter(130) if _theme_mode != "light" else c.darker(110))
+    app.setPalette(p)
+    qss = _qss_text(_theme_mode)
+    qss = qss.replace("@ACCENT_DARKER@", c.darker(150).name())
+    qss = qss.replace("@ACCENT_DARK@", c.darker(120).name())
+    qss = qss.replace("@ACCENT_LIGHT@", c.lighter(130).name())
+    qss = qss.replace("@ACCENT@", c.name())
+    app.setStyleSheet(qss)
+    win = app.activeWindow()
+    if win: win.update()
+    for cb in _on_anim_tick:
+        cb(c)
     if _anim_timer is None:
         _anim_timer = QTimer(app)
         _anim_timer.timeout.connect(_anim_tick)
@@ -161,37 +173,24 @@ def _anim_tick():
     global _anim_step, _dynamic_accent, _anim_timer, _anim_from, _anim_to
     _anim_step += 1
     t = _anim_step / _ANIM_STEPS
-    t = 1.0 - (1.0 - t) ** 3  # cubic ease-out
-
+    t = 1.0 - (1.0 - t) ** 3
     r = int(_anim_from.red() + (_anim_to.red() - _anim_from.red()) * t)
     g = int(_anim_from.green() + (_anim_to.green() - _anim_from.green()) * t)
     b = int(_anim_from.blue() + (_anim_to.blue() - _anim_from.blue()) * t)
     color = QColor(r, g, b)
-
     _dynamic_accent = color
     ACCENTS["dynamic"] = color
-
     app = QApplication.instance()
-    if app is None:
-        return
-
+    if app is None: return
+    # Palette only — cheap, no QSS re-parse
     p = app.palette()
     p.setColor(QPalette.ColorRole.Highlight, color)
     p.setColor(QPalette.ColorRole.Link, color.lighter(130) if _theme_mode != "light" else color.darker(110))
     app.setPalette(p)
-
-    # QSS update every step — all widgets see the same animated color
-    qss = _qss_text(_theme_mode)
-    qss = qss.replace("@ACCENT_DARKER@", color.darker(150).name())
-    qss = qss.replace("@ACCENT_DARK@", color.darker(120).name())
-    qss = qss.replace("@ACCENT_LIGHT@", color.lighter(130).name())
-    qss = qss.replace("@ACCENT@", color.name())
-    app.setStyleSheet(qss)
-
-    # Notify inline-styled widgets (play button, etc.) to refresh
+    win = app.activeWindow()
+    if win: win.update()
     for cb in _on_anim_tick:
         cb(color)
-
     if _anim_step >= _ANIM_STEPS:
         _anim_timer.stop()
         _dynamic_accent = _anim_to
@@ -213,7 +212,7 @@ def clear_dynamic_accent():
 
 
 def on_anim_tick(callback):
-    """Register a callback(color) called each animation frame."""
+    """Register callback(color) called each animation tick — lightweight updates only."""
     _on_anim_tick.append(callback)
 
 def current_accent() -> QColor:

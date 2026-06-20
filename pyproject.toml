@@ -1,6 +1,6 @@
 [project]
 name = "vb-player"
-version = "0.6.1"
+version = "0.6.2"
 description = "Cross-platform HIFI audio player with PyQt6 + GStreamer"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"

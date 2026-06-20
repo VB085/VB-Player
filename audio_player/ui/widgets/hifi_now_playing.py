@@ -93,6 +93,7 @@ class HiFiNowPlayingPage(QWidget):
     collapseRequested = pyqtSignal()
     fullscreenRequested = pyqtSignal()
     lyricsToggled = pyqtSignal(bool)
+    outputDetailRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,12 +101,14 @@ class HiFiNowPlayingPage(QWidget):
         self._cover_pixmap: QPixmap | None = None
         self._blurred_bg: QPixmap | None = None
         self._cached_bg: QPixmap | None = None  # scaled-to-window cached bg
+        self._old_cached_bg: QPixmap | None = None  # previous bg during crossfade
+        self._bg_fade_progress: float = 1.0  # 0=old, 1=new
+        self._bg_fade_helper: _OpacityHelper | None = None
+        self._bg_fade_anim: QPropertyAnimation | None = None
         self._title = ""
         self._artist = ""
         self._album = ""
         self._quality_text = ""
-        self._file_info_text = ""
-        self._expanded_detail = False
         self._hovered_quality = False
         self._position_ms = 0
         self._duration_ms = 0
@@ -212,13 +215,38 @@ class HiFiNowPlayingPage(QWidget):
             pix = QPixmap()
             pix.loadFromData(data)
             if not pix.isNull():
+                # Save old background for crossfade
+                if self._cached_bg and not self._cached_bg.isNull():
+                    self._old_cached_bg = self._cached_bg
+                else:
+                    self._old_cached_bg = None
                 self._cover_pixmap = pix
                 self._blurred_bg = None  # invalidate
                 self._cached_bg = None
-                self.update()
+                self._start_bg_crossfade()
                 return
         self._cover_pixmap = None
         self._blurred_bg = None
+        self._old_cached_bg = self._cached_bg  # fade old to empty
+        self._start_bg_crossfade()
+
+    def _start_bg_crossfade(self):
+        if self._bg_fade_helper is None:
+            self._bg_fade_helper = _OpacityHelper(self)
+            self._bg_fade_helper._opacity = 0.0
+        if self._bg_fade_anim and self._bg_fade_anim.state() == QAbstractAnimation.State.Running:
+            self._bg_fade_anim.stop()
+        self._bg_fade_progress = 0.0
+        self._bg_fade_anim = QPropertyAnimation(self._bg_fade_helper, b"opacity")
+        self._bg_fade_anim.setDuration(500)
+        self._bg_fade_anim.setStartValue(0.0)
+        self._bg_fade_anim.setEndValue(1.0)
+        self._bg_fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._bg_fade_anim.valueChanged.connect(self._on_bg_fade_tick)
+        self._bg_fade_anim.start()
+
+    def _on_bg_fade_tick(self):
+        self._bg_fade_progress = self._bg_fade_helper._opacity
         self.update()
 
     def set_track_info(self, title: str, artist: str, album: str):
@@ -231,8 +259,8 @@ class HiFiNowPlayingPage(QWidget):
         self._quality_text = text
         self.update()
 
-    def set_file_info(self, text: str):
-        self._file_info_text = text
+    def refresh_accent(self):
+        self._accent = current_accent()
         self.update()
 
     def set_position(self, ms: int):
@@ -616,8 +644,7 @@ class HiFiNowPlayingPage(QWidget):
                 self._on_next()
                 return
             if self._quality_rect().contains(pos):
-                self._expanded_detail = not self._expanded_detail
-                self.update()
+                self.outputDetailRequested.emit()
                 return
             if self._duration_ms > 0 and self._progress_bar_rect().contains(pos):
                 self._dragging = True
@@ -699,7 +726,7 @@ class HiFiNowPlayingPage(QWidget):
 
         w, h = self.width(), self.height()
 
-        # ---- Background: blurred cover (cached) ----
+        # ---- Background: blurred cover with crossfade ----
         if self._cover_pixmap and not self._cover_pixmap.isNull():
             if self._blurred_bg is None:
                 self._blurred_bg = _blur_pixmap(self._cover_pixmap)
@@ -707,10 +734,24 @@ class HiFiNowPlayingPage(QWidget):
                 self._cached_bg = self._blurred_bg.scaled(
                     w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                     Qt.TransformationMode.SmoothTransformation)
-            p.drawPixmap(0, 0, self._cached_bg)
+
+            t = self._bg_fade_progress
+            # Draw old background (fading out) if crossfade in progress
+            if t < 1.0 and self._old_cached_bg and not self._old_cached_bg.isNull():
+                old_scaled = self._old_cached_bg.scaled(w, h,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation)
+                p.setOpacity(1.0 - t)
+                p.drawPixmap(0, 0, old_scaled)
+                p.setOpacity(1.0)
+            # Draw new background
+            if t > 0:
+                p.setOpacity(t)
+                p.drawPixmap(0, 0, self._cached_bg)
+                p.setOpacity(1.0)
+            # Dark overlay on top
             p.fillRect(0, 0, w, h, QColor(0, 0, 0, 160))
         else:
-            # Fallback gradient
             grad = QLinearGradient(0, 0, 0, h)
             grad.setColorAt(0.0, QColor("#0d0d1a"))
             grad.setColorAt(1.0, QColor("#1a1a2e"))
@@ -960,19 +1001,6 @@ class HiFiNowPlayingPage(QWidget):
                 q_rect = QRectF(controls_cx - 200, qy, 400, 20)
                 p.drawText(q_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
                            self._quality_text)
-
-            # Expanded detail
-            if self._expanded_detail and self._file_info_text:
-                detail_font = QFont()
-                detail_font.setPointSize(9)
-                p.setFont(detail_font)
-                p.setPen(QColor("#556677"))
-                dy = qy - 20
-                for line in self._file_info_text.split("\n"):
-                    if line.strip():
-                        dr = QRectF(controls_cx - 200, dy, 400, 18)
-                        p.drawText(dr, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, line.strip())
-                        dy -= 18
 
         p.end()
 

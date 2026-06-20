@@ -152,12 +152,14 @@ class PlaybackController(QObject):
     # ------------------------------------------------------------------
 
     def play_track_at(self, idx):
-        """Play track at *idx*.  If already current, seek to 0 and play."""
+        """Play track at *idx*."""
+        if not (0 <= idx < self._playlist.count):
+            return
         if idx == self._playlist.current_index and self._playlist.current_track_path:
             self._backend.seek(0)
             self._backend.play()
         else:
-            self._playlist.current_index = idx
+            self._playlist.current_index = idx  # triggers on_playlist_index_changed → load+play
 
     def next_track(self):
         """Advance to next track in playlist."""
@@ -213,9 +215,8 @@ class PlaybackController(QObject):
             if self._playlist.current_index < 0:
                 self._playlist.current_index = 0
 
-    def load_and_play(self, paths: list[str]):
-        """Clear playlist, load *paths*, and play the first track."""
-        self._playlist.clear()
+    def load_and_play(self, paths: list[str], start_idx: int = 0):
+        """Load *paths* into playlist and play *start_idx* (default first)."""
         self.load_paths(paths)
-        if self._playlist.count > 0:
-            self._playlist.current_index = 0
+        if self._playlist.count > start_idx:
+            self._playlist.current_index = start_idx
