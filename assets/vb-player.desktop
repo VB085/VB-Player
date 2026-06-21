@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=VB Player
 Comment=Cross-platform HiFi audio player
-Exec=VB Player
+Exec=vb-player
 Icon=vb-player
 Type=Application
 Categories=AudioVideo;Player;
