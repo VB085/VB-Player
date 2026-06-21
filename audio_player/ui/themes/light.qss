@@ -7,6 +7,8 @@ QWidget#centralWidget { background: #ffffff; }
 QWidget#centerPanel { background: #ffffff; }
 QWidget#sidePanel { background: #f5f5f5; border-right: 1px solid #e0e0e0; }
 QWidget#rightPanel { background: #f5f5f5; border-left: 1px solid #e0e0e0; }
+QWidget#playlistsPage { background: #ffffff; }
+QWidget#networkPage { background: #ffffff; }
 QWidget#titleBar { background: transparent; }
 QWidget#titleLabel { color: #888888; font-size: 12px; }
 
