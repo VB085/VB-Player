@@ -48,6 +48,7 @@ from audio_player.ui.widgets.frameless_resize import FramelessResizeMixin
 from audio_player.ui.widgets.tag_editor_dialog import TagEditorDialog
 from audio_player.ui.widgets.network_page import NetworkPage
 from audio_player.ui.settings_dialog import SettingsDialog
+from audio_player.ui.settings_page import SettingsPage
 
 from audio_player.ui.controllers.library_controller import LibraryController
 from audio_player.ui.controllers.playback_controller import PlaybackController
@@ -302,6 +303,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._update_network_devices()  # initial sync
         self._content_stack.addWidget(self._network_page)  # Page.NETWORK
 
+        # Settings inline page
+        self._settings_page = SettingsPage()
+        self._content_stack.addWidget(self._settings_page)  # Page.SETTINGS
+
         # Now Playing overlay — reuses HiFi page (same design)
 
         # Hidden viz widgets — used by analyzer, shown on Now Playing page
@@ -362,8 +367,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         on_anim_tick(lambda c: self._bar_update("refresh_accent"))
         on_anim_tick(lambda c: self._sidebar.refresh_accent())
         on_anim_tick(lambda c: self._refresh_manage_accent())
-        on_anim_tick(lambda c: self._network_page.refresh_theme())
+        on_anim_tick(lambda c: self._eq_widget_page.refresh_accent())
+        on_anim_tick(lambda c: self._network_page.refresh_accent())
         on_anim_tick(lambda c: self._hifi_page.refresh_accent())
+        on_anim_tick(lambda c: self._settings_page.refresh_accent())
         on_anim_tick(lambda c: self._pls_detail_page.refresh_accent() if hasattr(self._pls_detail_page, 'refresh_accent') else None)
         on_anim_tick(lambda c: self._album_detail_page.refresh_accent() if hasattr(self._album_detail_page, 'refresh_accent') else None)
         on_anim_tick(lambda c: self._new_pls_btn.setStyleSheet(
@@ -400,7 +407,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         manage_header = QHBoxLayout()
         manage_header.setContentsMargins(8, 8, 8, 4)
-        self._manage_title = QLabel(_("page.manage"))
+        self._manage_title = QLabel(_("page.tools"))
         self._manage_title.setObjectName("pageTitle")
         manage_header.addWidget(self._manage_title)
         manage_header.addStretch()
@@ -412,14 +419,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         content_layout.setContentsMargins(12, 0, 12, 12)
         content_layout.setSpacing(12)
 
-        _a12 = f"{int(0.12 * 255):02x}"
-        _a22 = f"{int(0.22 * 255):02x}"
-        _bg12 = f"#{_a12}{r:02x}{g:02x}{b:02x}"
-        _bg22 = f"#{_a22}{r:02x}{g:02x}{b:02x}"
         self._manage_btn_style_template = (
-            f"QPushButton{{background:{_bg12};color:{accent.lighter(130).name()};border:none;"
+            f"QPushButton{{background:rgba({r},{g},{b},0.12);color:{accent.lighter(130).name()};border:none;"
             "border-radius:6px;padding:12px;font-size:13px;text-align:left;}"
-            f"QPushButton:hover{{background:{_bg22};}}"
+            f"QPushButton:hover{{background:rgba({r},{g},{b},0.22);}}"
         )
 
         self._manage_import_folder_btn = QPushButton(_("manage.import_folder"))
@@ -453,6 +456,18 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         reload_btn.clicked.connect(self._reload_albums)
         self._manage_reload_btn = reload_btn
         content_layout.addWidget(reload_btn)
+
+        content_layout.addSpacing(8)
+
+        # Equalizer
+        from audio_player.ui.widgets.equalizer_widget import EqualizerWidget
+        self._eq_widget_page = EqualizerWidget()
+        self._eq_widget_page.bandChanged.connect(self._equalizer_mgr.set_band_gain)
+        self._eq_widget_page.bandChanged.connect(self._engine.set_eq_band_gain)
+        self._eq_widget_page.presetSelected.connect(self._settings_ctrl.on_eq_preset_from_settings)
+        self._eq_widget_page.resetRequested.connect(self._settings_ctrl.on_eq_reset_from_settings)
+        self._eq_widget_page.enabledToggled.connect(self._settings_ctrl.on_eq_enabled_from_settings)
+        content_layout.addWidget(self._eq_widget_page)
 
         content_layout.addStretch()
         layout.addWidget(content, 1)
@@ -718,6 +733,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _restore_settings(self):
         self._settings_ctrl.restore_settings(None, self._sidebar)
+        self._network_page.load_output_settings()
 
         # Restore last playback state
         self._restore_playback_state()
@@ -833,6 +849,42 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             lambda _: self._fullscreen_lyrics._update_spec_bar())
         self._settings_ctrl.fullscreenLyricsUpdate.connect(
             self._fullscreen_lyrics.update)
+
+        # Settings page signals (direct)
+        sp = self._settings_page
+        sp.themeChanged.connect(self._on_theme_changed_ui)
+        sp.accentChanged.connect(self._refresh_accent_colors)
+        sp.vizModeChanged.connect(self._spectrum.set_mode)
+        sp.defaultVolumeChanged.connect(lambda v: setattr(self._engine, 'volume', v))
+        sp.lyricsToggled.connect(
+            lambda on: self._spectrum.show_lyrics() if on else self._spectrum.hide_lyrics())
+        sp.lyricsLineHeightChanged.connect(self._spectrum.lyrics_overlay.set_line_height)
+        sp.lyricsFullscreenLineHeightChanged.connect(lambda _: self._fullscreen_lyrics.update())
+        sp.lyricsFontSizeChanged.connect(lambda _: self._fullscreen_lyrics.update())
+        sp.lyricsLetterSpacingChanged.connect(lambda _: self._fullscreen_lyrics.update())
+        sp.lyricsShowSpecToggled.connect(lambda _: self._fullscreen_lyrics._update_spec_bar())
+        sp.sidebarLogToggled.connect(self._sidebar.set_log_visible)
+        sp.albumCoverRadiusToggled.connect(lambda _: self._refresh_covers())
+        sp.materialChanged.connect(self._on_material_changed)
+        sp.titlebarChanged.connect(lambda v: self._log_message(_("log.titlebar_restart")))
+        sp.dynamicAccentToggled.connect(self._settings_ctrl._on_dynamic_accent_toggled)
+        sp.barStyleChanged.connect(lambda v: self._apply_bar_style(v))
+        sp.replaygainToggled.connect(lambda v: setattr(self._engine, 'replaygain_enabled', v))
+        sp.gaplessToggled.connect(lambda v: setattr(self._engine, 'gapless_enabled', v))
+        sp.onlineLyricsToggled.connect(
+            lambda v: QSettings("VBPlayer", "VB Player").setValue("online_lyrics_enabled", v))
+        sp.autoSaveLyricsToggled.connect(
+            lambda v: QSettings("VBPlayer", "VB Player").setValue("auto_save_lyrics", v))
+        sp.showTranslationToggled.connect(
+            lambda v: QSettings("VBPlayer", "VB Player").setValue("show_translation", v))
+
+        # Output page — audio output settings
+        np_ = self._network_page
+        np_.exclusiveModeToggled.connect(lambda v: (
+            setattr(self._engine, 'exclusive_mode', v),
+            self._log_message(_("log.exclusive_alsa") if v else _("log.exclusive_shared"))))
+        np_.exclusiveDeviceChanged.connect(lambda v: setattr(self._engine, 'exclusive_device', v))
+        np_.dsdModeChanged.connect(lambda v: setattr(self._engine, 'dsd_mode', v))
 
     def _connect_analyzer(self):
         self._analyzer.waveformReady.connect(self._waveform.set_waveform_data)
@@ -965,7 +1017,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _on_sidebar_nav(self, key: str):
         page_map = {
             "songs": Page.SONGS, "albums": Page.ALBUMS, "favorites": Page.FAVORITES,
-            "playlists": Page.PLAYLISTS, "manage": Page.MANAGE, "network": Page.NETWORK,
+            "playlists": Page.PLAYLISTS, "tools": Page.MANAGE, "output": Page.NETWORK,
+            "settings": Page.SETTINGS,
         }
         if key in page_map:
             self._content_stack.setCurrentIndex(page_map[key])
@@ -975,8 +1028,25 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 self._library_ctrl.refresh_favorites_page(self._fav_label)
             elif key == "playlists":
                 self._refresh_playlists_page()
-        elif key == "settings":
-            self._open_settings()
+            elif key == "tools":
+                if hasattr(self, '_eq_widget_page'):
+                    self._eq_widget_page._enabled_cb.setChecked(self._equalizer_mgr.enabled)
+                    idx = self._eq_widget_page._preset_combo.findText(self._equalizer_mgr.current_preset)
+                    if idx >= 0:
+                        self._eq_widget_page._preset_combo.setCurrentIndex(idx)
+                    self._eq_widget_page.set_all_gains(self._equalizer_mgr.all_gains())
+            elif key == "settings":
+                sp = self._settings_page
+                sp.set_replaygain_state(self._engine.replaygain_enabled)
+                sp.set_gapless_state(self._engine.gapless_enabled)
+                tracks = self._playlist.count if hasattr(self, '_playlist') else 0
+                albums = len(self._album_view._albums) if hasattr(self, '_album_view') else 0
+                playlists = len(self._library.get_playlist_names()) if hasattr(self, '_library') else 0
+                sp.set_account_stats(tracks, albums, playlists)
+            elif key == "output":
+                np_ = self._network_page
+                np_.set_exclusive_state(self._engine.exclusive_mode, self._engine.exclusive_device)
+                np_.set_dsd_mode(self._engine.dsd_mode)
 
     def closeEvent(self, event):
         s = QSettings("VBPlayer", "VB Player")
@@ -1506,6 +1576,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._pls_grid_view.refresh_theme_mode(is_light)
         if hasattr(self, '_pls_detail_page'):
             self._pls_detail_page.refresh_theme_mode(is_light)
+        if hasattr(self, '_settings_page'):
+            self._settings_page.refresh_theme_mode(is_light)
         self._refresh_accent_colors()
         accent = current_accent()
         if hasattr(self, '_new_pls_btn'):
@@ -1539,6 +1611,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._refresh_manage_accent()
         self._bar_update("refresh_accent")
         self._album_view.refresh_from_playlist()
+        if hasattr(self, '_settings_page'):
+            self._settings_page.refresh_accent()
 
     def _refresh_language(self, _code: str = ""):
         """Refresh all translatable UI text after language change."""
@@ -1547,7 +1621,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._album_lbl.setText(_("page.albums"))
         self._album_view_btn.setToolTip(_("album.view_toggle_grid"))
         # Manage page
-        self._manage_title.setText(_("page.manage"))
+        self._manage_title.setText(_("page.tools"))
         self._manage_import_folder_btn.setText(_("manage.import_folder"))
         self._manage_import_files_btn.setText(_("manage.import_files"))
         self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
@@ -1587,14 +1661,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         muted = "#555" if is_light else "#94a3b8"
 
         if hasattr(self, '_manage_import_folder_btn'):
-            _a12 = f"{int(0.12 * 255):02x}"
-            _a22 = f"{int(0.22 * 255):02x}"
-            _bg12 = f"#{_a12}{r:02x}{g:02x}{b:02x}"
-            _bg22 = f"#{_a22}{r:02x}{g:02x}{b:02x}"
             self._manage_btn_style_template = (
-                f"QPushButton{{background:{_bg12};color:{accent.lighter(130).name()};border:none;"
+                f"QPushButton{{background:rgba({r},{g},{b},0.12);color:{accent.lighter(130).name()};border:none;"
                 "border-radius:6px;padding:12px;font-size:13px;text-align:left;}"
-                f"QPushButton:hover{{background:{_bg22};}}"
+                f"QPushButton:hover{{background:rgba({r},{g},{b},0.22);}}"
             )
             self._manage_import_folder_btn.setStyleSheet(self._manage_btn_style_template)
             self._manage_import_files_btn.setStyleSheet(self._manage_btn_style_template)
@@ -1603,6 +1673,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 "padding:12px;font-size:13px;}"
                 f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
             )
+            if hasattr(self, '_eq_widget_page'):
+                self._eq_widget_page.refresh_accent()
 
     # ================================================================
     #  Toggles

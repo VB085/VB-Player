@@ -1,25 +1,36 @@
-"""Network page — stream URL input + NAS browser + scan results."""
+"""Network page — stream URL input + NAS browser + audio output settings."""
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QGroupBox, QListWidget, QListWidgetItem,
     QTreeWidget, QTreeWidgetItem, QScrollArea, QSplitter,
-    QSizePolicy, QFrame,
+    QSizePolicy, QFrame, QCheckBox, QComboBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSettings
 from PyQt6.QtGui import QFont
 
 from audio_player.i18n import _, languageChanged
 from audio_player.app import current_theme_mode, current_accent
 
 
-class NetworkPage(QWidget):
-    """Network streaming and NAS browsing page."""
+class _NoWheelComboBox(QComboBox):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    def wheelEvent(self, e):
+        e.ignore()
 
-    playRequested = pyqtSignal(list)    # list of paths/URLs to play
-    streamAdded = pyqtSignal(str)       # single stream URL added
-    smbBrowseRequested = pyqtSignal(str, str, str)  # server, user, pass
-    deviceSelected = pyqtSignal(str)    # device id for output switching
+
+class NetworkPage(QWidget):
+    """Network streaming, NAS browsing, and audio output settings."""
+
+    playRequested = pyqtSignal(list)
+    streamAdded = pyqtSignal(str)
+    smbBrowseRequested = pyqtSignal(str, str, str)
+    deviceSelected = pyqtSignal(str)
+    exclusiveModeToggled = pyqtSignal(bool)
+    exclusiveDeviceChanged = pyqtSignal(str)
+    dsdModeChanged = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -28,6 +39,7 @@ class NetworkPage(QWidget):
         self._active_device_id = "local"
         self._setup_ui()
         languageChanged.connect(self._refresh_language)
+        languageChanged.connect(lambda _: [c.refresh_language() for c in self._bt_cards])
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -37,7 +49,7 @@ class NetworkPage(QWidget):
         # Header
         header = QHBoxLayout()
         header.setContentsMargins(12, 10, 12, 6)
-        self._title_label = QLabel(_("page.network"))
+        self._title_label = QLabel(_("page.output"))
         self._title_label.setObjectName("pageTitle")
         header.addWidget(self._title_label)
         header.addStretch()
@@ -49,7 +61,7 @@ class NetworkPage(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setContentsMargins(12, 8, 12, 100)  # bottom clears pill bar
         content_layout.setSpacing(12)
 
         # --- Stream URL section ---
@@ -94,11 +106,52 @@ class NetworkPage(QWidget):
 
         self._device_list = QListWidget()
         self._device_list.setObjectName("networkDeviceList")
-        self._device_list.setMaximumHeight(150)
+        self._device_list.setMinimumHeight(150)
         self._device_list.itemClicked.connect(self._on_device_clicked)
         device_layout.addWidget(self._device_list)
 
         content_layout.addWidget(self._device_group)
+
+        # --- Bluetooth detail cards ---
+        self._bt_group = QGroupBox(_("bt.title"))
+        self._bt_group.setObjectName("networkGroup")
+        self._bt_layout = QVBoxLayout(self._bt_group)
+        self._bt_layout.setSpacing(8)
+        self._bt_cards: list = []
+        self._bt_group.setVisible(False)
+        content_layout.addWidget(self._bt_group)
+
+        # --- Audio output settings (exclusive mode, DSD) ---
+        self._audio_out_group = QGroupBox(_("settings.exclusive_mode"))
+        self._audio_out_group.setObjectName("networkGroup")
+        ao_layout = QVBoxLayout(self._audio_out_group)
+
+        self._exclusive_cb = QCheckBox(_("settings.exclusive_mode"))
+        self._exclusive_cb.setToolTip(_("settings.exclusive_tooltip"))
+        self._exclusive_cb.toggled.connect(self._on_exclusive_toggled)
+        ao_layout.addWidget(self._exclusive_cb)
+
+        self._device_combo = _NoWheelComboBox()
+        self._device_combo.setEnabled(False)
+        self._device_combo.currentIndexChanged.connect(self._on_device_changed)
+        ao_layout.addWidget(self._device_combo)
+
+        self._dsd_combo = _NoWheelComboBox()
+        self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
+        from audio_player.platform import platform_info
+        if platform_info.capabilities.supports_dsd_native:
+            self._dsd_combo.addItem(_("settings.dsd_native"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        else:
+            self._dsd_combo.addItem(_("settings.dsd_native") + "  " + _("settings.dsd_windows_only"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop") + "  " + _("settings.dsd_windows_only"), "dop")
+            self._dsd_combo.model().item(1).setEnabled(False)
+            self._dsd_combo.model().item(2).setEnabled(False)
+        self._dsd_combo.setToolTip(_("settings.dsd_tooltip"))
+        self._dsd_combo.currentIndexChanged.connect(self._on_dsd_mode_changed)
+        ao_layout.addWidget(self._dsd_combo)
+
+        content_layout.addWidget(self._audio_out_group)
 
         # --- NAS section ---
         self._nas_group = QGroupBox(_("network.connect_nas"))
@@ -136,30 +189,24 @@ class NetworkPage(QWidget):
         self._share_tree.itemDoubleClicked.connect(self._on_share_double_click)
         nas_layout.addWidget(self._share_tree)
 
-        content_layout.addWidget(self._nas_group)
-
-        # --- Scan results section ---
-        self._results_group = QGroupBox(_("network.scan_results"))
-        self._results_group.setObjectName("networkGroup")
-        results_layout = QVBoxLayout(self._results_group)
-
+        # Scan results (inside NAS group)
         self._results_label = QLabel(_("network.no_results"))
         self._results_label.setObjectName("networkResultsLabel")
         self._results_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        results_layout.addWidget(self._results_label)
+        nas_layout.addWidget(self._results_label)
 
         self._results_list = QListWidget()
         self._results_list.setObjectName("networkResultsList")
         self._results_list.itemDoubleClicked.connect(self._on_result_clicked)
-        results_layout.addWidget(self._results_list)
+        nas_layout.addWidget(self._results_list)
 
         self._play_all_btn = QPushButton(_("network.play"))
         self._play_all_btn.setObjectName("networkPlayBtn")
         self._play_all_btn.clicked.connect(self._on_play_all_results)
         self._play_all_btn.setVisible(False)
-        results_layout.addWidget(self._play_all_btn)
+        nas_layout.addWidget(self._play_all_btn)
 
-        content_layout.addWidget(self._results_group)
+        content_layout.addWidget(self._nas_group)
         content_layout.addStretch()
 
         scroll.setWidget(content)
@@ -234,21 +281,7 @@ class NetworkPage(QWidget):
         """Update the output device list."""
         self._devices = devices
         self._active_device_id = active_id
-        self._refresh_device_list()
-
-    def _refresh_device_list(self):
-        self._device_list.clear()
-        for d in self._devices:
-            name = d["name"]
-            if d["id"] == self._active_device_id:
-                name = f"✓ {name}"
-            item = QListWidgetItem(name)
-            item.setData(Qt.ItemDataRole.UserRole, d["id"])
-            self._device_list.addItem(item)
-        # Update label
-        active_name = next((d["name"] for d in self._devices if d["id"] == self._active_device_id), "")
-        if active_name:
-            self._device_label.setText(f"{_('network.current_device')}: {active_name}")
+        self.refresh_device_list()
 
     def _on_device_clicked(self, item: QListWidgetItem):
         device_id = item.data(Qt.ItemDataRole.UserRole)
@@ -356,7 +389,7 @@ class NetworkPage(QWidget):
             f"  padding: 4px 8px;"
             f"}}"
             f"QListWidget::item:hover {{"
-            f"  background: {accent.name()}22;"
+            f"  background: rgba({accent.red()},{accent.green()},{accent.blue()},0.13);"
             f"}}"
             f"QTreeWidget#networkShareTree {{"
             f"  background: {bg};"
@@ -370,8 +403,13 @@ class NetworkPage(QWidget):
     def refresh_theme(self):
         self._apply_style()
 
+    def refresh_accent(self):
+        self._apply_style()
+        for card in self._bt_cards:
+            card.refresh_accent()
+
     def _refresh_language(self, _code: str = ""):
-        self._title_label.setText(_("page.network"))
+        self._title_label.setText(_("page.output"))
         self._stream_group.setTitle(_("network.add_stream"))
         self._url_input.setPlaceholderText(_("network.url_placeholder"))
         self._play_btn.setText(_("network.play"))
@@ -382,10 +420,242 @@ class NetworkPage(QWidget):
         self._user_input.setPlaceholderText(_("network.username"))
         self._pass_input.setPlaceholderText(_("network.password"))
         self._connect_btn.setText(_("network.connect"))
-        self._results_group.setTitle(_("network.scan_results"))
+        self._bt_group.setTitle(_("bt.title"))
         self._play_all_btn.setText(_("network.play"))
+        self._audio_out_group.setTitle(_("settings.exclusive_mode"))
+        self._exclusive_cb.setText(_("settings.exclusive_mode"))
+        self._exclusive_cb.setToolTip(_("settings.exclusive_tooltip"))
+        # DSD combo refresh
+        self._dsd_combo.blockSignals(True)
+        self._dsd_combo.clear()
+        self._dsd_combo.addItem(_("settings.dsd_pcm"), "pcm")
+        from audio_player.platform import platform_info
+        if platform_info.capabilities.supports_dsd_native:
+            self._dsd_combo.addItem(_("settings.dsd_native"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop"), "dop")
+        else:
+            self._dsd_combo.addItem(_("settings.dsd_native") + "  " + _("settings.dsd_windows_only"), "native")
+            self._dsd_combo.addItem(_("settings.dsd_dop") + "  " + _("settings.dsd_windows_only"), "dop")
+            self._dsd_combo.model().item(1).setEnabled(False)
+            self._dsd_combo.model().item(2).setEnabled(False)
+        self._dsd_combo.setToolTip(_("settings.dsd_tooltip"))
+        dsd_mode = str(QSettings("VBPlayer", "VB Player").value("dsd_mode", "pcm") or "pcm")
+        idx = self._dsd_combo.findData(dsd_mode)
+        if idx >= 0:
+            self._dsd_combo.setCurrentIndex(idx)
+        self._dsd_combo.blockSignals(False)
 
     def _refresh_recent_list(self):
         self._recent_list.clear()
         for url in self._recent_streams:
             self._recent_list.addItem(url)
+
+    # ── Audio output handlers ──────────────────────────────────
+
+    def _on_exclusive_toggled(self, checked: bool):
+        if checked:
+            self._load_hw_devices()
+        self._device_combo.setEnabled(checked)
+        s = QSettings("VBPlayer", "VB Player")
+        s.setValue("exclusive_mode", checked)
+        self.refresh_device_list(exclusive_on=checked)
+        self.exclusiveModeToggled.emit(checked)
+
+    def _on_device_changed(self, idx: int):
+        hw = self._device_combo.itemData(idx)
+        if hw:
+            s = QSettings("VBPlayer", "VB Player")
+            s.setValue("exclusive_device", hw)
+            self.exclusiveDeviceChanged.emit(hw)
+
+    def _on_dsd_mode_changed(self, idx: int):
+        mode = self._dsd_combo.itemData(idx)
+        if mode:
+            s = QSettings("VBPlayer", "VB Player")
+            s.setValue("dsd_mode", mode)
+            self.dsdModeChanged.emit(mode)
+
+    def _load_hw_devices(self):
+        if getattr(self, '_hw_loaded', False):
+            return
+        self._hw_loaded = True
+        from audio_player.player.engine import enumerate_hw_devices
+        try:
+            devices = enumerate_hw_devices()
+        except Exception as e:
+            import sys; print(f"[output] device enum failed: {e}", file=sys.stderr)
+            devices = [{"name": _("engine.default_device"), "hw": "", "driver": "WASAPI"}]
+        self._device_combo.clear()
+        for dev in devices:
+            driver_tag = dev.get("driver", "")
+            label = f"{dev['name']}  [{driver_tag}]" if driver_tag else dev["name"]
+            self._device_combo.addItem(label, dev["hw"])
+
+    def set_exclusive_state(self, mode: bool, device: str):
+        self._exclusive_cb.blockSignals(True)
+        self._exclusive_cb.setChecked(mode)
+        self._exclusive_cb.blockSignals(False)
+        self._device_combo.setEnabled(mode)
+        if mode and not getattr(self, '_hw_loaded', False):
+            self._hw_loaded = True
+        idx = self._device_combo.findData(device)
+        if idx >= 0:
+            self._device_combo.setCurrentIndex(idx)
+        self.refresh_device_list(exclusive_on=mode)
+
+    def set_dsd_mode(self, mode: str):
+        idx = self._dsd_combo.findData(mode)
+        if idx >= 0:
+            self._dsd_combo.setCurrentIndex(idx)
+
+    def refresh_device_list(self, exclusive_on: bool = False):
+        """Rebuild unified device list: local, wired, BT, network."""
+        from audio_player.platform.linux.audio_devices import (
+            get_local_device, get_alsa_hw_devices, get_wired_devices, AudioDevice,
+        )
+
+        # Gather all devices
+        all_devs: list[AudioDevice] = []
+
+        # Local
+        local = get_local_device(active=self._active_device_id == "local")
+        local.available = not exclusive_on
+        all_devs.append(local)
+
+        # Wired (ALSA hw devices)
+        if exclusive_on:
+            hw_devs = get_alsa_hw_devices()
+            for d in hw_devs:
+                d.available = True
+                d.active = (self._active_device_id == d.id)
+                d.description = "ALSA 硬件直通"
+            all_devs.extend(hw_devs)
+
+        # Bluetooth
+        try:
+            from audio_player.platform.linux.bluetooth import get_bluetooth_devices, get_device_codecs, get_host_codecs
+            bt_devs = get_bluetooth_devices()
+            host_codecs = get_host_codecs()
+        except Exception:
+            bt_devs = []
+        # Clear old BT cards
+        for card in self._bt_cards:
+            card.setParent(None)
+            card.deleteLater()
+        self._bt_cards.clear()
+
+        if bt_devs:
+            from audio_player.ui.widgets.bluetooth_card import BluetoothCard
+            for bt in bt_devs:
+                dev = AudioDevice(
+                    id=f"bt:{bt.address}",
+                    name=bt.name,
+                    device_type="bluetooth",
+                    description=f"{bt.codec}  {bt.frequency}  {bt.channels}",
+                    available=True,
+                    active=(self._active_device_id == f"bt:{bt.address}"),
+                    codec=bt.codec,
+                    sample_rate=bt.frequency,
+                    detail=f"{bt.name}\n{bt.codec}\n{bt.frequency}\n{bt.channels}",
+                )
+                all_devs.append(dev)
+                card = BluetoothCard()
+                card.set_device(bt.name, bt.address)
+                card.set_codec(bt.codec, bt.state)
+                card.set_params(bt.frequency, bt.channels, bt.bitrate,
+                                f"{bt.bitpool_min}-{bt.bitpool_max}" if bt.bitpool_max else "")
+                dev_codecs = get_device_codecs(bt.address)
+                # Switchable = intersection of host + device
+                switchable = [c for c in host_codecs
+                              if c in dev_codecs
+                              or (c == "SBC" and "SBC" in dev_codecs)]
+                card.set_switchable_codecs(switchable)
+                card.set_supported(dev_codecs, host_codecs)
+                card.set_battery(bt.battery)
+                card.codecSwitchRequested.connect(self._on_codec_switch)
+                self._bt_layout.addWidget(card)
+                self._bt_cards.append(card)
+            self._bt_group.setVisible(True)
+        else:
+            self._bt_group.setVisible(False)
+
+        # Network devices (from stored data, not old list items)
+        net_devs = [(d["name"], d["id"]) for d in self._devices]
+
+        # Rebuild list
+        self._device_list.clear()
+        for d in all_devs:
+            icon = {"local": "🔊", "wired": "🔌", "bluetooth": "🎧"}.get(d.device_type, "📡")
+            prefix = "✓ " if d.active else ("✗ " if not d.available else "  ")
+            label = f"{prefix}{icon}  {d.name}"
+            if d.description:
+                label += f"  [{d.description}]" if d.device_type == "wired" else f"  ({d.description})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, d.id)
+            item.setToolTip(d.detail or d.description)
+            if not d.available:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            self._device_list.addItem(item)
+
+        # Network devices at bottom
+        for text, did in net_devs:
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, did)
+            self._device_list.addItem(item)
+
+    def _on_codec_switch(self, address: str, codec: str):
+        """Write PipeWire config + reconnect device to switch codec."""
+        import subprocess, os
+        # Map display name to PipeWire codec name
+        codec_map = {
+            "SBC": "sbc", "SBC XQ": "sbc_xq", "AAC": "aac",
+            "aptX": "aptx", "aptX HD": "aptx_hd", "LDAC": "ldac",
+        }
+        pw_codec = codec_map.get(codec, codec.lower().replace(" ", "_"))
+        # Read current host codecs and reorder with selected first
+        from audio_player.platform.linux.bluetooth import get_host_codecs
+        host = get_host_codecs()
+        ordered = [codec_map.get(c, c).lower() for c in host if codec_map.get(c)]
+        ordered.insert(0, ordered.pop(ordered.index(pw_codec)))
+
+        # Write PipeWire config
+        config_dir = os.path.expanduser("~/.config/pipewire/pipewire.conf.d")
+        os.makedirs(config_dir, exist_ok=True)
+        config_path = os.path.join(config_dir, "99-bluetooth-codec.conf")
+        with open(config_path, "w") as f:
+            f.write(f'bluez5.codecs = [ {" ".join(ordered)} ]\n')
+
+        # Reconnect via bluetoothctl
+        subprocess.run(
+            ["bluetoothctl", "disconnect", address],
+            capture_output=True, timeout=3
+        )
+        subprocess.run(
+            ["bluetoothctl", "connect", address],
+            capture_output=True, timeout=5
+        )
+        # Refresh after renegotiation
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(2500, lambda: self.refresh_device_list(
+            exclusive_on=self._exclusive_cb.isChecked()))
+
+    def load_output_settings(self):
+        """Restore exclusive mode + DSD from QSettings."""
+        s = QSettings("VBPlayer", "VB Player")
+        self._hw_loaded = False
+        exclusive = str(s.value("exclusive_mode", "false")).lower() == "true"
+        exclusive_dev = str(s.value("exclusive_device", "hw:0,0") or "hw:0,0")
+        self._exclusive_cb.blockSignals(True)
+        self._exclusive_cb.setChecked(exclusive)
+        self._device_combo.setEnabled(exclusive)
+        self._exclusive_cb.blockSignals(False)
+        if exclusive:
+            self._load_hw_devices()
+            idx = self._device_combo.findData(exclusive_dev)
+            if idx >= 0:
+                self._device_combo.setCurrentIndex(idx)
+        dsd_mode = str(s.value("dsd_mode", "pcm") or "pcm")
+        dsd_idx = self._dsd_combo.findData(dsd_mode)
+        if dsd_idx >= 0:
+            self._dsd_combo.setCurrentIndex(dsd_idx)
+        self.refresh_device_list(exclusive_on=exclusive)

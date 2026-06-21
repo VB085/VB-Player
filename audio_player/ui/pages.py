@@ -12,3 +12,4 @@ class Page(IntEnum):
     PLAYLISTS = 5
     PLAYLIST_DETAIL = 6
     NETWORK = 7
+    SETTINGS = 8

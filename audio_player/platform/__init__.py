@@ -106,7 +106,7 @@ def _build_policy(caps: CapabilityMatrix) -> UIBehaviorPolicy:
         policy = UIBehaviorPolicy(
             titlebar_style="csd" if _IS_WAYLAND else "frameless",
             material="acrylic" if caps.supports_acrylic else "glass",
-            font_family="sans-serif",
+            font_family="HarmonyOS Sans SC",
             font_size=10,
             tray_backend="appindicator" if not _IS_WAYLAND else "qsystemtray",
             notification_backend="dbus",
@@ -151,7 +151,10 @@ platform_info = PlatformInfo(
 
 def get_system_font() -> QFont:
     """Return the recommended system font for the current platform."""
-    font = QFont(platform_info.policy.font_family, platform_info.policy.font_size)
+    family = platform_info.policy.font_family
+    # Try multiple families; QFont falls back to system default if not found
+    font = QFont(family, platform_info.policy.font_size)
+    font.setStyleHint(QFont.StyleHint.SansSerif)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     return font
 

@@ -214,7 +214,7 @@ class FloatingPill(QWidget):
 
         pen = QPen(current_accent(), pen_w)
         pen.setDashPattern([dash_on, dash_off])
-        pen.setDashOffset(rrad / pen_w)
+        pen.setDashOffset(0)
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(rx, ry, rww, rhh, rrad, rrad)

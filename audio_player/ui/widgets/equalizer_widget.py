@@ -2,7 +2,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSlider,
                              QLabel, QComboBox, QPushButton, QFrame, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
-from audio_player.app import current_theme_mode
+from audio_player.app import current_theme_mode, current_accent
+from audio_player.i18n import _, languageChanged
 
 
 class _NoWheelSlider(QSlider):
@@ -22,45 +23,51 @@ class _NoWheelComboBox(QComboBox):
 
 
 def _build_eq_style() -> str:
-    """Build equalizer QSS based on current theme mode."""
+    """Build equalizer QSS — follows current accent color."""
     is_light = current_theme_mode() == "light"
-    bg = "#e8e8e8" if is_light else "#1a1a2e"
+    accent = current_accent()
+    bg = "#ffffff" if is_light else "#2d2d2d"
     fg = "#333333" if is_light else "#e2e8f0"
-    border = "#d0d0d0" if is_light else "#252540"
-    groove = "#d0d0d0" if is_light else "#252540"
+    border = "#d0d0d0" if is_light else "#303030"
+    groove = "#d0d0d0" if is_light else "#303030"
     label = "#666666" if is_light else "#94a3b8"
     freq = "#888888" if is_light else "#64748b"
-    cb_border = "#cccccc" if is_light else "#47476e"
-    return """
+    cb_border = "#cccccc" if is_light else "#444444"
+    ac = accent.name()
+    al = accent.lighter(130).name()
+    ah = accent.lighter(160).name()
+    ad = accent.darker(120).name()
+    return f"""
 QSlider::groove:vertical {{
     background: {groove};
     width: 4px;
     border-radius: 2px;
 }}
 QSlider::sub-page:vertical {{
-    background: #7c3aed;
+    background: {ac};
     border-radius: 2px;
 }}
 QSlider::handle:vertical {{
-    background: #a78bfa;
+    background: {al};
     height: 10px;
     width: 10px;
     border-radius: 5px;
     margin: 0 -3px;
 }}
 QSlider::handle:vertical:hover {{
-    background: #c4b5fd;
+    background: {ah};
 }}
 QComboBox {{
     background: {bg};
     color: {fg};
     border: 1px solid {border};
-    border-radius: 4px;
-    padding: 4px 8px;
+    border-radius: 10px;
+    padding: 6px 10px;
     min-width: 120px;
+    font-size: 12px;
 }}
 QComboBox:hover {{
-    border-color: #7c3aed;
+    border-color: {ac};
 }}
 QComboBox::drop-down {{
     border: none;
@@ -77,7 +84,7 @@ QComboBox QAbstractItemView {{
     background: {bg};
     color: {fg};
     border: 1px solid {border};
-    selection-background-color: #2e185e;
+    selection-background-color: {ad};
 }}
 QLabel#bandLabel {{
     color: {label};
@@ -99,14 +106,14 @@ QCheckBox::indicator {{
     background: {bg};
 }}
 QCheckBox::indicator:checked {{
-    background: #7c3aed;
-    border-color: #7c3aed;
+    background: {ac};
+    border-color: {ac};
 }}
-""".format(bg=bg, fg=fg, border=border, groove=groove, label=label, freq=freq, cb_border=cb_border)
+"""
 
 
 class EqualizerWidget(QWidget):
-    bandChanged = pyqtSignal(int, float)  # band index, dB value
+    bandChanged = pyqtSignal(int, float)
     presetSelected = pyqtSignal(str)
     resetRequested = pyqtSignal()
     enabledToggled = pyqtSignal(bool)
@@ -120,14 +127,22 @@ class EqualizerWidget(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
-        # Header
+        # Header — three controls aligned
         header = QHBoxLayout()
-        self._enabled_cb = QCheckBox("Equalizer")
+        header.setSpacing(8)
+
+        self._enabled_cb = QPushButton(_("eq.enabled"))
+        self._enabled_cb.setCheckable(True)
+        self._enabled_cb.setFixedHeight(30)
+        self._enabled_cb.setCursor(Qt.CursorShape.PointingHandCursor)
         self._enabled_cb.toggled.connect(self.enabledToggled)
+        self._enabled_cb.toggled.connect(lambda on: self._update_eq_enabled_style(on))
         header.addWidget(self._enabled_cb)
+
         header.addStretch()
 
         self._preset_combo = _NoWheelComboBox()
+        self._preset_combo.setFixedSize(140, 30)
         self._preset_combo.addItems([
             "Flat", "Rock", "Pop", "Classical", "Jazz",
             "Hip Hop", "Electronic", "Vocal Boost", "Bass Boost", "Treble Boost"
@@ -135,12 +150,15 @@ class EqualizerWidget(QWidget):
         self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
         header.addWidget(self._preset_combo)
 
-        reset_btn = QPushButton("Reset")
-        reset_btn.setFixedWidth(60)
-        reset_btn.clicked.connect(self.resetRequested)
-        header.addWidget(reset_btn)
+        self._reset_btn = QPushButton(_("eq.reset"))
+        self._reset_btn.setFixedHeight(30)
+        self._reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reset_btn.clicked.connect(self.resetRequested)
+        header.addWidget(self._reset_btn)
 
         layout.addLayout(header)
+        self._update_eq_enabled_style(False)
+        languageChanged.connect(self.refresh_language)
 
         # Band sliders
         bands_layout = QHBoxLayout()
@@ -154,22 +172,19 @@ class EqualizerWidget(QWidget):
             band_widget = QVBoxLayout()
             band_widget.setSpacing(2)
 
-            # Value label
             val_label = QLabel("0")
             val_label.setObjectName("bandLabel")
             val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             band_widget.addWidget(val_label)
 
-            # Slider
             slider = _NoWheelSlider(Qt.Orientation.Vertical)
-            slider.setRange(-120, 120)  # -12.0 to +12.0 dB, scaled by 10
+            slider.setRange(-120, 120)
             slider.setValue(0)
             slider.setFixedWidth(28)
             slider.setMinimumHeight(100)
             slider.valueChanged.connect(lambda v, i=i: self._on_band_changed(i, v / 10.0))
             band_widget.addWidget(slider, 1, Qt.AlignmentFlag.AlignCenter)
 
-            # Frequency label
             freq_label = QLabel(str(freq))
             freq_label.setObjectName("freqLabel")
             freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -206,5 +221,40 @@ class EqualizerWidget(QWidget):
             self.set_band_gain(i, 0.0)
 
     def refresh_theme_mode(self, is_light: bool):
-        """Rebuild QSS when theme changes."""
         self.setStyleSheet(_build_eq_style())
+
+    def refresh_accent(self):
+        self.setStyleSheet(_build_eq_style())
+        self._update_eq_enabled_style(self._enabled_cb.isChecked())
+
+    def _update_eq_enabled_style(self, on: bool):
+        accent = current_accent()
+        if on:
+            self._enabled_cb.setStyleSheet(
+                f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
+                f"font-size:12px;padding:7px 10px;border-radius:10px;}}"
+                f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
+            )
+        else:
+            r, g, b = accent.red(), accent.green(), accent.blue()
+            self._enabled_cb.setStyleSheet(
+                f"QPushButton{{background:transparent;color:#94a3b8;"
+                f"border:1px solid rgba({r},{g},{b},0.12);"
+                f"font-size:12px;padding:6px 10px;border-radius:10px;}}"
+                f"QPushButton:hover{{background:rgba(255,255,255,0.06);color:#e2e8f0;}}"
+            )
+        self._style_reset_btn()
+
+    def _style_reset_btn(self):
+        accent = current_accent()
+        r, g, b = accent.red(), accent.green(), accent.blue()
+        self._reset_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:#94a3b8;"
+            f"border:1px solid rgba({r},{g},{b},0.12);"
+            f"font-size:12px;padding:6px 10px;border-radius:10px;}}"
+            f"QPushButton:hover{{background:rgba(255,255,255,0.06);color:#e2e8f0;}}"
+        )
+
+    def refresh_language(self):
+        self._enabled_cb.setText(_("eq.enabled"))
+        self._reset_btn.setText(_("eq.reset"))

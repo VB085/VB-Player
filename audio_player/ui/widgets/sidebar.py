@@ -16,8 +16,8 @@ NAV_ITEMS = [
     (NAV_ALBUMS,      "nav.albums",       "albums"),
     (NAV_FAVORITES,   "nav.favorites",    "favorites"),
     (NAV_PLAYLISTS,   "nav.playlists",    "playlists"),
-    (NAV_NETWORK,     "nav.network",      "network"),
-    (NAV_MANAGE,      "nav.manage",       "manage"),
+    (NAV_NETWORK,     "nav.output",       "output"),
+    (NAV_MANAGE,      "nav.tools",        "tools"),
     (NAV_SETTINGS,    "nav.settings",     "settings"),
 ]
 

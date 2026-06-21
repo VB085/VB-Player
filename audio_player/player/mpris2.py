@@ -386,9 +386,31 @@ class Mpris2Service(QObject):
     def _update_cover_art(self, cover_data):
         if cover_data:
             try:
-                self._cover_path.write_bytes(cover_data)
+                from io import BytesIO
+                from PyQt6.QtCore import QSettings
+                from PIL import Image, ImageDraw
+                img = Image.open(BytesIO(cover_data)).convert("RGBA")
+                size = min(img.width, img.height, 256)
+                img = img.resize((size, size), Image.LANCZOS)
+                # Use app UI radius
+                r = int(QSettings("VBPlayer", "VB Player").value("ui_radius", 12) or 12)
+                mask = Image.new("L", (size, size), 0)
+                draw = ImageDraw.Draw(mask)
+                draw.rounded_rectangle([0, 0, size, size], radius=r, fill=255)
+                rounded = Image.new("RGBA", (size, size))
+                rounded.paste(img, mask=mask)
+                buf = BytesIO()
+                rounded.save(buf, "PNG")
+                import hashlib
+                h = hashlib.md5(cover_data).hexdigest()[:8]
+                cover_dir = _cover_temp_path().parent
+                for old in list(cover_dir.glob("vbplayer_cover_*")):
+                    try: old.unlink()
+                    except OSError: pass
+                self._cover_path = cover_dir / f"vbplayer_cover_{h}.png"
+                self._cover_path.write_bytes(buf.getvalue())
                 self._cover_uri = self._cover_path.as_uri()
-            except OSError:
+            except Exception:
                 self._cover_uri = ""
         else:
             self._cover_uri = ""
