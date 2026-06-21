@@ -7,6 +7,7 @@ QWidget#centerPanel { background: #242424; }
 QWidget#sidePanel { background: #1e1e1e; border-right: 1px solid #303030; }
 QWidget#rightPanel { background: #1e1e1e; border-left: 1px solid #303030; }
 QWidget#titleBar { background: transparent; }
+QWidget#playlistsPage QWidget, QWidget#networkPage QWidget, QWidget#albumPage QWidget { background: transparent; }
 QWidget#titleLabel { color: #999999; font-size: 12px; }
 
 QPushButton#minBtn, QPushButton#maxBtn, QPushButton#closeBtn {
