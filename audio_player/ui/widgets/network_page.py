@@ -34,6 +34,7 @@ class NetworkPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("networkPage")
         self._recent_streams: list[str] = []
         self._devices: list[dict] = []
         self._active_device_id = "local"
