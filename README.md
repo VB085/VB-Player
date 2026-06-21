@@ -1,6 +1,6 @@
 # VB Player
 
-[![Version](https://img.shields.io/badge/version-0.6.2-7c3aed)](https://github.com/VB085/VB-Player)
+[![Version](https://img.shields.io/badge/version-0.6.3-7c3aed)](https://github.com/VB085/VB-Player)
 [![License](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-10b981)]()
 
@@ -88,6 +88,38 @@ python main.py
 ```powershell
 pip install pyqt6 mutagen numpy PyGObject
 python main.py
+```
+
+## 从源码构建
+
+```bash
+git clone https://github.com/VB085/VB-Player.git
+cd VB-Player
+
+# 创建 venv 并安装依赖
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install pyqt6 mutagen numpy pyinstaller Pillow
+
+# 直接运行
+.venv/bin/python main.py
+
+# PyInstaller 打包（目录模式，约 585M）
+./build.sh
+
+# 生成 .deb 和 .AppImage
+./package.sh
+```
+
+**构建输出：**
+- `dist/VB Player/` — PyInstaller 目录包，可直接运行
+- `dist/vb-player_<version>_<arch>.deb` — Debian/Ubuntu 安装包
+- `dist/VB_Player-v<version>-<arch>.AppImage` — 通用 Linux 便携包（需 `appimagetool`）
+
+**AppImage 工具安装：**
+```bash
+wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+chmod +x appimagetool-x86_64.AppImage
+sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
 ```
 
 ## 直接安装

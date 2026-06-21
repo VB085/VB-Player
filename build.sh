@@ -21,7 +21,7 @@ for arg in "$@"; do
     esac
 done
 
-echo "=== VB Player v0.6.2 Build ==="
+echo "=== VB Player v0.6.3 Build ==="
 echo "Platform: $PLATFORM $ARCH"
 echo "Mode:     $MODE"
 echo "Package:  $PACKAGE"
@@ -65,6 +65,9 @@ echo "[1/2] Building with PyInstaller..."
 HIDDEN_FLAGS=()
 for imp in PyQt6.QtMultimedia mutagen mutagen.mp3 mutagen.flac mutagen.oggopus \
            mutagen.oggvorbis mutagen.mp4 mutagen.id3 mutagen.aac numpy qtawesome \
+           PIL PIL.Image PIL.ImageDraw io.BytesIO \
+           audio_player.platform.linux.bluetooth \
+           audio_player.platform.linux.audio_devices \
            $HIDDEN_IMPORTS; do
     HIDDEN_FLAGS+=("--hidden-import=$imp")
 done
