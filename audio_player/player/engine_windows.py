@@ -123,6 +123,11 @@ class AudioEngine(_BaseAudioEngine):
             if not getattr(self, '_asio_started', False):
                 if self._start_asio():
                     self._asio_started = True
+            else:
+                # Resume from pause: restart feed timer
+                t = getattr(self, '_asio_feed_timer', None)
+                if t is not None and not t.isActive():
+                    t.start()
             return
         # Standard GStreamer path
         super().play()
