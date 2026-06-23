@@ -766,7 +766,8 @@ class AudioEngine(_BaseAudioEngine):
             if max_bytes < 4096:
                 return
 
-            data = self._ffmpeg_proc.stdout.read(min(max_bytes, 65536))
+            # Read small chunks — matches ASIO buffer rate better
+            data = self._ffmpeg_proc.stdout.read(min(max_bytes, 16384))
             if not data:
                 if _dbg < 3:
                     print("[asio-feed] ffmpeg EOF", file=_s.stderr)

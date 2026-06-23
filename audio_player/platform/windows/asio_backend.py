@@ -1,7 +1,7 @@
 """ASIO Backend — COM + callback + ring buffer + memmove. Working prototype."""
 import ctypes, struct
 ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
-RING_SAMPLES = 131072
+RING_SAMPLES = 262144  # ~5.9s at 44.1kHz — maximum headroom for smooth playback
 
 _lock = None
 _ptr, _ch, _bs = None, 0, 0
@@ -18,9 +18,6 @@ CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
 @CB_BS
 def cb_bs(idx, dp):
     global _rpos
-    import sys
-    if _rpos == 0:
-        sys.stderr.write(f"[asio-cb] bufferSwitch: idx={idx}, wpos={_wpos}, rpos={_rpos}, bs={_bs}\n"); sys.stderr.flush()
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
     for ci in range(_ch):
         dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
@@ -81,61 +78,38 @@ def asio_open(clsid_str: str, rate: int):
     return (_ch, _bs)
 
 def asio_write(data: bytes):
-    """Write interleaved F32LE PCM to per-channel ring buffers.
-
-    Pure Python de-interleave — no numpy, no per-element ctypes writes.
-    Uses struct.iter_unpack for fast float conversion, then memmove per channel.
-    """
+    """Write interleaved F32LE PCM to per-channel ring buffers."""
     global _wpos
-    if not _running:
-        import sys; sys.stderr.write("[asio-write] early: not running\n"); sys.stderr.flush()
-        return False
-    if not data:
-        import sys; sys.stderr.write("[asio-write] early: empty data\n"); sys.stderr.flush()
-        return False
-    if _ch <= 0:
-        import sys; sys.stderr.write(f"[asio-write] early: bad ch={_ch}\n"); sys.stderr.flush()
-        return False
-    if _ring is None:
-        import sys; sys.stderr.write("[asio-write] early: ring None\n"); sys.stderr.flush()
+    if not _running or not data or _ch <= 0 or _ring is None:
         return False
 
     ns = (len(data) // 4) // _ch
     if ns == 0:
-        import sys; sys.stderr.write(f"[asio-write] ns=0: len={len(data)} ch={_ch}\n"); sys.stderr.flush()
         return False
 
     try:
-        import numpy as np
-        # Convert bytes to numpy array, reshape to [ns, ch]
-        arr = np.frombuffer(data[:ns * _ch * 4], dtype=np.float32).reshape(-1, _ch)
+        # Use array.array for fast bytes→floats conversion
+        import array
+        all_floats = array.array('f')
+        all_floats.frombytes(data[:ns * _ch * 4])
+
+        # De-interleave using extended slice (much faster than generator)
         w = _wpos
         for ci in range(_ch):
-            col = np.ascontiguousarray(arr[:, ci])  # Per-channel contiguous data
-            n_bytes = ns * 4
-            pos = w % RING_SAMPLES
+            # Extract every _ch-th float: floats[ci::_ch]
+            col = all_floats[ci::_ch]
+            col_bytes = col.tobytes()
+            dest_addr = ctypes.addressof(_ring[ci])
+            pos = w
             if pos + ns <= RING_SAMPLES:
-                ctypes.memmove(
-                    ctypes.addressof(_ring[ci]) + pos * 4,
-                    col.ctypes.data_as(ctypes.c_void_p),
-                    n_bytes)
+                ctypes.memmove(dest_addr + pos * 4, col_bytes, ns * 4)
             else:
                 first = RING_SAMPLES - pos
-                ctypes.memmove(
-                    ctypes.addressof(_ring[ci]) + pos * 4,
-                    col[:first].ctypes.data_as(ctypes.c_void_p),
-                    first * 4)
-                ctypes.memmove(
-                    _ring[ci],
-                    col[first:].ctypes.data_as(ctypes.c_void_p),
-                    (ns - first) * 4)
+                ctypes.memmove(dest_addr + pos * 4, col_bytes[:first * 4], first * 4)
+                ctypes.memmove(dest_addr, col_bytes[first * 4:], (ns - first) * 4)
         _wpos = (w + ns) % RING_SAMPLES
         return True
-    except BaseException as _exc:
-        try:
-            import sys; sys.stderr.write(f"[asio-write] EXC: {type(_exc).__name__}: {_exc}\n"); sys.stderr.flush()
-        except Exception:
-            pass
+    except Exception:
         return False
 
 def asio_close():
