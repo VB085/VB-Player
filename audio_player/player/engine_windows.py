@@ -745,16 +745,14 @@ class AudioEngine(_BaseAudioEngine):
         if getattr(self, '_ffmpeg_proc', None) is None:
             # BEEP TEST: generate 440Hz sine wave to verify ASIO path
             if getattr(self, '_asio_beep_tested', False):
+                if not getattr(self, '_beep_start', False):
+                    return
+            else:
+                self._asio_beep_tested = True
+                self._beep_phase = 0.0
+                self._beep_start = False
+                QTimer.singleShot(500, lambda: setattr(self, '_beep_start', True))
                 return
-            self._asio_beep_tested = True
-            self._beep_phase = 0
-            self._beep_start = False
-            # Wait 500ms then start beep
-            QTimer.singleShot(500, lambda: setattr(self, '_beep_start', True))
-            return
-
-        if not self._beep_start:
-            return
 
         if not _a._running:
             return
