@@ -1,15 +1,15 @@
-"""ASIO Backend — COM + callback + ring buffer + memmove. Working prototype."""
-import ctypes, struct
+"""ASIO Backend — COM + callback + interleaved ring buffer."""
+import ctypes, struct, threading as _thr
 ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
-RING_SAMPLES = 262144  # ~5.9s at 44.1kHz — maximum headroom for smooth playback
+RING_SAMPLES = 262144  # frames (per channel)
 
-_lock = None
 _ptr, _ch, _bs = None, 0, 0
-_ring, _bi, _cbs = None, None, None  # _cbs: keep alive for ASIO driver callbacks
-_wpos, _rpos = 0, 0
+_ring = None  # single interleaved float array: [L0,R0,L1,R1,...]
+_ring_i = None  # interleaved bytearray for main-thread writes
+_bi, _cbs = None, None
+_wpos, _rpos = 0, 0  # in frames
 _running = False
 
-# Callbacks — proven working in standalone test
 CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
 CB_SR = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_double)
 CB_AM = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)
@@ -18,36 +18,38 @@ CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
 @CB_BS
 def cb_bs(idx, dp):
     global _rpos
-    n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
-    for ci in range(_ch):
-        dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
-        if n > 0 and _ring:
-            end = r + n
-            if end <= RING_SAMPLES:
-                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
-            else:
-                sz = RING_SAMPLES - r
-                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
-                ctypes.memmove(ctypes.c_void_p(ctypes.addressof(dst.contents) + sz * 4), _ring[ci], (n - sz) * 4)
-        else:
+    n = min((_wpos - _rpos) % RING_SAMPLES, _bs)
+    r = _rpos
+    bytes_per_frame = _ch * 4
+    if n > 0 and _ring is not None:
+        for i in range(n):
+            src_off = ((r + i) % RING_SAMPLES) * bytes_per_frame
+            for ci in range(_ch):
+                dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+                ctypes.memmove(
+                    ctypes.c_void_p(ctypes.addressof(dst.contents) + i * 4),
+                    ctypes.c_void_p(ctypes.addressof(_ring) + src_off + ci * 4),
+                    4)
+    else:
+        for ci in range(_ch):
+            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
             ctypes.memset(ctypes.cast(dst, ctypes.c_void_p), 0, _bs * 4)
-    _rpos = (r + n) % RING_SAMPLES; return 0
+    _rpos = (r + n) % RING_SAMPLES
+    return 0
 
 @CB_SR
 def cb_sr(r): return 0
 @CB_AM
 def cb_am(s,v,m,o): return 0
 @CB_TI
-def cb_ti(p,i,d):
-    import sys; sys.stderr.write(f"[asio-cb] timeInfo\n"); sys.stderr.flush()
-    cb_bs(i,d)
+def cb_ti(p,i,d): cb_bs(i,d)
 
 def _mkclsid(s):
     w = ctypes.create_unicode_buffer(s); c = (ctypes.c_byte*16)()
     ole32.CLSIDFromString(w, ctypes.byref(c)); return c
 
 def asio_open(clsid_str: str, rate: int):
-    global _ptr, _bi, _ring, _cbs, _ch, _bs, _wpos, _rpos, _running, _lock
+    global _ptr, _bi, _ring, _cbs, _ch, _bs, _wpos, _rpos, _running
     ole32.CoInitializeEx(None, 2)
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
     hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, (ctypes.c_char*16)(*IID_FIIO), ctypes.byref(p))
@@ -61,9 +63,9 @@ def asio_open(clsid_str: str, rate: int):
     mn,mx,pf,gr = ctypes.c_long(),ctypes.c_long(),ctypes.c_long(),ctypes.c_long()
     V(11,ctypes.c_long,ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long))(p,ctypes.byref(mn),ctypes.byref(mx),ctypes.byref(pf),ctypes.byref(gr))
     _bs = pf.value or mx.value or 1024
-    _ring = [(ctypes.c_float * RING_SAMPLES)() for _ in range(_ch)]
+    # Single interleaved ring buffer: [L0,R0,L1,R1,...] — RING_SAMPLES frames × _ch floats
+    _ring = (ctypes.c_float * (RING_SAMPLES * _ch))()
     _wpos = _rpos = 0
-    import threading; _lock = threading.Lock()
 
     class BI(ctypes.Structure): _fields_ = [('i',ctypes.c_long),('n',ctypes.c_long),('buf',ctypes.c_void_p*2)]
     _bi = (BI * _ch)(); _bi_ref = _bi
@@ -78,47 +80,43 @@ def asio_open(clsid_str: str, rate: int):
     return (_ch, _bs)
 
 def asio_write(data: bytes):
-    """Write interleaved F32LE PCM to per-channel ring buffers."""
+    """Write interleaved F32LE PCM directly to ring buffer — no de-interleave."""
     global _wpos
     if not _running or not data or _ch <= 0 or _ring is None:
         return False
-
-    ns = (len(data) // 4) // _ch
-    if ns == 0:
-        return False
-
     try:
-        # Use array.array for fast bytes→floats conversion
-        import array
-        all_floats = array.array('f')
-        all_floats.frombytes(data[:ns * _ch * 4])
-
-        # De-interleave using extended slice (much faster than generator)
+        frames = (len(data) // 4) // _ch
+        if frames == 0:
+            return False
+        n_bytes = frames * _ch * 4
         w = _wpos
-        for ci in range(_ch):
-            # Extract every _ch-th float: floats[ci::_ch]
-            col = all_floats[ci::_ch]
-            col_bytes = col.tobytes()
-            dest_addr = ctypes.addressof(_ring[ci])
-            pos = w
-            if pos + ns <= RING_SAMPLES:
-                ctypes.memmove(dest_addr + pos * 4, col_bytes, ns * 4)
-            else:
-                first = RING_SAMPLES - pos
-                ctypes.memmove(dest_addr + pos * 4, col_bytes[:first * 4], first * 4)
-                ctypes.memmove(dest_addr, col_bytes[first * 4:], (ns - first) * 4)
-        _wpos = (w + ns) % RING_SAMPLES
+        byte_offset = (w % RING_SAMPLES) * _ch * 4
+        buf_end = byte_offset + n_bytes
+        buf_total = RING_SAMPLES * _ch * 4
+        if buf_end <= buf_total:
+            ctypes.memmove(
+                ctypes.c_void_p(ctypes.addressof(_ring) + byte_offset),
+                data[:n_bytes], n_bytes)
+        else:
+            first = buf_total - byte_offset
+            ctypes.memmove(
+                ctypes.c_void_p(ctypes.addressof(_ring) + byte_offset),
+                data[:first], first)
+            ctypes.memmove(
+                ctypes.addressof(_ring),
+                data[first:n_bytes], n_bytes - first)
+        _wpos = (w + frames) % RING_SAMPLES
         return True
     except Exception:
         return False
 
 def asio_close():
-    global _ptr, _running, _bi, _ring, _cbs, _lock
+    global _ptr, _running, _bi, _ring, _cbs
     if not _ptr: return
     vt = ctypes.cast(_ptr, ctypes.POINTER(ctypes.c_void_p))[0]
     V = lambda i,r,*a: ctypes.WINFUNCTYPE(r, ctypes.c_void_p, *a)(ctypes.cast(ctypes.cast(vt, ctypes.POINTER(ctypes.c_void_p))[i], ctypes.c_void_p).value)
     if _running: V(8,ctypes.c_long)(_ptr); V(20,ctypes.c_long)(_ptr); _running = False
-    V(2,ctypes.c_ulong)(_ptr); _ptr = None; _bi = None; _ring = None; _cbs = None; _lock = None
+    V(2,ctypes.c_ulong)(_ptr); _ptr = None; _bi = None; _ring = None; _cbs = None
 
 def asio_set_rate(clsid_str: str, rate: int):
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
