@@ -675,8 +675,10 @@ class AudioEngine(_BaseAudioEngine):
             target_rate = 88200
 
         # Build ffmpeg command — explicit format, no stdin interaction
+        # TEST: generate 440Hz sine via ffmpeg instead of file
         ffmpeg_cmd = [
-            ffmpeg, "-nostdin", "-i", filepath,
+            ffmpeg, "-nostdin",
+            "-f", "lavfi", "-i", f"sine=frequency=440:duration=5:sample_rate={target_rate}",
             "-f", "f32le", "-acodec", "pcm_f32le",
             "-ar", str(target_rate), "-ac", "2",
             "-loglevel", "error",
