@@ -21,6 +21,35 @@ def cb_bs(idx, dp):
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs)
     r = _rpos
     bytes_per_frame = _ch * 4
+    _dump_count = getattr(cb_bs, '_dump_count', 0)
+    if _dump_count < 1 and n > 0 and _ring is not None:
+        # Dump what the callback is ABOUT to output
+        import array, struct as _st, os
+        out = array.array('f')
+        for i in range(n):
+            src_off = ((r + i) % RING_SAMPLES) * bytes_per_frame
+            for ci in range(_ch):
+                ptr = ctypes.cast(ctypes.c_void_p(ctypes.addressof(_ring) + src_off + ci * 4),
+                                  ctypes.POINTER(ctypes.c_float))
+                out.append(ptr[0])
+        # Save as 16-bit PCM WAV
+        s16 = array.array('h', (int(max(-1., min(1., v)) * 32767) for v in out))
+        wav_data = s16.tobytes()
+        rate = 44100
+        wav = bytearray(44 + len(wav_data))
+        wav[0:4] = b'RIFF'; _st.pack_into('<I', wav, 4, 36 + len(wav_data))
+        wav[8:16] = b'WAVEfmt '; _st.pack_into('<I', wav, 16, 16)
+        _st.pack_into('<H', wav, 20, 1); _st.pack_into('<H', wav, 22, _ch)
+        _st.pack_into('<I', wav, 24, rate); _st.pack_into('<I', wav, 28, rate * _ch * 2)
+        _st.pack_into('<H', wav, 32, _ch * 2); _st.pack_into('<H', wav, 34, 16)
+        wav[36:40] = b'data'; _st.pack_into('<I', wav, 40, len(wav_data))
+        wav[44:] = wav_data
+        desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
+        with open(os.path.join(desktop, 'asio_cb_dump.wav'), 'wb') as f:
+            f.write(bytes(wav))
+        import sys; sys.stderr.write(f"[cb] dumped {n} frames to Desktop/asio_cb_dump.wav\n")
+        cb_bs._dump_count = 1
+
     if n > 0 and _ring is not None:
         for i in range(n):
             src_off = ((r + i) % RING_SAMPLES) * bytes_per_frame
