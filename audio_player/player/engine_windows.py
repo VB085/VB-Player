@@ -765,6 +765,20 @@ class AudioEngine(_BaseAudioEngine):
                 self._ffmpeg_proc = None
                 return
 
+            # DUMP first 256KB of ffmpeg output for debugging
+            _dump_total = getattr(self, '_asio_dump_total', 0)
+            if _dump_total < 256 * 1024:
+                if not hasattr(self, '_asio_dump_file'):
+                    self._asio_dump_file = open(
+                        'C:/Users/vb085/Desktop/asio_dump.pcm', 'wb')
+                self._asio_dump_file.write(data)
+                _dump_total += len(data)
+                self._asio_dump_total = _dump_total
+                if _dump_total >= 256 * 1024:
+                    self._asio_dump_file.close()
+                    import sys as _s
+                    print(f"[asio] dumped {_dump_total} bytes to Desktop/asio_dump.pcm", file=_s.stderr)
+
             _a.asio_write(data)
             # Track position (deferred)
             rate = self._pipeline_sample_rate or 44100
