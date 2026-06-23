@@ -759,9 +759,9 @@ class AudioEngine(_BaseAudioEngine):
 
         _dbg = getattr(self, '_asio_dbg_count', 0)
         try:
-            # Throttle: keep ring buffer at least 3x ASIO buffer size full
+            # Throttle: keep ring buffer well ahead of ASIO consumption
             bs = getattr(_a, '_bs', 2048)  # ASIO buffer size in samples
-            target = bs * 4  # aim for 4x buffer = ~185ms at 44.1kHz
+            target = bs * 6  # aim for 6x buffer = ~279ms at 44.1kHz
             used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
             if used >= target:
                 return  # enough buffered, skip this tick
