@@ -766,7 +766,15 @@ class AudioEngine(_BaseAudioEngine):
                       f"wpos={_a._wpos} rpos={_a._rpos}", file=_s.stderr)
                 _dbg += 1
                 self._asio_dbg_count = _dbg
-            _a.asio_write(data)
+            # Debug: inspect asio_write before calling
+            if _dbg < 5:
+                print(f"[asio-feed] calling asio_write({len(data)} bytes), "
+                      f"func={_a.asio_write}, "
+                      f"running={_a._running}, ch={_a._ch}, "
+                      f"ring_is_None={_a._ring is None}", file=_s.stderr)
+            ok = _a.asio_write(data)
+            if _dbg < 5:
+                print(f"[asio-feed] asio_write returned: {ok}", file=_s.stderr)
             # Track position by bytes written since start
             rate = self._pipeline_sample_rate or 44100
             self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
