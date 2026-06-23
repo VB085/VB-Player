@@ -688,7 +688,7 @@ class AudioEngine(_BaseAudioEngine):
 
     def _start_asio(self) -> bool:
         """Open ASIO device and start the PCM feed timer."""
-        from audio_player.platform.windows.asio_backend import asio_open, asio_close
+        import audio_player.platform.windows.asio_backend as _a
 
         hw = self._exclusive_device or ""
         if not hw.startswith("asio:"):
@@ -696,8 +696,8 @@ class AudioEngine(_BaseAudioEngine):
         clsid = hw[5:]
         rate = self._pipeline_sample_rate or 44100
 
-        asio_close()
-        result = asio_open(clsid, rate)
+        _a.asio_close()
+        result = _a.asio_open(clsid, rate)
         if result is None:
             self.errorOccurred.emit(
                 _("engine.asio_open_failed", rate=rate, clsid=clsid[:12]))
@@ -720,36 +720,33 @@ class AudioEngine(_BaseAudioEngine):
 
     def _stop_asio(self):
         """Stop ASIO feed timer and close device."""
-        from audio_player.platform.windows.asio_backend import asio_close
+        import audio_player.platform.windows.asio_backend as _a
 
         t = getattr(self, '_asio_feed_timer', None)
         if t is not None:
             t.stop()
             self._asio_feed_timer = None
 
-        asio_close()
+        _a.asio_close()
 
     def _asio_feed(self):
         """Read PCM from ffmpeg stdout, write to ASIO ring buffer (throttled)."""
         if getattr(self, '_ffmpeg_proc', None) is None:
             return
 
-        from audio_player.platform.windows.asio_backend import (
-            asio_write, _running, _wpos, _rpos, RING_SAMPLES, _ch,
-        )
+        import audio_player.platform.windows.asio_backend as _a
         import sys as _s
 
-        if not _running:
+        if not _a._running:
             return
 
         _dbg = getattr(self, '_asio_dbg_count', 0)
         try:
             # Throttle: only read as much as the ring buffer can hold
-            # ring buffer is in samples per channel, convert to bytes
-            used = (_wpos - _rpos) % RING_SAMPLES  # samples currently buffered
-            free = RING_SAMPLES - used - (_ch * 256)  # leave 256-sample margin
-            max_bytes = max(0, free * _ch * 4)
-            if max_bytes < 4096:  # less than 4KB free — skip this tick
+            used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
+            free = _a.RING_SAMPLES - used - (_a._ch * 256)
+            max_bytes = max(0, free * _a._ch * 4)
+            if max_bytes < 4096:
                 return
 
             data = self._ffmpeg_proc.stdout.read(min(max_bytes, 65536))
@@ -758,14 +755,15 @@ class AudioEngine(_BaseAudioEngine):
                     print("[asio-feed] ffmpeg EOF", file=_s.stderr)
                     self._asio_dbg_count = _dbg + 1
                 self._ffmpeg_proc = None
-                return  # let ASIO drain remaining buffer, then trackFinished
+                return
 
             if _dbg < 5:
                 print(f"[asio-feed] {len(data)} bytes, "
-                      f"ring used={used}/{RING_SAMPLES}spl", file=_s.stderr)
+                      f"ring used={used}/{_a.RING_SAMPLES}spl, "
+                      f"wpos={_a._wpos} rpos={_a._rpos}", file=_s.stderr)
                 _dbg += 1
                 self._asio_dbg_count = _dbg
-            asio_write(data)
+            _a.asio_write(data)
             # Track position by bytes written since start
             rate = self._pipeline_sample_rate or 44100
             self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
@@ -774,9 +772,8 @@ class AudioEngine(_BaseAudioEngine):
                 self._position_ms = pos_ms
                 self.positionChanged.emit(pos_ms)
 
-            # Check if track is done: ffmpeg EOF + ring buffer drained
             if (getattr(self, '_ffmpeg_proc', None) is None
-                    and _wpos == _rpos):
+                    and _a._wpos == _a._rpos):
                 self.trackFinished.emit()
         except Exception as e:
             if _dbg < 3:
