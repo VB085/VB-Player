@@ -670,12 +670,14 @@ class AudioEngine(_BaseAudioEngine):
         if ext in ("dsf", "dff"):
             target_rate = 88200
 
-        # Build ffmpeg command
+        # Build ffmpeg command — explicit format, no stdin interaction
         ffmpeg_cmd = [
-            ffmpeg, "-i", filepath,
+            ffmpeg, "-nostdin", "-i", filepath,
+            "-map_metadata", "-1",  # strip metadata to pipe
             "-f", "f32le", "-acodec", "pcm_f32le",
             "-ar", str(target_rate), "-ac", "2",
-            "-loglevel", "quiet",
+            "-af", "aformat=sample_fmts=flt:channel_layouts=stereo",
+            "-loglevel", "error",
             "pipe:1",
         ]
 
@@ -698,17 +700,6 @@ class AudioEngine(_BaseAudioEngine):
 
         self._is_asio_ffmpeg = True
         self._asio_bytes_total = 0
-
-        # BEEP TEST: kill ffmpeg → feed will generate sine wave instead
-        try:
-            self._ffmpeg_proc.kill()
-            self._ffmpeg_proc.wait(timeout=3)
-        except Exception:
-            pass
-        self._ffmpeg_proc = None
-        self._asio_beep_tested = False  # reset for beep test
-        if hasattr(self, '_beep_start'):
-            del self._beep_start
         return True
 
     # ── ASIO Lifecycle ────────────────────────────────────────────────
@@ -754,44 +745,38 @@ class AudioEngine(_BaseAudioEngine):
     def _asio_feed(self):
         """Read PCM from ffmpeg stdout, write to ASIO ring buffer (throttled)."""
         if getattr(self, '_ffmpeg_proc', None) is None:
-            # BEEP TEST: generate 440Hz sine wave to verify ASIO path
-            if getattr(self, '_asio_beep_tested', False):
-                if not getattr(self, '_beep_start', False):
-                    return
-            else:
-                self._asio_beep_tested = True
-                self._beep_phase = 0.0
-                self._beep_start = False
-                QTimer.singleShot(500, lambda: setattr(self, '_beep_start', True))
-                return
+            return
 
         if not _a._running:
             return
 
         try:
-            import math, struct as _st
+            # Keep ring buffer well ahead of ASIO consumption
             bs = getattr(_a, '_bs', 2048)
             target = bs * 6
             used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
             if used >= target:
                 return
+            want_samples = target - used + bs
+            max_bytes = want_samples * _a._ch * 4
 
+            data = self._ffmpeg_proc.stdout.read(min(max_bytes, 65536))
+            if not data:
+                self._ffmpeg_proc = None
+                return
+
+            _a.asio_write(data)
+            # Track position (deferred)
             rate = self._pipeline_sample_rate or 44100
-            ns = min(target - used + bs, 4096)
-            # Generate 440Hz F32LE stereo sine wave
-            data = bytearray(ns * _a._ch * 4)
-            phase = self._beep_phase
-            for i in range(ns):
-                val = math.sin(phase) * 0.3
-                _st.pack_into('<f', data, i * 8, val)      # L
-                _st.pack_into('<f', data, i * 8 + 4, val)  # R
-                phase += 2.0 * math.pi * 440.0 / rate
-            self._beep_phase = phase % (2.0 * math.pi)
-            _a.asio_write(bytes(data))
-            # beep for 3 seconds then stop
-            self._beep_total = getattr(self, '_beep_total', 0) + ns
-            if self._beep_total > rate * 3:
-                self._ffmpeg_proc = None  # stop beeping
+            self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
+            pos_ms = int(self._asio_bytes_total / (rate * 2 * 4) * 1000)
+            if abs(pos_ms - self._position_ms) > 200:
+                self._position_ms = pos_ms
+                QTimer.singleShot(0, lambda p=pos_ms: self.positionChanged.emit(p))
+
+            if (getattr(self, '_ffmpeg_proc', None) is None
+                    and _a._wpos == _a._rpos):
+                self.trackFinished.emit()
         except Exception:
             pass
 
