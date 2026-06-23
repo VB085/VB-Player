@@ -81,29 +81,45 @@ def asio_open(clsid_str: str, rate: int):
     return (_ch, _bs)
 
 def asio_write(data: bytes):
-    """Write interleaved F32LE PCM to per-channel ring buffers."""
+    """Write interleaved F32LE PCM to per-channel ring buffers (numpy de-interleave)."""
     global _wpos
     if not _running: return False
     if not data or _ch <= 0 or _ring is None:
         return False
     try:
-        ns = (len(data) // 4) // _ch
+        import numpy as np
+        arr = np.frombuffer(data, dtype=np.float32)
+        ns = arr.shape[0] // _ch
         if ns == 0:
             return False
+        arr = arr[:ns * _ch].reshape(-1, _ch)  # [ns, channels]
         available = (RING_SAMPLES - ((_wpos - _rpos) % RING_SAMPLES)) % RING_SAMPLES
         if ns > available:
             ns = available
             if ns == 0:
                 return False
-        with _lock:
-            # De-interleave from bytes to per-channel ctypes arrays
-            src = (ctypes.c_float * (ns * _ch)).from_buffer_copy(data[:ns * _ch * 4])
-            w = _wpos
-            for ci in range(_ch):
-                dst = _ring[ci]
-                for i in range(ns):
-                    dst[(w + i) % RING_SAMPLES] = src[i * _ch + ci]
-            _wpos = (w + ns) % RING_SAMPLES
+            arr = arr[:ns]
+        w = _wpos
+        for ci in range(_ch):
+            col = np.ascontiguousarray(arr[:, ci])
+            end = w + ns
+            if end <= RING_SAMPLES:
+                ctypes.memmove(
+                    ctypes.addressof(_ring[ci]) + w * 4,
+                    col.ctypes.data_as(ctypes.c_void_p),
+                    ns * 4)
+            else:
+                # Wrap
+                first = RING_SAMPLES - w
+                ctypes.memmove(
+                    ctypes.addressof(_ring[ci]) + w * 4,
+                    col[:first].ctypes.data_as(ctypes.c_void_p),
+                    first * 4)
+                ctypes.memmove(
+                    _ring[ci],  # start of ring buffer
+                    col[first:].ctypes.data_as(ctypes.c_void_p),
+                    (ns - first) * 4)
+        _wpos = (w + ns) % RING_SAMPLES
         return True
     except Exception:
         import sys, traceback
