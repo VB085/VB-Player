@@ -1,8 +1,11 @@
+import sys as _sys
 from PyQt6.QtCore import (
     QAbstractListModel, QModelIndex, Qt, pyqtSignal, QThread, QObject
 )
 from PyQt6.QtGui import QIcon
 from pathlib import Path
+
+_MSYS2 = _sys.platform == "win32"  # QThread access violations on MSYS2 Python 3.14
 from urllib.parse import urlparse
 import random
 import json
@@ -80,8 +83,9 @@ class PlaylistManager(QAbstractListModel):
         self._shuffle = False
         self._repeat = RepeatMode.Off
         self._shuffle_order: list[int] = []
-        self._loader = _MetaLoader(self)
-        self._loader.loaded.connect(self._on_meta_loaded)
+        self._loader = None if _MSYS2 else _MetaLoader(self)
+        if self._loader is not None:
+            self._loader.loaded.connect(self._on_meta_loaded)
 
     def track_metadata(self, index: int):
         """Return cached TrackMetadata for row *index*, or None if not loaded yet."""
@@ -91,7 +95,8 @@ class PlaylistManager(QAbstractListModel):
 
     def shutdown(self):
         """Stop the metadata loader thread cleanly."""
-        self._loader.stop()
+        if self._loader is not None:
+            self._loader.stop()
 
     def _on_meta_loaded(self, row: int, meta):
         """Receive metadata from loader thread, update model."""
@@ -172,7 +177,8 @@ class PlaylistManager(QAbstractListModel):
             self.endResetModel()
             for i in range(start, len(self._tracks)):
                 if self._tracks[i].get("source_type") != "url":
-                    self._loader.enqueue(i, self._tracks[i]["path"])
+                    if self._loader is not None:
+                        self._loader.enqueue(i, self._tracks[i]["path"])
 
     def add_url(self, url: str, title: str = None):
         """Add a single stream URL to the playlist."""
@@ -219,7 +225,8 @@ class PlaylistManager(QAbstractListModel):
             self._current_index += 1
 
         if entry["source_type"] != "url":
-            self._loader.enqueue(pos, filepath)
+            if self._loader is not None:
+                self._loader.enqueue(pos, filepath)
 
     def add_folder(self, path: str):
         folder = Path(path)

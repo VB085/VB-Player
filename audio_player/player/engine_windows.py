@@ -1,6 +1,7 @@
 import gi
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst
+gi.require_version('GstApp', '1.0')
+from gi.repository import Gst, GstApp
 
 from PyQt6.QtCore import QTimer
 
