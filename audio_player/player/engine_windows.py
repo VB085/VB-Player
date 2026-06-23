@@ -669,6 +669,7 @@ class AudioEngine(_BaseAudioEngine):
 
             self._pipeline = pipeline
             self._appsink = appsink
+            self._asio_dbg_count = 0
             self._volume_elem = volume
             self._eq_elem = eq
             self._conv1 = conv1
@@ -740,22 +741,36 @@ class AudioEngine(_BaseAudioEngine):
             return
 
         from audio_player.platform.windows.asio_backend import asio_write, _running
+        import sys as _sys
 
         if not _running:
             return
 
+        _dbg = getattr(self, '_asio_dbg_count', 0)
         try:
             while True:
-                sample = appsink.emit("pull-sample")
+                sample = appsink.try_pull_sample(0)  # non-blocking, 0ns timeout
                 if sample is None:
                     break
                 buf = sample.get_buffer()
+                if buf is None:
+                    continue
                 ok, mapinfo = buf.map(Gst.MapFlags.READ)
-                if ok:
-                    asio_write(mapinfo.data)
-                    buf.unmap(mapinfo)
-        except Exception:
-            pass  # Buffer underrun or teardown race — non-fatal
+                if not ok:
+                    continue
+                data = mapinfo.data
+                if _dbg < 3:
+                    print(f"[asio-feed] sample {_dbg}: {len(data)} bytes, "
+                          f"type={type(data).__name__}", file=_sys.stderr)
+                    _dbg += 1
+                    self._asio_dbg_count = _dbg
+                try:
+                    asio_write(data)
+                except Exception as e:
+                    print(f"[asio-feed] write error: {e}", file=_sys.stderr)
+                buf.unmap(mapinfo)
+        except Exception as e:
+            print(f"[asio-feed] pull error: {e}", file=_sys.stderr)
 
     # ── Override _build_pipeline to add DSD support + ASIO native ─────
 
