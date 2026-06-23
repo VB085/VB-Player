@@ -765,19 +765,40 @@ class AudioEngine(_BaseAudioEngine):
                 self._ffmpeg_proc = None
                 return
 
-            # DUMP first 256KB of ffmpeg output for debugging
+            # DUMP first 256KB of ffmpeg output as WAV for verification
             _dump_total = getattr(self, '_asio_dump_total', 0)
-            if _dump_total < 256 * 1024:
-                if not hasattr(self, '_asio_dump_file'):
-                    self._asio_dump_file = open(
-                        'C:/Users/vb085/Desktop/asio_dump.pcm', 'wb')
-                self._asio_dump_file.write(data)
+            _dump_max = 256 * 1024
+            if _dump_total < _dump_max:
+                if not hasattr(self, '_asio_dump_buf'):
+                    self._asio_dump_buf = bytearray()
+                self._asio_dump_buf.extend(data)
                 _dump_total += len(data)
                 self._asio_dump_total = _dump_total
-                if _dump_total >= 256 * 1024:
-                    self._asio_dump_file.close()
+                if _dump_total >= _dump_max:
+                    import struct as _st
+                    buf = bytes(self._asio_dump_buf)
+                    data_len = len(buf)
+                    rate = self._pipeline_sample_rate or 44100
+                    # WAV header for F32LE stereo
+                    wav = bytearray(44 + data_len)
+                    wav[0:4] = b'RIFF'
+                    _st.pack_into('<I', wav, 4, 36 + data_len)
+                    wav[8:16] = b'WAVEfmt '
+                    _st.pack_into('<I', wav, 16, 16)      # chunk size
+                    _st.pack_into('<H', wav, 20, 3)       # IEEE float
+                    _st.pack_into('<H', wav, 22, 2)       # stereo
+                    _st.pack_into('<I', wav, 24, rate)
+                    _st.pack_into('<I', wav, 28, rate * 8)  # bytes/sec
+                    _st.pack_into('<H', wav, 32, 8)       # block align
+                    _st.pack_into('<H', wav, 34, 32)      # bits per sample
+                    wav[36:40] = b'data'
+                    _st.pack_into('<I', wav, 40, data_len)
+                    wav[44:] = buf
+                    path = 'C:/Users/vb085/Desktop/asio_dump.wav'
+                    with open(path, 'wb') as f:
+                        f.write(bytes(wav))
                     import sys as _s
-                    print(f"[asio] dumped {_dump_total} bytes to Desktop/asio_dump.pcm", file=_s.stderr)
+                    print(f"[asio] WAV dumped to Desktop/asio_dump.wav", file=_s.stderr)
 
             _a.asio_write(data)
             # Track position (deferred)
