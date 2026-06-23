@@ -719,7 +719,7 @@ class AudioEngine(_BaseAudioEngine):
             t = QTimer(self)
             t.timeout.connect(self._asio_feed)
             self._asio_feed_timer = t
-        t.setInterval(10)
+        t.setInterval(20)  # 50Hz — enough for 2048-sample ASIO buffer
         t.start()
         self._asio_dbg_count = 0
         return True
@@ -778,13 +778,14 @@ class AudioEngine(_BaseAudioEngine):
             ok = _a.asio_write(data)
             if _dbg < 5:
                 print(f"[asio-feed] asio_write returned: {ok}", file=_s.stderr)
-            # Track position by bytes written since start
+            # Track position (deferred — avoid re-entrancy with Qt paint)
             rate = self._pipeline_sample_rate or 44100
             self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
             pos_ms = int(self._asio_bytes_total / (rate * 2 * 4) * 1000)
             if abs(pos_ms - self._position_ms) > 200:
                 self._position_ms = pos_ms
-                self.positionChanged.emit(pos_ms)
+                # Defer signal to avoid crash if feed overlaps Qt paint cycle
+                QTimer.singleShot(0, lambda p=pos_ms: self.positionChanged.emit(p))
 
             if (getattr(self, '_ffmpeg_proc', None) is None
                     and _a._wpos == _a._rpos):
