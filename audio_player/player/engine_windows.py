@@ -80,21 +80,41 @@ class AudioEngine(_BaseAudioEngine):
     def _default_exclusive_device(self) -> str:
         return ""
 
+    def pause(self):
+        if getattr(self, '_is_asio_ffmpeg', False):
+            # TODO: pause ffmpeg + ASIO
+            super().pause()
+            return
+        super().pause()
+
+    def stop(self):
+        if getattr(self, '_is_asio_ffmpeg', False):
+            self._stop_asio()
+            self._kill_ffmpeg_proc()
+            super().stop()
+            return
+        super().stop()
+
     def play(self):
-        super().play()
-        # Start ASIO feed if this is an ASIO ffmpeg pipeline
-        if (self._pipeline is not None
-                and self._exclusive_mode
+        if not self._current_file:
+            return
+        # ASIO ffmpeg path: no GStreamer pipeline
+        if (self._exclusive_mode
                 and (self._exclusive_device or "").startswith("asio:")):
+            # Build ffmpeg pipe if first play after load
+            if not getattr(self, '_is_asio_ffmpeg', False):
+                self._build_asio_ffmpeg_pipe(self._current_file)
+            elif getattr(self, '_ffmpeg_proc', None) is None:
+                self._build_asio_ffmpeg_pipe(self._current_file)
+            if not self._poll_timer.isActive():
+                self._poll_timer.setInterval(50)
+                self._poll_timer.start()
             if not getattr(self, '_asio_started', False):
-                # Start ffmpeg if not already running
-                if (getattr(self, '_is_asio_ffmpeg', False)
-                        and getattr(self, '_ffmpeg_proc', None) is None):
-                    # Rebuild the ffmpeg pipe (first play after load)
-                    if self._current_file:
-                        self._build_asio_ffmpeg_pipe(self._current_file)
                 if self._start_asio():
                     self._asio_started = True
+            return
+        # Standard GStreamer path
+        super().play()
 
     def _teardown_pipeline(self):
         self._kill_ffmpeg_proc()
@@ -606,34 +626,35 @@ class AudioEngine(_BaseAudioEngine):
     # ── ASIO: ffmpeg → pipe → asio_write (zero GStreamer threads) ────
 
     def _build_asio_ffmpeg_pipe(self, filepath: str) -> bool:
-        """Decode audio via ffmpeg, feed PCM directly to ASIO (no GStreamer).
+        """Decode audio via ffmpeg → asio_write (no GStreamer at all).
 
-        Uses ffmpeg subprocess stdout → QTimer reads → asio_write → ring buffer.
-        Avoids GStreamer's asiosink (stuck at 48kHz) and appsink threading issues.
+        ffmpeg subprocess stdout → QTimer reads → asio_write → ring buffer.
+        Duration from metadata, position from byte counting.
         """
-        import subprocess, os as _os
+        import subprocess
         from audio_player.player.metadata import read_metadata
 
         self._teardown_pipeline()
-        self._stop_asio()
 
         ffmpeg = self._find_ffmpeg()
         if not ffmpeg:
             self.errorOccurred.emit(_("engine.ffmpeg_not_found"))
             return False
 
-        # Determine target sample rate
+        # Read metadata for duration + sample rate
         try:
             meta = read_metadata(filepath)
             target_rate = meta.sample_rate if meta.sample_rate > 0 else 44100
+            duration_ms = int(meta.duration_seconds * 1000) if meta.duration_seconds > 0 else 0
         except Exception:
             target_rate = 44100
+            duration_ms = 0
 
         ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
         if ext in ("dsf", "dff"):
             target_rate = 88200
 
-        # Build ffmpeg command: decode to interleaved F32LE
+        # Build ffmpeg command
         ffmpeg_cmd = [
             ffmpeg, "-i", filepath,
             "-f", "f32le", "-acodec", "pcm_f32le",
@@ -649,28 +670,15 @@ class AudioEngine(_BaseAudioEngine):
             import sys as _s; print(f"[asio] ffmpeg start failed: {e}", file=_s.stderr)
             return False
 
-        # Create a minimal GStreamer pipeline for position/duration tracking only
-        # (filesrc → fakesink — we only query duration, ffmpeg handles audio)
-        pipeline = Gst.Pipeline.new("asio-ffmpeg")
-        filesrc = Gst.ElementFactory.make("filesrc", None)
-        filesrc.set_property("location", filepath)
-        decodebin = Gst.ElementFactory.make("decodebin", None)
-        fakesink = Gst.ElementFactory.make("fakesink", None)
-        for e in [filesrc, decodebin, fakesink]:
-            if e is None:
-                return False
-            pipeline.add(e)
-        filesrc.link(decodebin)
-        decodebin.connect("pad-added", lambda d, p: p.link(fakesink.get_static_pad("sink")))
-
-        self._pipeline = pipeline
-        self._filesrc = filesrc
-        self._sink = fakesink
+        # No GStreamer pipeline needed — use metadata for duration
+        self._pipeline = None
+        self._current_file = filepath
         self._pipeline_sample_rate = target_rate
-        self._pipeline_output_format = f"audio/x-raw,format=F32LE,rate={target_rate},channels=2"
+        self._pipeline_output_format = f"F32LE,{target_rate}Hz,stereo"
         self._source_is_dsd = (ext in ("dsf", "dff"))
-        self._decodebin = decodebin
-        self._audio_pad_linked = True
+        self._duration_ms = duration_ms
+        if duration_ms > 0:
+            self.durationChanged.emit(duration_ms)
 
         self._is_asio_ffmpeg = True
         self._asio_bytes_total = 0
@@ -777,26 +785,9 @@ class AudioEngine(_BaseAudioEngine):
 
     def _poll(self):
         if getattr(self, '_is_asio_ffmpeg', False):
-            # For ASIO ffmpeg: drain bus messages (EOS, errors) but skip position
-            # query (the fakesink pipeline doesn't have timing info). Position is
-            # tracked via byte counting in _asio_feed.
-            if self._pipeline is None:
-                return
-            bus = self._pipeline.get_bus()
-            while True:
-                msg = bus.pop()
-                if msg is None:
-                    break
-                self._handle_message(msg)
-            # Duration from metadata
-            if self._duration_ms <= 0:
-                try:
-                    ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
-                    if ok:
-                        self._duration_ms = dur_ns // 1000000
-                        self.durationChanged.emit(self._duration_ms)
-                except Exception:
-                    pass
+            # ASIO ffmpeg: position tracked in _asio_feed via byte counting.
+            # Duration already set from metadata in _build_asio_ffmpeg_pipe.
+            # No GStreamer pipeline to query.
             return
         super()._poll()
 
