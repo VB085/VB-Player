@@ -82,43 +82,60 @@ def asio_write(data: bytes):
     Uses struct.iter_unpack for fast float conversion, then memmove per channel.
     """
     global _wpos
-    if not _running: return False
-    if not data or _ch <= 0 or _ring is None:
+    if not _running:
+        import sys; sys.stderr.write("[asio-write] early: not running\n"); sys.stderr.flush()
+        return False
+    if not data:
+        import sys; sys.stderr.write("[asio-write] early: empty data\n"); sys.stderr.flush()
+        return False
+    if _ch <= 0:
+        import sys; sys.stderr.write(f"[asio-write] early: bad ch={_ch}\n"); sys.stderr.flush()
+        return False
+    if _ring is None:
+        import sys; sys.stderr.write("[asio-write] early: ring None\n"); sys.stderr.flush()
         return False
 
     ns = (len(data) // 4) // _ch
     if ns == 0:
+        import sys; sys.stderr.write(f"[asio-write] ns=0: len={len(data)} ch={_ch}\n"); sys.stderr.flush()
         return False
 
     try:
-        n_floats = ns * _ch
-        # Fast unpack: convert bytes to Python float tuples
-        floats = struct.unpack(f"<{n_floats}f", data[:n_floats * 4])
-
-        # Build per-channel bytes (F32LE) then memmove in bulk
         import array
+        CHUNK = 1024  # process 1024 stereo frames at a time
         w = _wpos
-        for ci in range(_ch):
-            col = array.array('f', (floats[i * _ch + ci] for i in range(ns)))
-            buf = col.tobytes()
-            end = w + ns
-            if end <= RING_SAMPLES:
-                ctypes.memmove(
-                    ctypes.addressof(_ring[ci]) + w * 4,
-                    buf, ns * 4)
-            else:
-                first = RING_SAMPLES - w
-                ctypes.memmove(
-                    ctypes.addressof(_ring[ci]) + w * 4,
-                    buf[:first * 4], first * 4)
-                ctypes.memmove(
-                    _ring[ci],
-                    buf[first * 4:], (ns - first) * 4)
+        for start in range(0, ns, CHUNK):
+            end = min(start + CHUNK, ns)
+            n_chunk = end - start
+            nf = n_chunk * _ch
+            # Unpack a chunk of interleaved floats
+            chunk_data = data[start * _ch * 4 : end * _ch * 4]
+            floats = struct.unpack(f"<{nf}f", chunk_data)
+            # Write per-channel
+            for ci in range(_ch):
+                col = array.array('f', (floats[i * _ch + ci] for i in range(n_chunk)))
+                buf = col.tobytes()
+                pos = (w + start) % RING_SAMPLES
+                if pos + n_chunk <= RING_SAMPLES:
+                    ctypes.memmove(
+                        ctypes.addressof(_ring[ci]) + pos * 4,
+                        buf, n_chunk * 4)
+                else:
+                    first = RING_SAMPLES - pos
+                    ctypes.memmove(
+                        ctypes.addressof(_ring[ci]) + pos * 4,
+                        buf[:first * 4], first * 4)
+                    ctypes.memmove(
+                        _ring[ci],
+                        buf[first * 4:], (n_chunk - first) * 4)
         _wpos = (w + ns) % RING_SAMPLES
+        import sys; sys.stderr.write(f"[asio-write] OK wpos={_wpos}\n"); sys.stderr.flush()
         return True
-    except Exception:
-        import sys, traceback
-        traceback.print_exc(file=sys.stderr)
+    except BaseException as _exc:
+        try:
+            import sys; sys.stderr.write(f"[asio-write] EXC: {type(_exc).__name__}: {_exc}\n"); sys.stderr.flush()
+        except Exception:
+            pass
         return False
 
 def asio_close():
