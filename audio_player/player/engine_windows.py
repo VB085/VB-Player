@@ -6,6 +6,7 @@ from gi.repository import Gst, GstApp
 from PyQt6.QtCore import QTimer
 
 from audio_player.player.engine_base import _BaseAudioEngine, BAND_FREQUENCIES
+from audio_player.player._types import PlaybackState
 from audio_player.i18n import _
 import sys as _sys
 if _sys.platform == "win32":
@@ -87,8 +88,13 @@ class AudioEngine(_BaseAudioEngine):
 
     def pause(self):
         if getattr(self, '_is_asio_ffmpeg', False):
-            # TODO: pause ffmpeg + ASIO
-            super().pause()
+            # Stop feeding but keep ASIO open (ring buffer drains → silence)
+            t = getattr(self, '_asio_feed_timer', None)
+            if t is not None:
+                t.stop()
+            self._poll_timer.stop()
+            self._app_state = PlaybackState.Paused
+            self.stateChanged.emit(PlaybackState.Paused)
             return
         super().pause()
 

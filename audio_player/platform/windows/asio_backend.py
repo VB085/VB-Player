@@ -106,35 +106,30 @@ def asio_write(data: bytes):
         return False
 
     try:
-        import array
-        CHUNK = 1024  # process 1024 stereo frames at a time
+        import numpy as np
+        # Convert bytes to numpy array, reshape to [ns, ch]
+        arr = np.frombuffer(data[:ns * _ch * 4], dtype=np.float32).reshape(-1, _ch)
         w = _wpos
-        for start in range(0, ns, CHUNK):
-            end = min(start + CHUNK, ns)
-            n_chunk = end - start
-            nf = n_chunk * _ch
-            # Unpack a chunk of interleaved floats
-            chunk_data = data[start * _ch * 4 : end * _ch * 4]
-            floats = struct.unpack(f"<{nf}f", chunk_data)
-            # Write per-channel
-            for ci in range(_ch):
-                col = array.array('f', (floats[i * _ch + ci] for i in range(n_chunk)))
-                buf = col.tobytes()
-                pos = (w + start) % RING_SAMPLES
-                if pos + n_chunk <= RING_SAMPLES:
-                    ctypes.memmove(
-                        ctypes.addressof(_ring[ci]) + pos * 4,
-                        buf, n_chunk * 4)
-                else:
-                    first = RING_SAMPLES - pos
-                    ctypes.memmove(
-                        ctypes.addressof(_ring[ci]) + pos * 4,
-                        buf[:first * 4], first * 4)
-                    ctypes.memmove(
-                        _ring[ci],
-                        buf[first * 4:], (n_chunk - first) * 4)
+        for ci in range(_ch):
+            col = np.ascontiguousarray(arr[:, ci])  # Per-channel contiguous data
+            n_bytes = ns * 4
+            pos = w % RING_SAMPLES
+            if pos + ns <= RING_SAMPLES:
+                ctypes.memmove(
+                    ctypes.addressof(_ring[ci]) + pos * 4,
+                    col.ctypes.data_as(ctypes.c_void_p),
+                    n_bytes)
+            else:
+                first = RING_SAMPLES - pos
+                ctypes.memmove(
+                    ctypes.addressof(_ring[ci]) + pos * 4,
+                    col[:first].ctypes.data_as(ctypes.c_void_p),
+                    first * 4)
+                ctypes.memmove(
+                    _ring[ci],
+                    col[first:].ctypes.data_as(ctypes.c_void_p),
+                    (ns - first) * 4)
         _wpos = (w + ns) % RING_SAMPLES
-        import sys; sys.stderr.write(f"[asio-write] OK wpos={_wpos}\n"); sys.stderr.flush()
         return True
     except BaseException as _exc:
         try:
