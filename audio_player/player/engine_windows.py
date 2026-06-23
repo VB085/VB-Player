@@ -677,10 +677,8 @@ class AudioEngine(_BaseAudioEngine):
         # Build ffmpeg command — explicit format, no stdin interaction
         ffmpeg_cmd = [
             ffmpeg, "-nostdin", "-i", filepath,
-            "-map_metadata", "-1",  # strip metadata to pipe
             "-f", "f32le", "-acodec", "pcm_f32le",
             "-ar", str(target_rate), "-ac", "2",
-            "-af", "aformat=sample_fmts=flt:channel_layouts=stereo",
             "-loglevel", "error",
             "pipe:1",
         ]
@@ -769,9 +767,9 @@ class AudioEngine(_BaseAudioEngine):
                 self._ffmpeg_proc = None
                 return
 
-            # DUMP first 256KB of ffmpeg output as WAV for verification
+            # DUMP first 512KB as proper 16-bit PCM WAV
             _dump_total = getattr(self, '_asio_dump_total', 0)
-            _dump_max = 256 * 1024
+            _dump_max = 512 * 1024
             if _dump_total < _dump_max:
                 if not hasattr(self, '_asio_dump_buf'):
                     self._asio_dump_buf = bytearray()
@@ -779,31 +777,36 @@ class AudioEngine(_BaseAudioEngine):
                 _dump_total += len(data)
                 self._asio_dump_total = _dump_total
                 if _dump_total >= _dump_max:
-                    import struct as _st
-                    buf = bytes(self._asio_dump_buf)
-                    data_len = len(buf)
+                    import struct as _st, os, array as _arr
+                    # Convert F32LE → S16LE for WAV compatibility
+                    f32 = _arr.array('f')
+                    f32.frombytes(bytes(self._asio_dump_buf))
+                    s16 = _arr.array('h', (int(max(-1.0, min(1.0, v)) * 32767) for v in f32))
+                    wav_data = s16.tobytes()
+                    data_len = len(wav_data)
                     rate = self._pipeline_sample_rate or 44100
-                    # WAV header for F32LE stereo
                     wav = bytearray(44 + data_len)
                     wav[0:4] = b'RIFF'
                     _st.pack_into('<I', wav, 4, 36 + data_len)
                     wav[8:16] = b'WAVEfmt '
-                    _st.pack_into('<I', wav, 16, 16)      # chunk size
-                    _st.pack_into('<H', wav, 20, 3)       # IEEE float
-                    _st.pack_into('<H', wav, 22, 2)       # stereo
+                    _st.pack_into('<I', wav, 16, 16)
+                    _st.pack_into('<H', wav, 20, 1)        # PCM
+                    _st.pack_into('<H', wav, 22, 2)        # stereo
                     _st.pack_into('<I', wav, 24, rate)
-                    _st.pack_into('<I', wav, 28, rate * 8)  # bytes/sec
-                    _st.pack_into('<H', wav, 32, 8)       # block align
-                    _st.pack_into('<H', wav, 34, 32)      # bits per sample
+                    _st.pack_into('<I', wav, 28, rate * 4)
+                    _st.pack_into('<H', wav, 32, 4)
+                    _st.pack_into('<H', wav, 34, 16)
                     wav[36:40] = b'data'
                     _st.pack_into('<I', wav, 40, data_len)
-                    wav[44:] = buf
-                    path = 'C:/Users/vb085/Desktop/asio_dump.wav'
+                    wav[44:] = wav_data
+                    desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
+                    path = os.path.join(desktop, 'asio_dump.wav')
                     with open(path, 'wb') as f:
                         f.write(bytes(wav))
                     import sys as _s
-                    print(f"[asio] WAV dumped to Desktop/asio_dump.wav", file=_s.stderr)
+                    print(f"[asio] WAV dumped: Desktop/asio_dump.wav", file=_s.stderr)
 
+            # Feed directly to ASIO (F32LE format)
             _a.asio_write(data)
             # Track position (deferred)
             rate = self._pipeline_sample_rate or 44100
