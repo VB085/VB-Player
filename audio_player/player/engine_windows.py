@@ -7,7 +7,11 @@ from PyQt6.QtCore import QTimer
 
 from audio_player.player.engine_base import _BaseAudioEngine, BAND_FREQUENCIES
 from audio_player.i18n import _
-import audio_player.platform.windows.asio_backend as _a
+import sys as _sys
+if _sys.platform == "win32":
+    import audio_player.platform.windows.asio_backend as _a
+else:
+    _a = None  # Linux/macOS — no ASIO backend
 
 
 def enumerate_hw_devices() -> list[dict]:
