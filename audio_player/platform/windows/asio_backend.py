@@ -78,24 +78,26 @@ def asio_write(data: bytes):
     if not _running: return False
     if not data or _ch <= 0 or _ring is None:
         return False
-    n_floats = len(data) // 4
-    ns = n_floats // _ch
-    if ns == 0:
-        return False
-    # Use memoryview + struct for safe float unpacking
-    import struct
-    fmt = f"<{n_floats}f"
     try:
-        floats = struct.unpack(fmt, data)
+        import array
+        n_floats = len(data) // 4
+        ns = n_floats // _ch
+        if ns == 0:
+            return False
+        # copy data immediately — avoid GStreamer buffer lifetime issues
+        floats_arr = array.array('f')
+        floats_arr.frombytes(data)
+        w = _wpos
+        for ci in range(_ch):
+            dst = _ring[ci]
+            for i in range(ns):
+                dst[(w + i) % RING_SAMPLES] = floats_arr[i * _ch + ci]
+        _wpos = (w + ns) % RING_SAMPLES
+        return True
     except Exception:
+        import sys, traceback
+        traceback.print_exc(file=sys.stderr)
         return False
-    w = _wpos
-    for ci in range(_ch):
-        dst = _ring[ci]
-        for i in range(ns):
-            dst[(w + i) % RING_SAMPLES] = floats[i * _ch + ci]
-    _wpos = (w + ns) % RING_SAMPLES
-    return True
 
 def asio_close():
     global _ptr, _running, _bi, _ring

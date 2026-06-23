@@ -748,9 +748,11 @@ class AudioEngine(_BaseAudioEngine):
             return
 
         _dbg = getattr(self, '_asio_dbg_count', 0)
+        _total_pulled = 0
+        _max_per_tick = 128 * 1024  # max 128KB per QTimer tick
         try:
-            while True:
-                sample = appsink.try_pull_sample(0)  # non-blocking, 0ns timeout
+            while _total_pulled < _max_per_tick:
+                sample = appsink.try_pull_sample(0)
                 if sample is None:
                     break
                 buf = sample.get_buffer()
@@ -760,9 +762,10 @@ class AudioEngine(_BaseAudioEngine):
                 if not ok:
                     continue
                 data = mapinfo.data
-                if _dbg < 3:
+                _total_pulled += len(data)
+                if _dbg < 5:
                     print(f"[asio-feed] sample {_dbg}: {len(data)} bytes, "
-                          f"type={type(data).__name__}", file=_sys.stderr)
+                          f"total={_total_pulled}", file=_sys.stderr)
                     _dbg += 1
                     self._asio_dbg_count = _dbg
                 try:
