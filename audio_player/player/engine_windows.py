@@ -82,11 +82,17 @@ class AudioEngine(_BaseAudioEngine):
 
     def play(self):
         super().play()
-        # Start ASIO feed if pipeline is ASIO-native
+        # Start ASIO feed if this is an ASIO ffmpeg pipeline
         if (self._pipeline is not None
                 and self._exclusive_mode
                 and (self._exclusive_device or "").startswith("asio:")):
             if not getattr(self, '_asio_started', False):
+                # Start ffmpeg if not already running
+                if (getattr(self, '_is_asio_ffmpeg', False)
+                        and getattr(self, '_ffmpeg_proc', None) is None):
+                    # Rebuild the ffmpeg pipe (first play after load)
+                    if self._current_file:
+                        self._build_asio_ffmpeg_pipe(self._current_file)
                 if self._start_asio():
                     self._asio_started = True
 
@@ -94,8 +100,44 @@ class AudioEngine(_BaseAudioEngine):
         self._kill_ffmpeg_proc()
         self._stop_asio()
         self._asio_started = False
+        self._is_asio_ffmpeg = False
         self._appsink = None
         super()._teardown_pipeline()
+
+    def seek(self, position_ms: int):
+        if getattr(self, '_is_asio_ffmpeg', False):
+            self._seek_asio_ffmpeg(position_ms)
+            return
+        super().seek(position_ms)
+
+    def _seek_asio_ffmpeg(self, position_ms: int):
+        """Seek: restart ffmpeg with -ss, reopen ASIO."""
+        filepath = self._current_file
+        if not filepath:
+            return
+        self._stop_asio()
+        self._kill_ffmpeg_proc()
+        # Rebuild with seek offset
+        import subprocess
+        ffmpeg = self._find_ffmpeg()
+        if not ffmpeg:
+            return
+        rate = self._pipeline_sample_rate or 44100
+        seek_sec = position_ms / 1000.0
+        ffmpeg_cmd = [
+            ffmpeg, "-ss", str(seek_sec), "-i", filepath,
+            "-f", "f32le", "-acodec", "pcm_f32le",
+            "-ar", str(rate), "-ac", "2",
+            "-loglevel", "quiet",
+            "pipe:1",
+        ]
+        try:
+            self._ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception:
+            return
+        self._asio_bytes_total = position_ms * rate * 2 * 4 // 1000
+        self._start_asio()
 
     def _cleanup_preloaded(self):
         """Kill any ffmpeg subprocess from the preloaded pipeline."""
@@ -561,136 +603,83 @@ class AudioEngine(_BaseAudioEngine):
             self._ffmpeg_stop_flag = None
             self._ffmpeg_playing_event = None
 
-    # ── ASIO Native Pipeline (appsink → COM backend) ─────────────────
+    # ── ASIO: ffmpeg → pipe → asio_write (zero GStreamer threads) ────
 
-    def _build_asio_native_pipeline(self, filepath: str):
-        """Build decodebin→appsink pipeline for native ASIO output.
+    def _build_asio_ffmpeg_pipe(self, filepath: str) -> bool:
+        """Decode audio via ffmpeg, feed PCM directly to ASIO (no GStreamer).
 
-        Bypasses GStreamer's asiosink (stuck at 48kHz). PCM samples are pulled
-        from appsink via QTimer and fed to the native ASIO COM backend's ring
-        buffer, which supports any standard sample rate (44.1k-384k).
+        Uses ffmpeg subprocess stdout → QTimer reads → asio_write → ring buffer.
+        Avoids GStreamer's asiosink (stuck at 48kHz) and appsink threading issues.
         """
-        import sys as _sys
+        import subprocess, os as _os
         from audio_player.player.metadata import read_metadata
 
         self._teardown_pipeline()
+        self._stop_asio()
 
-        # Determine target sample rate from source file
+        ffmpeg = self._find_ffmpeg()
+        if not ffmpeg:
+            self.errorOccurred.emit(_("engine.ffmpeg_not_found"))
+            return False
+
+        # Determine target sample rate
         try:
             meta = read_metadata(filepath)
             target_rate = meta.sample_rate if meta.sample_rate > 0 else 44100
         except Exception:
             target_rate = 44100
 
-        # For DSD files use 88.2kHz (2×44.1k) as PCM decode target
         ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
-        is_dsd = ext in ("dsf", "dff")
-        if is_dsd:
+        if ext in ("dsf", "dff"):
             target_rate = 88200
 
-        pipeline = Gst.Pipeline.new("asio-native-pipeline")
+        # Build ffmpeg command: decode to interleaved F32LE
+        ffmpeg_cmd = [
+            ffmpeg, "-i", filepath,
+            "-f", "f32le", "-acodec", "pcm_f32le",
+            "-ar", str(target_rate), "-ac", "2",
+            "-loglevel", "quiet",
+            "pipe:1",
+        ]
 
         try:
-            filesrc = Gst.ElementFactory.make("filesrc", None)
-            filesrc.set_property("location", filepath)
-
-            decodebin = Gst.ElementFactory.make("decodebin", None)
-            decodebin.connect("pad-added", self._on_decodebin_pad_added)
-
-            audio_queue = Gst.ElementFactory.make("queue", None)
-            if audio_queue is not None:
-                audio_queue.set_property("max-size-time", 2 * Gst.SECOND)
-                audio_queue.set_property("max-size-buffers", 0)
-                audio_queue.set_property("max-size-bytes", 0)
-
-            conv1 = Gst.ElementFactory.make("audioconvert", None)
-            resample1 = Gst.ElementFactory.make("audioresample", None)
-            if resample1 is not None:
-                resample1.set_property("quality", 10)
-
-            caps_str = (f"audio/x-raw,format=F32LE,rate={target_rate},"
-                        f"channels=2,layout=interleaved")
-            capsfilter = Gst.ElementFactory.make("capsfilter", None)
-            if capsfilter is not None:
-                capsfilter.set_property("caps", Gst.Caps.from_string(caps_str))
-
-            volume = Gst.ElementFactory.make("volume", None)
-            volume.set_property("volume", self._volume_level)
-
-            rgvolume = None
-            if self._replaygain_enabled:
-                rgvolume = Gst.ElementFactory.make("rgvolume", None)
-
-            eq = Gst.ElementFactory.make("equalizer-nbands", None)
-            eq.set_property("num-bands", 10)
-            for i, freq in enumerate(BAND_FREQUENCIES):
-                band = eq.get_child_by_index(i)
-                band.set_property("freq", float(freq))
-                band.set_property("gain", self._eq_gains[i] if self._eq_enabled else 0.0)
-
-            conv2 = Gst.ElementFactory.make("audioconvert", None)
-            resample2 = Gst.ElementFactory.make("audioresample", None)
-            if resample2 is not None:
-                resample2.set_property("quality", 10)
-
-            appsink = Gst.ElementFactory.make("appsink", None)
-            if appsink is None:
-                raise RuntimeError(_("engine.gst_plugins_missing"))
-            appsink.set_property("caps", Gst.Caps.from_string(caps_str))
-            appsink.set_property("emit-signals", False)
-            appsink.set_property("sync", False)
-            appsink.set_property("max-buffers", 8)
-            appsink.set_property("drop", False)
-
-            # Build element list
-            elems = [filesrc, decodebin, audio_queue, conv1, resample1, capsfilter]
-            if rgvolume is not None:
-                elems.append(rgvolume)
-            elems.extend([volume, eq, conv2, resample2, appsink])
-
-            for elem in elems:
-                if elem is None:
-                    raise RuntimeError(_("engine.gst_plugins_missing"))
-                pipeline.add(elem)
-
-            # Link static chain (decodebin→audio_queue via pad-added callback)
-            filesrc.link(decodebin)
-            audio_queue.link(conv1)
-            conv1.link(resample1)
-            resample1.link(capsfilter)
-            if rgvolume is not None:
-                capsfilter.link(rgvolume)
-                rgvolume.link(volume)
-            else:
-                capsfilter.link(volume)
-            volume.link(eq)
-            eq.link(conv2)
-            conv2.link(resample2)
-            resample2.link(appsink)
-
-            self._pipeline = pipeline
-            self._appsink = appsink
-            self._asio_dbg_count = 0
-            self._volume_elem = volume
-            self._eq_elem = eq
-            self._conv1 = conv1
-            self._audio_queue = audio_queue
-            self._filesrc = filesrc
-            self._decodebin = decodebin
-            self._sink = appsink
-            self._audio_pad_linked = False
-            self._pipeline_sample_rate = target_rate
-            self._pipeline_output_format = caps_str
-            self._source_is_dsd = is_dsd
-
+            self._ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except Exception as e:
-            self._teardown_pipeline()
-            self.errorOccurred.emit(str(e))
+            import sys as _s; print(f"[asio] ffmpeg start failed: {e}", file=_s.stderr)
+            return False
 
-    # ── ASIO Lifecycle (open/feed/close) ──────────────────────────────
+        # Create a minimal GStreamer pipeline for position/duration tracking only
+        # (filesrc → fakesink — we only query duration, ffmpeg handles audio)
+        pipeline = Gst.Pipeline.new("asio-ffmpeg")
+        filesrc = Gst.ElementFactory.make("filesrc", None)
+        filesrc.set_property("location", filepath)
+        decodebin = Gst.ElementFactory.make("decodebin", None)
+        fakesink = Gst.ElementFactory.make("fakesink", None)
+        for e in [filesrc, decodebin, fakesink]:
+            if e is None:
+                return False
+            pipeline.add(e)
+        filesrc.link(decodebin)
+        decodebin.connect("pad-added", lambda d, p: p.link(fakesink.get_static_pad("sink")))
+
+        self._pipeline = pipeline
+        self._filesrc = filesrc
+        self._sink = fakesink
+        self._pipeline_sample_rate = target_rate
+        self._pipeline_output_format = f"audio/x-raw,format=F32LE,rate={target_rate},channels=2"
+        self._source_is_dsd = (ext in ("dsf", "dff"))
+        self._decodebin = decodebin
+        self._audio_pad_linked = True
+
+        self._is_asio_ffmpeg = True
+        self._asio_bytes_total = 0
+        return True
+
+    # ── ASIO Lifecycle ────────────────────────────────────────────────
 
     def _start_asio(self) -> bool:
-        """Open ASIO device and start the PCM feed timer (main-thread safe)."""
+        """Open ASIO device and start the PCM feed timer."""
         from audio_player.platform.windows.asio_backend import asio_open, asio_close
 
         hw = self._exclusive_device or ""
@@ -699,9 +688,7 @@ class AudioEngine(_BaseAudioEngine):
         clsid = hw[5:]
         rate = self._pipeline_sample_rate or 44100
 
-        # Close any previous instance first
         asio_close()
-
         result = asio_open(clsid, rate)
         if result is None:
             self.errorOccurred.emit(
@@ -709,11 +696,10 @@ class AudioEngine(_BaseAudioEngine):
             return False
 
         channels, buf_size = result
-        import sys as _sys
+        import sys as _s
         print(f"[asio] Opened {clsid[:12]}... at {rate}Hz, "
-              f"{channels}ch, buffer={buf_size}", file=_sys.stderr)
+              f"{channels}ch, buffer={buf_size}", file=_s.stderr)
 
-        # Start feed timer — pulls from appsink at ~100Hz in main thread
         t = getattr(self, '_asio_feed_timer', None)
         if t is None:
             t = QTimer(self)
@@ -721,7 +707,7 @@ class AudioEngine(_BaseAudioEngine):
             self._asio_feed_timer = t
         t.setInterval(10)
         t.start()
-
+        self._asio_dbg_count = 0
         return True
 
     def _stop_asio(self):
@@ -736,45 +722,67 @@ class AudioEngine(_BaseAudioEngine):
         asio_close()
 
     def _asio_feed(self):
-        """Pull PCM from appsink, write to ASIO ring buffer (runs in main thread)."""
-        appsink = getattr(self, '_appsink', None)
-        if appsink is None:
+        """Read PCM from ffmpeg stdout, write to ASIO ring buffer."""
+        if getattr(self, '_ffmpeg_proc', None) is None:
             return
 
         from audio_player.platform.windows.asio_backend import asio_write, _running
-        import sys as _sys
+        import sys as _s
 
         if not _running:
             return
 
         _dbg = getattr(self, '_asio_dbg_count', 0)
-        _total_pulled = 0
-        _max_per_tick = 128 * 1024  # max 128KB per QTimer tick
         try:
-            while _total_pulled < _max_per_tick:
-                sample = appsink.try_pull_sample(0)
-                if sample is None:
-                    break
-                buf = sample.get_buffer()
-                if buf is None:
-                    continue
-                ok, mapinfo = buf.map(Gst.MapFlags.READ)
-                if not ok:
-                    continue
-                data = mapinfo.data
-                _total_pulled += len(data)
-                if _dbg < 5:
-                    print(f"[asio-feed] sample {_dbg}: {len(data)} bytes, "
-                          f"total={_total_pulled}", file=_sys.stderr)
-                    _dbg += 1
-                    self._asio_dbg_count = _dbg
-                try:
-                    asio_write(data)
-                except Exception as e:
-                    print(f"[asio-feed] write error: {e}", file=_sys.stderr)
-                buf.unmap(mapinfo)
+            data = self._ffmpeg_proc.stdout.read(65536)
+            if not data:
+                if _dbg < 3:
+                    print("[asio-feed] ffmpeg EOF", file=_s.stderr)
+                    self._asio_dbg_count = _dbg + 1
+                self._ffmpeg_proc = None
+                self.trackFinished.emit()
+                return
+            if _dbg < 5:
+                print(f"[asio-feed] {len(data)} bytes", file=_s.stderr)
+                _dbg += 1
+                self._asio_dbg_count = _dbg
+            asio_write(data)
+            # Track position by bytes written
+            rate = self._pipeline_sample_rate or 44100
+            self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
+            pos_ms = int(self._asio_bytes_total / (rate * 2 * 4) * 1000)
+            if abs(pos_ms - self._position_ms) > 200:
+                self._position_ms = pos_ms
+                self.positionChanged.emit(pos_ms)
         except Exception as e:
-            print(f"[asio-feed] pull error: {e}", file=_sys.stderr)
+            if _dbg < 3:
+                print(f"[asio-feed] error: {e}", file=_s.stderr)
+                self._asio_dbg_count = _dbg + 1
+
+    def _poll(self):
+        if getattr(self, '_is_asio_ffmpeg', False):
+            # For ASIO ffmpeg: drain bus messages (EOS, errors) but skip position
+            # query (the fakesink pipeline doesn't have timing info). Position is
+            # tracked via byte counting in _asio_feed.
+            if self._pipeline is None:
+                return
+            bus = self._pipeline.get_bus()
+            while True:
+                msg = bus.pop()
+                if msg is None:
+                    break
+                self._handle_message(msg)
+            # Duration from metadata
+            if self._duration_ms <= 0:
+                try:
+                    ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
+                    if ok:
+                        self._duration_ms = dur_ns // 1000000
+                        self.durationChanged.emit(self._duration_ms)
+                except Exception:
+                    pass
+            return
+        super()._poll()
 
     # ── Override _build_pipeline to add DSD support + ASIO native ─────
 
@@ -806,11 +814,11 @@ class AudioEngine(_BaseAudioEngine):
             import sys
             print("[engine] DSD playback requires ffmpeg with DSD support", file=sys.stderr)
 
-        # ASIO native path — bypass GStreamer asiosink (locked at 48kHz)
+        # ASIO: ffmpeg pipe → asio_write (zero GStreamer threads)
         if self._exclusive_mode:
             hw = self._exclusive_device or ""
             if hw.startswith("asio:"):
-                self._build_asio_native_pipeline(filepath)
+                self._build_asio_ffmpeg_pipe(filepath)
                 return
 
         # Standard PCM pipeline (decodebin-based, used for non-DSD files)
