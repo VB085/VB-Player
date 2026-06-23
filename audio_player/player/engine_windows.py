@@ -7,6 +7,7 @@ from PyQt6.QtCore import QTimer
 
 from audio_player.player.engine_base import _BaseAudioEngine, BAND_FREQUENCIES
 from audio_player.i18n import _
+import audio_player.platform.windows.asio_backend as _a
 
 
 def enumerate_hw_devices() -> list[dict]:
@@ -688,8 +689,6 @@ class AudioEngine(_BaseAudioEngine):
 
     def _start_asio(self) -> bool:
         """Open ASIO device and start the PCM feed timer."""
-        import audio_player.platform.windows.asio_backend as _a
-
         hw = self._exclusive_device or ""
         if not hw.startswith("asio:"):
             return False
@@ -720,8 +719,6 @@ class AudioEngine(_BaseAudioEngine):
 
     def _stop_asio(self):
         """Stop ASIO feed timer and close device."""
-        import audio_player.platform.windows.asio_backend as _a
-
         t = getattr(self, '_asio_feed_timer', None)
         if t is not None:
             t.stop()
@@ -732,13 +729,6 @@ class AudioEngine(_BaseAudioEngine):
     def _asio_feed(self):
         """Read PCM from ffmpeg stdout, write to ASIO ring buffer (throttled)."""
         if getattr(self, '_ffmpeg_proc', None) is None:
-            return
-
-        try:
-            import audio_player.platform.windows.asio_backend as _a
-        except Exception as _ie:
-            import sys as _s2
-            print(f"[asio-feed] import failed: {_ie}", file=_s2.stderr)
             return
 
         import sys as _s
