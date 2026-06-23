@@ -1,3 +1,4 @@
+from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,41 @@ _CACHE_MAX = 512
 # Cover art disk cache
 _COVER_CACHE_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "VBPlayer" / "covers"
 _COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Pre-rendered thumbnail cache: filepath → PNG bytes (filled by _MetaLoader in bg thread)
+_thumbnail_cache: dict[str, bytes] = {}
+THUMB_SIZE = 142
+
+
+def prewarm_thumbnail(filepath: str, cover_data: bytes):
+    """Called from _MetaLoader thread: decode, scale, round — store PNG bytes."""
+    if filepath in _thumbnail_cache:
+        return
+    try:
+        from PyQt6.QtGui import QImage, QPainter, QPainterPath
+        from PyQt6.QtCore import Qt, QBuffer
+        img = QImage()
+        if not img.loadFromData(cover_data) or img.isNull():
+            return
+        img = img.scaled(THUMB_SIZE, THUMB_SIZE,
+                         Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+        rounded = QImage(THUMB_SIZE, THUMB_SIZE, QImage.Format.Format_ARGB32)
+        rounded.fill(Qt.GlobalColor.transparent)
+        pt = QPainter(rounded); pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, THUMB_SIZE, THUMB_SIZE, 12, 12)
+        pt.setClipPath(path); pt.drawImage(0, 0, img); pt.end()
+        buf = QBuffer(); buf.open(QBuffer.OpenModeFlag.ReadWrite)
+        rounded.save(buf, 'PNG')
+        _thumbnail_cache[filepath] = bytes(buf.buffer())
+    except Exception:
+        pass
+
+
+def get_thumbnail(filepath: str) -> bytes | None:
+    """Return pre-rendered PNG bytes for a thumbnail, or None."""
+    return _thumbnail_cache.get(filepath)
 
 
 def _cover_cache_path(filepath: str) -> Path:
@@ -82,8 +118,10 @@ def read_metadata(filepath: str) -> TrackMetadata:
     try:
         st = path.stat()
         mtime = st.st_mtime
+        file_size = st.st_size
     except OSError:
         mtime = 0.0
+        file_size = 0
 
     cached = _metadata_cache.get(filepath)
     if cached and cached[0] == mtime:
@@ -91,10 +129,7 @@ def read_metadata(filepath: str) -> TrackMetadata:
         return cached[1]
 
     meta = TrackMetadata()
-    try:
-        meta.file_size = st.st_size
-    except (OSError, NameError):
-        meta.file_size = 0
+    meta.file_size = file_size
     meta.title = path.stem
     suffix = path.suffix.lower()
 

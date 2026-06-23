@@ -73,6 +73,7 @@
   "settings.titlebar_restart_note": "⚠ 标题栏风格需重启应用生效",
   "settings.titlebar_live_note": "切换即时生效，无需重启",
   "settings.material_effect": "窗口材质",
+  "settings.material_mica": "Mica (Windows 11 云母)",
   "settings.material_acrylic": "毛玻璃 (KDE 真模糊)",
   "settings.material_auto": "自动 (跟随系统)",
   "settings.material_glass": "玻璃效果 (半透明)",

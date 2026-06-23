@@ -8,6 +8,7 @@ dependencies = [
     "PyQt6>=6.5",
     "numpy>=1.24",
     "mutagen>=1.47",
+    "qtawesome>=1.2",
     # System media controls — platform-specific, auto-selected by pip
     "pyobjc-framework-MediaPlayer>=10.0; sys_platform == 'darwin'",
     "winsdk>=1.0.0b9; sys_platform == 'win32'",

@@ -9,9 +9,20 @@ from audio_player.i18n import _
 # Per-delegate thumbnail cache: filepath → (cover_data_hash, QPixmap)
 _cover_cache: dict[str, tuple[int, QPixmap]] = {}
 _current_file: str = ""  # globally tracked for playing indicator
+_highlight_mode: str = "glow"  # cached QSettings value — avoid I/O in paint()
 
 THUMB_SIZE = 40
 THUMB_RADIUS = 6
+
+
+def refresh_highlight_cache():
+    """Re-read current_track_highlight from QSettings — call on settings change."""
+    global _highlight_mode
+    try:
+        _highlight_mode = str(QSettings("VBPlayer", "VB Player").value(
+            "current_track_highlight", "glow") or "glow")
+    except Exception:
+        _highlight_mode = "glow"
 
 
 def _source_model(model):
@@ -33,12 +44,9 @@ def _thumbnail(src, index: QModelIndex, filepath: str) -> QPixmap | None:
     cover_data = index.data(src.CoverDataRole) if src else None
     if not cover_data:
         return None
-    # Use filepath as cache key; bust if cover_data changes
-    h = hash(cover_data)
+    # Fast path: filepath is unique — cover data doesn't change for same file
     if filepath in _cover_cache:
-        old_h, pix = _cover_cache[filepath]
-        if old_h == h:
-            return pix
+        return _cover_cache[filepath]
     pix = QPixmap()
     pix.loadFromData(cover_data)
     if pix.isNull():
@@ -46,7 +54,6 @@ def _thumbnail(src, index: QModelIndex, filepath: str) -> QPixmap | None:
     scaled = pix.scaled(THUMB_SIZE, THUMB_SIZE,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation)
-    # Make rounded
     rounded = QPixmap(THUMB_SIZE, THUMB_SIZE)
     rounded.fill(Qt.GlobalColor.transparent)
     pp = QPainter(rounded)
@@ -57,10 +64,9 @@ def _thumbnail(src, index: QModelIndex, filepath: str) -> QPixmap | None:
     pp.drawPixmap((THUMB_SIZE - scaled.width()) // 2,
                   (THUMB_SIZE - scaled.height()) // 2, scaled)
     pp.end()
-    _cover_cache[filepath] = (h, rounded)
-    # Limit cache size
-    if len(_cover_cache) > 500:
-        for k in list(_cover_cache.keys())[:50]:
+    _cover_cache[filepath] = rounded
+    if len(_cover_cache) > 1000:
+        for k in list(_cover_cache.keys())[:100]:
             del _cover_cache[k]
     return rounded
 
@@ -95,7 +101,7 @@ class _PlaylistDelegate(QStyledItemDelegate):
 
         # Playing indicator — file path matching across all playlist instances
         is_current = bool(filepath and filepath == _current_file)
-        highlight = str(QSettings("VBPlayer", "VB Player").value("current_track_highlight", "glow") or "glow")
+        highlight = _highlight_mode
         thumb = _thumbnail(src, index, filepath) if src else None
         cover_x = rect.x() + 14
         cover_y = rect.y() + (rect.height() - THUMB_SIZE) // 2

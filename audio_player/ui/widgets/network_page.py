@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSettings
 from PyQt6.QtGui import QFont
 
 from audio_player.i18n import _, languageChanged
-from audio_player.app import current_theme_mode, current_accent
+from audio_player.app import current_theme_mode, current_accent, rgba_hex
 
 
 class _NoWheelComboBox(QComboBox):
@@ -38,9 +38,25 @@ class NetworkPage(QWidget):
         self._recent_streams: list[str] = []
         self._devices: list[dict] = []
         self._active_device_id = "local"
+        self._device_watcher = None
         self._setup_ui()
         languageChanged.connect(self._refresh_language)
         languageChanged.connect(lambda _: [c.refresh_language() for c in self._bt_cards])
+
+    def _start_device_watcher(self):
+        """Start real-time GStreamer device monitor (only once)."""
+        if self._device_watcher is not None:
+            return
+        import sys
+        if sys.platform != "win32":
+            return
+        try:
+            from audio_player.platform.windows.audio_devices import DeviceWatcher
+            self._device_watcher = DeviceWatcher()
+            self._device_watcher.on_change(lambda action, dev: self.refresh_device_list())
+            self._device_watcher.start()
+        except Exception:
+            pass
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -321,9 +337,9 @@ class NetworkPage(QWidget):
     def _apply_style(self):
         is_light = current_theme_mode() == "light"
         accent = current_accent()
-        bg = "rgba(0,0,0,0.10)" if not is_light else "rgba(0,0,0,0.03)"
-        card_bg = "rgba(0,0,0,0.08)" if not is_light else "rgba(0,0,0,0.02)"
-        border = f"rgba({accent.red()},{accent.green()},{accent.blue()},0.15)"
+        bg = "#19000000" if not is_light else "#07000000"
+        card_bg = "#14000000" if not is_light else "#05000000"
+        border = rgba_hex(accent.red(), accent.green(), accent.blue(), 0.15)
         text = "#e2e8f0" if not is_light else "#333"
         text_dim = "#888" if not is_light else "#999"
 
@@ -390,7 +406,7 @@ class NetworkPage(QWidget):
             f"  padding: 4px 8px;"
             f"}}"
             f"QListWidget::item:hover {{"
-            f"  background: rgba({accent.red()},{accent.green()},{accent.blue()},0.13);"
+            f"  background: {rgba_hex(accent.red(), accent.green(), accent.blue(), 0.13)};"
             f"}}"
             f"QTreeWidget#networkShareTree {{"
             f"  background: {bg};"
@@ -511,9 +527,16 @@ class NetworkPage(QWidget):
 
     def refresh_device_list(self, exclusive_on: bool = False):
         """Rebuild unified device list: local, wired, BT, network."""
-        from audio_player.platform.linux.audio_devices import (
-            get_local_device, get_alsa_hw_devices, get_wired_devices, AudioDevice,
-        )
+        self._start_device_watcher()
+        import sys
+        if sys.platform == "win32":
+            from audio_player.platform.windows.audio_devices import (
+                get_local_device, get_alsa_hw_devices, get_wired_devices, AudioDevice,
+            )
+        else:
+            from audio_player.platform.linux.audio_devices import (
+                get_local_device, get_alsa_hw_devices, get_wired_devices, AudioDevice,
+            )
 
         # Gather all devices
         all_devs: list[AudioDevice] = []
@@ -533,12 +556,21 @@ class NetworkPage(QWidget):
             all_devs.extend(hw_devs)
 
         # Bluetooth
+        bt_devs = []
+        host_codecs = []
         try:
-            from audio_player.platform.linux.bluetooth import get_bluetooth_devices, get_device_codecs, get_host_codecs
+            import sys
+            if sys.platform == "win32":
+                from audio_player.platform.windows.bluetooth import (
+                    get_bluetooth_devices, get_device_codecs, get_host_codecs)
+            else:
+                from audio_player.platform.linux.bluetooth import (
+                    get_bluetooth_devices, get_device_codecs, get_host_codecs)
             bt_devs = get_bluetooth_devices()
             host_codecs = get_host_codecs()
         except Exception:
             bt_devs = []
+            host_codecs = []
         # Clear old BT cards
         for card in self._bt_cards:
             card.setParent(None)
@@ -578,7 +610,11 @@ class NetworkPage(QWidget):
                 self._bt_cards.append(card)
             self._bt_group.setVisible(True)
         else:
-            self._bt_group.setVisible(False)
+            # Always show — display empty state
+            self._bt_group.setVisible(True)
+            empty_lbl = QLabel(_("bt.no_device"))
+            empty_lbl.setStyleSheet("color:#64748b;font-size:12px;padding:8px 0;")
+            self._bt_layout.addWidget(empty_lbl)
 
         # Network devices (from stored data, not old list items)
         net_devs = [(d["name"], d["id"]) for d in self._devices]
@@ -605,7 +641,11 @@ class NetworkPage(QWidget):
             self._device_list.addItem(item)
 
     def _on_codec_switch(self, address: str, codec: str):
-        """Write PipeWire config + reconnect device to switch codec."""
+        """Write PipeWire config + reconnect device to switch codec (Linux only)."""
+        import sys
+        if sys.platform == "win32":
+            # Windows manages Bluetooth codec negotiation automatically
+            return
         import subprocess, os
         # Map display name to PipeWire codec name
         codec_map = {

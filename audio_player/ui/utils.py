@@ -3,14 +3,30 @@
 from PyQt6.QtCore import QSettings
 from audio_player.app import current_theme_mode
 
+_cached_cover_radius: int | None = None
+
 
 def cover_radius_enabled() -> bool:
-    s = QSettings("VBPlayer", "VB Player")
-    return str(s.value("album_cover_radius", "true")).lower() == "true"
+    return cover_corner_radius() > 0
 
 
 def cover_corner_radius() -> int:
-    return 8 if cover_radius_enabled() else 0
+    global _cached_cover_radius
+    if _cached_cover_radius is not None:
+        return _cached_cover_radius
+    try:
+        s = QSettings("VBPlayer", "VB Player")
+        enabled = str(s.value("album_cover_radius", "true")).lower() == "true"
+        _cached_cover_radius = 8 if enabled else 0
+    except Exception:
+        _cached_cover_radius = 8
+    return _cached_cover_radius
+
+
+def refresh_cover_radius_cache():
+    """Invalidate cached cover radius — call on settings change."""
+    global _cached_cover_radius
+    _cached_cover_radius = None
 
 
 def format_duration(seconds: float) -> str:

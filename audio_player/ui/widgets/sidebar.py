@@ -161,7 +161,7 @@ class Sidebar(QWidget):
             else:
                 btn.setStyleSheet(
                     "QPushButton{background:transparent;border:none;border-radius:8px;}"
-                    "QPushButton:hover{background:rgba(255,255,255,0.06);}"
+                    "QPushButton:hover{background:#0fffffff;}"
                 )
 
     def toggle(self):

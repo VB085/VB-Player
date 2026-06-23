@@ -6,7 +6,7 @@ from PyQt6.QtGui import QFont, QPainter, QPalette, QPainterPath, QPixmap
 from PyQt6.QtCore import QRectF
 from audio_player.ui.settings_dialog import _CloseButton
 from audio_player.ui.widgets.frameless_resize import FramelessResizeMixin
-from audio_player.app import current_accent, current_theme_mode
+from audio_player.app import current_accent, current_theme_mode, rgba_hex
 from audio_player.i18n import _
 from audio_player.platform import platform_info
 
@@ -161,7 +161,7 @@ class _OutputDetailDialog(*_OutputBase):
         r, g, b = accent.red(), accent.green(), accent.blue()
         group.setStyleSheet(
             f"QGroupBox{{color:#94a3b8;font-size:11px;font-weight:bold;"
-            f"border:1px solid rgba({r},{g},{b},0.20);"
+            f"border:1px solid {rgba_hex(r,g,b,0.20)};"
             f"border-radius:10px;margin-top:12px;padding-top:18px;}}"
             f"QGroupBox::title{{subcontrol-origin:margin;left:12px;}}"
         )

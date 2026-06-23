@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-import os
-import sys
-import sysconfig
-import traceback
-import signal
-import faulthandler
+import os, sys, sysconfig, traceback, signal, faulthandler
 from pathlib import Path
-
-# Enable faulthandler for native crash stack traces
+# PyInstaller --windowed: stderr can be None
+if sys.stderr is None or not sys.stderr:
+    sys.stderr = open(os.devnull, "w")
+    sys.stdout = sys.stderr
 faulthandler.enable()
 
 # Catch SIGABRT — exit cleanly instead of core dump (Qt 6.11 QThread bug)
@@ -34,18 +31,21 @@ def _qt_message_handler(mode, context, message):
 # If the project .venv exists but we're not running from it, re-exec with venv Python
 _PROJECT_VENV = Path(__file__).resolve().parent / ".venv"
 
-# Resolve venv Python binary (python3, python, python.exe on Windows)
+# Resolve venv Python binary (MSYS2 uses bin/ on Windows too)
 if sys.platform == "win32":
-    _venv_bin = _PROJECT_VENV / "Scripts"
+    _venv_bins = [_PROJECT_VENV / "Scripts", _PROJECT_VENV / "bin"]
     _candidates = ["python.exe"]
 else:
-    _venv_bin = _PROJECT_VENV / "bin"
+    _venv_bins = [_PROJECT_VENV / "bin"]
     _candidates = ["python3", "python"]
 _VENV_PYTHON = None
-for _name in _candidates:
-    _candidate = _venv_bin / _name
-    if _candidate.exists():
-        _VENV_PYTHON = _candidate
+for _bin_dir in _venv_bins:
+    for _name in _candidates:
+        _candidate = _bin_dir / _name
+        if _candidate.exists():
+            _VENV_PYTHON = _candidate
+            break
+    if _VENV_PYTHON:
         break
 
 # Detect if we're running from the project venv (compare prefix, not executable
@@ -93,22 +93,53 @@ try:
 except Exception:
     pass
 
-# --- Single-instance lock via fcntl (kernel-enforced, survives crashes) ---
-import fcntl
-_LOCK_FILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "vbplayer.lock"
+# PyInstaller --windowed: always redirect stderr to a log file
+# Force log file — unconditionally in PyInstaller builds
+if hasattr(sys, '_MEIPASS') or getattr(sys, 'frozen', False) or not sys.stderr:
+    try:
+        _log = open(os.path.join(os.path.dirname(sys.executable), 'vbplayer.log'), 'w')
+        _log.write('PYTHON STARTED\n'); _log.flush()
+        sys.stderr, sys.stdout = _log, _log
+    except Exception:
+        pass
+
+# --- Single-instance lock ---
+import tempfile as _tempfile
+_LOCK_FILE = Path(_tempfile.gettempdir()) / "vbplayer.lock"
 _LOCK_FD = os.open(str(_LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o644)
-try:
-    fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    print("VB Player is already running.", file=sys.stderr)
-    os.close(_LOCK_FD)
-    sys.exit(0)
-# _LOCK_FD stays open for the lifetime of the process; kernel auto-releases on exit
+if sys.platform == "win32":
+    import msvcrt
+    os.write(_LOCK_FD, b"0")
+    try:
+        msvcrt.locking(_LOCK_FD, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        print("VB Player is already running.", file=sys.stderr)
+        os.close(_LOCK_FD)
+        sys.exit(0)
+else:
+    import fcntl
+    _LOCK_FILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "vbplayer.lock"
+    _LOCK_FD = os.open(str(_LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("VB Player is already running.", file=sys.stderr)
+        os.close(_LOCK_FD)
+        sys.exit(0)
 
 
-# First-run: install missing platform dependencies (system media controls, etc.)
-from audio_player.bootstrap import ensure_dependencies
-ensure_dependencies()
+# First-run: install missing platform dependencies (skip in frozen exe)
+if not getattr(sys, 'frozen', False):
+    from audio_player.bootstrap import ensure_dependencies
+    ensure_dependencies()
+
+# PyInstaller: use system MSYS2 GStreamer (bundling all DLLs is not practical)
+if getattr(sys, 'frozen', False):
+    _msys2_bin = Path("C:/msys64/mingw64/bin")
+    if _msys2_bin.is_dir():
+        os.add_dll_directory(str(_msys2_bin))
+        os.environ["PATH"] = str(_msys2_bin) + os.pathsep + os.environ.get("PATH", "")
+        os.environ['GST_PLUGIN_PATH'] = str(_msys2_bin.parent / "lib" / "gstreamer-1.0")
 
 # Install Qt message handler
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType

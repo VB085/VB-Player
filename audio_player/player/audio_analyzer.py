@@ -48,6 +48,7 @@ class _DecoderWorker(QThread):
         import subprocess
         import shutil
         import os
+        import time
 
         gst_launch = shutil.which("gst-launch-1.0")
         gst_root = None
@@ -102,7 +103,13 @@ class _DecoderWorker(QThread):
                 return None  # silent — temp file race, not an error
             with open(tmp_path, "rb") as f:
                 data = f.read()
-            os.unlink(tmp_path)
+            # Windows: GStreamer may still hold the file; retry unlink
+            for _ in range(5):
+                try:
+                    os.unlink(tmp_path)
+                    break
+                except PermissionError:
+                    time.sleep(0.05)
             return np.frombuffer(data, dtype=np.float32).copy()
         except Exception:
             import sys, traceback
@@ -239,7 +246,13 @@ class _DecoderWorker(QThread):
             tags = mf.tags
             # Prioritised keys: USLT (ID3), ©lyr (MP4), LYRICS (Vorbis/FLAC)
             for key in tags:
-                key_s = str(key)
+                # GStreamer Python bindings may return tuple keys
+                try:
+                    key_s = str(key)
+                except Exception:
+                    key_s = str(key[0]) if isinstance(key, tuple) and len(key) > 0 else ""
+                if not key_s:
+                    continue
                 if any(k in key_s.upper() for k in ('USLT', '©LYR', 'LYRICS', 'UNSYNCEDLYRICS')):
                     val = tags[key]
                     if isinstance(val, list):

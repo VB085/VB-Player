@@ -120,18 +120,23 @@ class SSDPListener:
             self._thread = None
 
     def _listen(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        # Join SSDP multicast group
-        mreq = struct.pack(
-            "4sl",
-            socket.inet_aton(SSDP_ADDR),
-            socket.INADDR_ANY,
-        )
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        sock.bind(("", SSDP_PORT))
-        sock.settimeout(2)
+            # Join SSDP multicast group
+            mreq = struct.pack(
+                "4sl",
+                socket.inet_aton(SSDP_ADDR),
+                socket.INADDR_ANY,
+            )
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            sock.bind(("", SSDP_PORT))
+            sock.settimeout(2)
+        except OSError as e:
+            import sys
+            print(f"[ssdp] listener bind failed (port 1900 in use?): {e}", file=sys.stderr)
+            return
 
         while not self._stop_event.is_set():
             try:

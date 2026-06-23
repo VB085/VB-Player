@@ -441,17 +441,22 @@ class AlbumGridView(QWidget):
         else:
             self._albums = list(self._all_albums)
 
-        # Destroy old cards
-        for card in self._cards:
-            card.setParent(None)
-            card.deleteLater()
-        self._cards.clear()
-
-        # Create new cards (once)
+        # Reuse cards by key — second visit is instant
+        old = {(c._album.name or "", c._album.artist or ""): c for c in self._cards}
+        kept = set()
+        new = []
         for album in self._albums:
-            card = AlbumCardWidget(album)
-            card.clicked.connect(self.albumClicked)
-            self._cards.append(card)
+            key = (album.name or "", album.artist or "")
+            card = old.get(key) or AlbumCardWidget(album)
+            if key in old:
+                kept.add(id(card))
+            else:
+                card.clicked.connect(self.albumClicked)
+            new.append(card)
+        for card in self._cards:
+            if id(card) not in kept:
+                card.setParent(None); card.deleteLater()
+        self._cards = new
 
         if self._view_mode == "grid":
             self._relayout_grid()

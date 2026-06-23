@@ -31,6 +31,11 @@ class SpectrumWidget(QWidget):
         self._current_pos_ratio = 0.0
         self._sample_rate = 44100
 
+        # Pre-computed color tables — rebuilt on accent change, not every frame
+        self._bar_colors: list[QColor] = []
+        self._peak_color = QColor(255, 255, 255, 180)
+        self._rebuild_colors()
+
         self._timer = QTimer(self)
         self._timer.setInterval(1000 // self.FPS)
         self._timer.timeout.connect(self.update)
@@ -41,6 +46,24 @@ class SpectrumWidget(QWidget):
         self._lyrics.hide()
         self._lyrics_visible = False
         self._has_lyrics = False
+
+    def _rebuild_colors(self):
+        """Pre-compute bar gradient colors from current accent — called once on accent change."""
+        accent = current_accent()
+        self._bar_colors = []
+        for i in range(self.BAR_COUNT):
+            t = i / self.BAR_COUNT
+            self._bar_colors.append(QColor(
+                int(accent.red() * (1 - t) + 6 * t),
+                int(accent.green() * (1 - t) + 182 * t),
+                int(accent.blue() * (1 - t) + 212 * t),
+                200,
+            ))
+        self._peak_color = QColor(255, 255, 255, 180)
+
+    def refresh_accent(self):
+        """Rebuild color tables when accent changes."""
+        self._rebuild_colors()
 
     @property
     def lyrics_overlay(self) -> LyricsOverlay:
@@ -134,26 +157,18 @@ class SpectrumWidget(QWidget):
         h = self.height()
         bar_w = max(2, (w - 20) / self.BAR_COUNT - 2)
         gap = (w - 20) / self.BAR_COUNT
-        accent = current_accent()
 
         for i in range(self.BAR_COUNT):
             level = self._levels[i]
             peak = self._peaks[i]
             bar_h = max(2, level * (h - 30))
             x = 10 + i * gap
-            t = i / self.BAR_COUNT
-            bar_color = QColor(
-                int(accent.red() * (1 - t) + 6 * t),
-                int(accent.green() * (1 - t) + 182 * t),
-                int(accent.blue() * (1 - t) + 212 * t),
-                200
-            )
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(bar_color)
+            painter.setBrush(self._bar_colors[i])
             painter.drawRoundedRect(QRectF(x, h - bar_h - 15, bar_w, bar_h), 2, 2)
             if peak > 0.01:
                 peak_y = h - peak * (h - 30) - 15
-                painter.setBrush(QColor(255, 255, 255, 180))
+                painter.setBrush(self._peak_color)
                 painter.drawEllipse(QPointF(x + bar_w / 2, peak_y), 2.5, 2.5)
 
     def _paint_line(self, painter: QPainter):
@@ -203,6 +218,7 @@ class SpectrumWidget(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255, 10), 1))
             painter.drawEllipse(QPointF(cx, cy), r, r)
         angle_step = 360.0 / self.BAR_COUNT
+        accent = current_accent()  # hoist — not per-bar
         for i in range(self.BAR_COUNT):
             angle = i * angle_step - 90
             rad = np.radians(angle)
@@ -215,7 +231,6 @@ class SpectrumWidget(QWidget):
             end_x = cx + (inner_r + bar_len) * np.cos(rad)
             end_y = cy + (inner_r + bar_len) * np.sin(rad)
             t = i / self.BAR_COUNT
-            accent = current_accent()
             r = int(accent.red() + t * (255 - accent.red()))
             g = int(accent.green() + t * (255 - accent.green()))
             b_val = int(accent.blue() + t * (255 - accent.blue()))

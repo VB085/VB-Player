@@ -102,7 +102,8 @@ class PlaybackController(QObject):
             self.logMessage.emit(_("log.now_playing_no_artist", title=title))
         self.metadataLoaded.emit(meta, filepath)
         self.trackLoaded.emit(filepath)
-        self._analyzer.analyze(filepath)
+        if self._analyzer is not None:
+            self._analyzer.analyze(filepath)
         self._update_gapless_next_path()
 
     def _on_track_finished(self):

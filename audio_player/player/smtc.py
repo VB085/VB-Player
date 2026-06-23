@@ -1,4 +1,8 @@
-"""Windows System Media Transport Controls (SMTC) service."""
+"""Windows System Media Transport Controls (SMTC) service.
+
+Requires the ``winsdk`` package (``pip install winsdk``). If winsdk is not
+installed, SMTC is silently disabled — the player works fine without it.
+"""
 
 import sys
 
@@ -17,9 +21,9 @@ if sys.platform == "win32":
         pass
 
 _STATUS_MAP = {
-    PlaybackState.Playing: _media.MediaPlaybackType.PLAYING if _HAS_WINSDK else None,
-    PlaybackState.Paused: _media.MediaPlaybackType.PAUSED if _HAS_WINSDK else None,
-    PlaybackState.Stopped: _media.MediaPlaybackType.STOPPED if _HAS_WINSDK else None,
+    PlaybackState.Playing: _media.MediaPlaybackStatus.PLAYING if _HAS_WINSDK else None,
+    PlaybackState.Paused: _media.MediaPlaybackStatus.PAUSED if _HAS_WINSDK else None,
+    PlaybackState.Stopped: _media.MediaPlaybackStatus.STOPPED if _HAS_WINSDK else None,
 }
 
 
@@ -41,6 +45,7 @@ class SmtcService(QObject):
 
         self._display = self._smtc.display_updater
         self._display.type = _media.MediaPlaybackType.MUSIC
+        self._display.app_media_id = "VB Player"
 
         self._smtc.add_button_pressed(self._on_button_pressed)
 
@@ -55,11 +60,11 @@ class SmtcService(QObject):
 
     def _on_state_changed(self, state):
         if state == PlaybackState.Playing:
-            self._smtc.playback_status = _media.MediaPlaybackStatus.PLAYING
+            self._smtc.playback_status = _STATUS_MAP[PlaybackState.Playing]
         elif state == PlaybackState.Paused:
-            self._smtc.playback_status = _media.MediaPlaybackStatus.PAUSED
+            self._smtc.playback_status = _STATUS_MAP[PlaybackState.Paused]
         else:
-            self._smtc.playback_status = _media.MediaPlaybackStatus.STOPPED
+            self._smtc.playback_status = _STATUS_MAP[PlaybackState.Stopped]
 
     def _on_metadata_loaded(self, meta, filepath):
         self._display.clear_all()
@@ -80,14 +85,17 @@ class SmtcService(QObject):
                 stream = _streams.InMemoryRandomAccessStream()
                 writer = _streams.DataWriter(stream)
                 writer.write_bytes(cover)
-                writer.store_async().get()
+                # MSYS2 winsdk: get_results() | official winsdk: get()
+                op = writer.store_async()
+                (op.get_results if hasattr(op, 'get_results') else op.get)()
                 writer.detach_stream()
                 stream.seek(0)
                 self._display.thumbnail = (
                     _streams.RandomAccessStreamReference.create_from_stream(stream)
                 )
             except Exception as _e:
-                import sys; print(f"[{__name__}] {_e}", file=sys.stderr)
+                import sys
+                print(f"[smtc] thumbnail failed: {_e}", file=sys.stderr)
 
         self._display.update()
 
@@ -104,5 +112,8 @@ class SmtcService(QObject):
 
     def cleanup(self):
         if self._player:
-            self._player.dispose()
+            try:
+                self._player.dispose()
+            except Exception:
+                pass
             self._player = None

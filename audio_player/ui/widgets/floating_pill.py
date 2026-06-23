@@ -80,6 +80,9 @@ class FloatingPill(QWidget):
         next_btn.clicked.connect(self.nextClicked.emit)
         layout.addWidget(next_btn)
 
+        # Cache progress style — avoid QSettings read on every paint frame
+        self._pill_progress_style = "line"
+
     def _apply_style(self):
         is_light = current_theme_mode() == "light"
         accent = current_accent()
@@ -96,7 +99,7 @@ class FloatingPill(QWidget):
                 color: {sub_c}; font-size: 16px;
             }}
             QPushButton#pillBtn:hover {{
-                background: {"rgba(0,0,0,0.06)" if is_light else "rgba(255,255,255,0.08)"};
+                background: {"#0f000000" if is_light else "#14ffffff"};
             }}
             QPushButton#pillPlayBtn {{
                 background: {accent.name()}; color: #fff;
@@ -111,8 +114,11 @@ class FloatingPill(QWidget):
 
     def update_cover(self, cover_data: bytes | None):
         if cover_data:
-            pix = QPixmap()
-            pix.loadFromData(cover_data)
+            try:
+                pix = QPixmap()
+                pix.loadFromData(cover_data)
+            except Exception:
+                self._cover_label.clear(); return
             if not pix.isNull():
                 scaled = pix.scaled(COVER_SIZE, COVER_SIZE,
                                     Qt.AspectRatioMode.KeepAspectRatio,
@@ -150,8 +156,17 @@ class FloatingPill(QWidget):
     def set_duration(self, ms: int):
         self._duration_ms = ms if ms > 0 else 1
 
-    def refresh_theme(self): self._apply_style(); self.update()
-    def refresh_accent(self): self._apply_style(); self.update()
+    def refresh_theme(self):
+        # Re-read progress style setting in case it changed
+        from PyQt6.QtCore import QSettings
+        self._pill_progress_style = str(QSettings("VBPlayer", "VB Player").value(
+            "pill_progress_style", "line") or "line")
+        self._apply_style()
+        self.update()
+
+    def refresh_accent(self):
+        self._apply_style()
+        self.update()
 
     # ── Paint ──
 
@@ -176,15 +191,10 @@ class FloatingPill(QWidget):
             self._bg_cache = (cache_key, tmp)
         p.drawPixmap(0, 0, self._bg_cache[1])
 
-        # Progress indicator (ring includes its own border, line doesn't)
-        from PyQt6.QtCore import QSettings
-        style = str(QSettings("VBPlayer", "VB Player").value("pill_progress_style", "line") or "line")
-        if style == "ring":
+        # Progress indicator
+        if self._pill_progress_style == "ring":
             self._draw_ring_progress(p, w, h)
         else:
-            # Subtle border + top line
-            p.setPen(QColor(255, 255, 255, 25) if not is_light else QColor(0, 0, 0, 25))
-            p.drawPath(path)
             self._draw_line_progress(p, w, h, is_light)
 
         p.end()

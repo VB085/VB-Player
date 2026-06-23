@@ -23,6 +23,7 @@ class SeekSlider(QWidget):
         self._duration = 0
         self._dragging = False
         self._ui_radius = 12
+        self._last_sizing_height = 0  # avoid redundant setStyleSheet on resize
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 4, 12, 4)
@@ -74,7 +75,12 @@ class SeekSlider(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._apply_sizing()
+        # Only re-apply stylesheet when height actually changes
+        # (width changes during window resize don't affect the slider style)
+        h = self.height()
+        if h != self._last_sizing_height:
+            self._last_sizing_height = h
+            self._apply_sizing()
 
     def set_position(self, ms: int):
         if not self._dragging:

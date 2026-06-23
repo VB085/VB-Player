@@ -104,7 +104,7 @@ QWidget#playlistDetailPage QPushButton { background: transparent; color: #bbb; b
 QWidget#albumDetailPage QPushButton:hover,
 QWidget#playlistDetailPage QPushButton:hover { background: #363636; color: #fff; }
 
-QPushButton#viewToggle, QPushButton#sortBtn { background: rgba(255,255,255,0.06); color: #94a3b8; border: none; border-radius: 8px; font-size: 14px; }
+QPushButton#viewToggle, QPushButton#sortBtn { background: #0fffffff; color: #94a3b8; border: none; border-radius: 8px; font-size: 14px; }
 QPushButton#viewToggle:hover, QPushButton#sortBtn:hover { background: @ACCENT_DARKER@; color: #e2e8f0; }
 
 QPushButton[accent="true"] { background: @ACCENT@; color: #ffffff; border: none; border-radius: 8px; padding: 8px; font-size: 13px; }

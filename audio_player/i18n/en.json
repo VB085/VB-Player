@@ -69,6 +69,7 @@
   "settings.titlebar_native": "Native (system title bar)",
   "settings.titlebar_restart_note": "⚠ Restart required for titlebar changes",
   "settings.material_effect": "Window Material",
+  "settings.material_mica": "Mica (Windows 11)",
   "settings.material_acrylic": "Acrylic (KDE true blur)",
   "settings.material_auto": "Auto (system default)",
   "settings.material_glass": "Glass (semi-transparent)",

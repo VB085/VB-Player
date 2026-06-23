@@ -545,9 +545,9 @@ class PlaylistDetailPage(QWidget):
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.setToolTip(_("album.back"))
         back_btn.setStyleSheet(
-            "QPushButton{background:rgba(255,255,255,0.06);color:#94a3b8;border:none;"
+            "QPushButton{background:#0fffffff;color:#94a3b8;border:none;"
             "border-radius:16px;font-size:16px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
+            "QPushButton:hover{background:#1effffff;color:#e2e8f0;}"
         )
         back_btn.clicked.connect(self.backRequested)
         header.addWidget(back_btn)
@@ -556,9 +556,9 @@ class PlaylistDetailPage(QWidget):
         edit_btn = QPushButton(_("playlist.edit"))
         self._edit_btn = edit_btn
         edit_btn.setStyleSheet(
-            "QPushButton{background:transparent;color:#94a3b8;border:1px solid rgba(255,255,255,0.10);"
+            "QPushButton{background:transparent;color:#94a3b8;border:1px solid #19ffffff;"
             "font-size:12px;padding:5px 14px;border-radius:6px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.06);color:#e2e8f0;}"
+            "QPushButton:hover{background:#0fffffff;color:#e2e8f0;}"
         )
         edit_btn.clicked.connect(self._on_edit)
         header.addWidget(edit_btn)
@@ -750,9 +750,9 @@ class PlaylistDetailPage(QWidget):
         """Update inline accent-styled elements."""
         accent = current_accent()
         self._back_btn.setStyleSheet(
-            f"QPushButton{{background:rgba(255,255,255,0.06);color:{accent.lighter(130).name()};border:none;"
+            f"QPushButton{{background:#0fffffff;color:{accent.lighter(130).name()};border:none;"
             f"border-radius:16px;font-size:16px;}}"
-            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
+            "QPushButton:hover{background:#1effffff;color:#e2e8f0;}"
         )
         self._track_view.update()
         self._track_view.repaint()

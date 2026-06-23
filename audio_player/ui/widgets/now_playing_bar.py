@@ -122,7 +122,7 @@ class NowPlayingBar(QWidget):
                 color: {sub_c}; font-size: 20px;
             }}
             QPushButton#npBtn:hover {{
-                background: {"rgba(0,0,0,0.06)" if is_light else "rgba(255,255,255,0.08)"};
+                background: {"#0f000000" if is_light else "#14ffffff"};
             }}
             QPushButton#npPlayBtn {{
                 background: {accent.name()}; color: #fff;

@@ -81,9 +81,9 @@ class NowPlayingPage(QWidget):
 
         # ── Buttons (absolutely positioned) ──
         btn_css = (
-            "QPushButton{background:rgba(255,255,255,0.12);color:#ccc;border:none;"
+            "QPushButton{background:#1effffff;color:#ccc;border:none;"
             "border-radius:18px;font-size:15px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.22);color:#fff;}"
+            "QPushButton:hover{background:#38ffffff;color:#fff;}"
         )
         self._close_btn = QPushButton("✕", self)
         self._close_btn.setFixedSize(36, 36)

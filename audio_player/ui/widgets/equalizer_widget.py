@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSlider,
                              QLabel, QComboBox, QPushButton, QFrame, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
-from audio_player.app import current_theme_mode, current_accent
+from audio_player.app import current_theme_mode, current_accent, rgba_hex
 from audio_player.i18n import _, languageChanged
 
 
@@ -239,9 +239,9 @@ class EqualizerWidget(QWidget):
             r, g, b = accent.red(), accent.green(), accent.blue()
             self._enabled_cb.setStyleSheet(
                 f"QPushButton{{background:transparent;color:#94a3b8;"
-                f"border:1px solid rgba({r},{g},{b},0.12);"
+                f"border:1px solid {rgba_hex(r,g,b,0.12)};"
                 f"font-size:12px;padding:6px 10px;border-radius:10px;}}"
-                f"QPushButton:hover{{background:rgba(255,255,255,0.06);color:#e2e8f0;}}"
+                f"QPushButton:hover{{background:#0fffffff;color:#e2e8f0;}}"
             )
         self._style_reset_btn()
 
@@ -250,9 +250,9 @@ class EqualizerWidget(QWidget):
         r, g, b = accent.red(), accent.green(), accent.blue()
         self._reset_btn.setStyleSheet(
             f"QPushButton{{background:transparent;color:#94a3b8;"
-            f"border:1px solid rgba({r},{g},{b},0.12);"
+            f"border:1px solid {rgba_hex(r,g,b,0.12)};"
             f"font-size:12px;padding:6px 10px;border-radius:10px;}}"
-            f"QPushButton:hover{{background:rgba(255,255,255,0.06);color:#e2e8f0;}}"
+            f"QPushButton:hover{{background:#0fffffff;color:#e2e8f0;}}"
         )
 
     def refresh_language(self):

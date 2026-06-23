@@ -179,9 +179,9 @@ class HiFiNowPlayingPage(QWidget):
 
         # Top-right buttons style
         btn_style = (
-            "QPushButton{background:rgba(255,255,255,0.1);color:#aaa;border:none;"
+            "QPushButton{background:#19ffffff;color:#aaa;border:none;"
             "border-radius:18px;font-size:16px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.2);color:#fff;}"
+            "QPushButton:hover{background:#33ffffff;color:#fff;}"
         )
 
         # Lyrics button (ghost style)
@@ -297,9 +297,9 @@ class HiFiNowPlayingPage(QWidget):
             )
         else:
             self._lyrics_btn.setStyleSheet(
-                "QPushButton{background:rgba(255,255,255,0.1);color:#aaa;border:none;"
+                "QPushButton{background:#19ffffff;color:#aaa;border:none;"
                 "border-radius:18px;font-size:16px;}"
-                "QPushButton:hover{background:rgba(255,255,255,0.2);color:#fff;}"
+                "QPushButton:hover{background:#33ffffff;color:#fff;}"
             )
         target = 1.0 if visible else 0.0
         # Animate layout morph
@@ -516,15 +516,14 @@ class HiFiNowPlayingPage(QWidget):
 
     def _on_topbar_opacity_changed(self):
         self._topbar_opacity = self._topbar_opacity_helper.opacity
-        # Hide buttons when nearly invisible, show when visible
+        # Close button always visible — user must be able to exit
         if self._topbar_opacity < 0.1:
             self._fullscreen_btn.hide()
-            self._close_btn.hide()
             self._lyrics_btn.hide()
         else:
             self._fullscreen_btn.show()
-            self._close_btn.show()
             self._lyrics_btn.show()
+        self._close_btn.show()  # always
         self.update()
 
     def _on_topbar_fade_finished(self):
@@ -539,6 +538,7 @@ class HiFiNowPlayingPage(QWidget):
         self._buttons_opacity = 1.0
         self._topbar_visible = True
         self._topbar_opacity = 1.0
+        self._close_btn.show()  # always visible — exit must be reachable
         if self._auto_hide_enabled:
             self._hide_timer.start()
             self._topbar_hide_timer.start()
