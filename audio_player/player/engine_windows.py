@@ -128,6 +128,10 @@ class AudioEngine(_BaseAudioEngine):
                 t = getattr(self, '_asio_feed_timer', None)
                 if t is not None and not t.isActive():
                     t.start()
+            # Set state — base class requires Gst pipeline for this
+            if self._app_state != PlaybackState.Playing:
+                self._app_state = PlaybackState.Playing
+                self.stateChanged.emit(PlaybackState.Playing)
             return
         # Standard GStreamer path
         super().play()
