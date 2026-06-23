@@ -18,6 +18,9 @@ CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
 @CB_BS
 def cb_bs(idx, dp):
     global _rpos
+    import sys
+    if _rpos == 0:
+        sys.stderr.write(f"[asio-cb] bufferSwitch: idx={idx}, wpos={_wpos}, rpos={_rpos}, bs={_bs}\n"); sys.stderr.flush()
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
     for ci in range(_ch):
         dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
@@ -38,7 +41,9 @@ def cb_sr(r): return 0
 @CB_AM
 def cb_am(s,v,m,o): return 0
 @CB_TI
-def cb_ti(p,i,d): cb_bs(i,d)
+def cb_ti(p,i,d):
+    import sys; sys.stderr.write(f"[asio-cb] timeInfo\n"); sys.stderr.flush()
+    cb_bs(i,d)
 
 def _mkclsid(s):
     w = ctypes.create_unicode_buffer(s); c = (ctypes.c_byte*16)()
