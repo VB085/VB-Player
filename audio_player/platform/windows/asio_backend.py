@@ -3,9 +3,9 @@ import ctypes, struct
 ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
 RING_SAMPLES = 131072
 
-_lock = None  # set in asio_open
+_lock = None
 _ptr, _ch, _bs = None, 0, 0
-_ring, _bi = None, None
+_ring, _bi, _cbs = None, None, None  # _cbs: keep alive for ASIO driver callbacks
 _wpos, _rpos = 0, 0
 _running = False
 
@@ -50,7 +50,7 @@ def _mkclsid(s):
     ole32.CLSIDFromString(w, ctypes.byref(c)); return c
 
 def asio_open(clsid_str: str, rate: int):
-    global _ptr, _bi, _ring, _ch, _bs, _wpos, _rpos, _running, _lock
+    global _ptr, _bi, _ring, _cbs, _ch, _bs, _wpos, _rpos, _running, _lock
     ole32.CoInitializeEx(None, 2)
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
     hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, (ctypes.c_char*16)(*IID_FIIO), ctypes.byref(p))
@@ -73,9 +73,9 @@ def asio_open(clsid_str: str, rate: int):
     for i in range(_ch): _bi[i].i = 0; _bi[i].n = i
 
     class CB(ctypes.Structure): _fields_ = [('bs',ctypes.c_void_p),('sr',ctypes.c_void_p),('am',ctypes.c_void_p),('ti',ctypes.c_void_p)]
-    cbs = CB(); cbs.bs=ctypes.cast(cb_bs,ctypes.c_void_p); cbs.sr=ctypes.cast(cb_sr,ctypes.c_void_p); cbs.am=ctypes.cast(cb_am,ctypes.c_void_p); cbs.ti=ctypes.cast(cb_ti,ctypes.c_void_p)
+    _cbs = CB(); _cbs.bs=ctypes.cast(cb_bs,ctypes.c_void_p); _cbs.sr=ctypes.cast(cb_sr,ctypes.c_void_p); _cbs.am=ctypes.cast(cb_am,ctypes.c_void_p); _cbs.ti=ctypes.cast(cb_ti,ctypes.c_void_p)
 
-    if V(19,ctypes.c_long,ctypes.c_void_p,ctypes.c_long,ctypes.c_long,ctypes.c_void_p)(p,ctypes.byref(_bi),_ch,_bs,ctypes.byref(cbs)):
+    if V(19,ctypes.c_long,ctypes.c_void_p,ctypes.c_long,ctypes.c_long,ctypes.c_void_p)(p,ctypes.byref(_bi),_ch,_bs,ctypes.byref(_cbs)):
         asio_close(); return None
     V(7,ctypes.c_long)(p); _running = True
     return (_ch, _bs)
@@ -144,12 +144,12 @@ def asio_write(data: bytes):
         return False
 
 def asio_close():
-    global _ptr, _running, _bi, _ring, _lock
+    global _ptr, _running, _bi, _ring, _cbs, _lock
     if not _ptr: return
     vt = ctypes.cast(_ptr, ctypes.POINTER(ctypes.c_void_p))[0]
     V = lambda i,r,*a: ctypes.WINFUNCTYPE(r, ctypes.c_void_p, *a)(ctypes.cast(ctypes.cast(vt, ctypes.POINTER(ctypes.c_void_p))[i], ctypes.c_void_p).value)
     if _running: V(8,ctypes.c_long)(_ptr); V(20,ctypes.c_long)(_ptr); _running = False
-    V(2,ctypes.c_ulong)(_ptr); _ptr = None; _bi = None; _ring = None; _lock = None
+    V(2,ctypes.c_ulong)(_ptr); _ptr = None; _bi = None; _ring = None; _cbs = None; _lock = None
 
 def asio_set_rate(clsid_str: str, rate: int):
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
