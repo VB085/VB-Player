@@ -675,11 +675,9 @@ class AudioEngine(_BaseAudioEngine):
             target_rate = 88200
 
         # Build ffmpeg command — explicit format, no stdin interaction
-        # TEST: generate 440Hz sine via ffmpeg instead of file
         ffmpeg_cmd = [
-            ffmpeg, "-nostdin",
-            "-f", "lavfi", "-i", f"sine=frequency=440:duration=5:sample_rate={target_rate}",
-            "-f", "f32le", "-acodec", "pcm_f32le",
+            ffmpeg, "-nostdin", "-i", filepath,
+            "-f", "s16le",
             "-ar", str(target_rate), "-ac", "2",
             "-loglevel", "error",
             "pipe:1",
@@ -688,6 +686,8 @@ class AudioEngine(_BaseAudioEngine):
         try:
             self._ffmpeg_proc = subprocess.Popen(
                 ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # Drain stderr after 500ms to catch ffmpeg errors
+            QTimer.singleShot(500, lambda: self._check_ffmpeg_errors())
         except Exception as e:
             import sys as _s; print(f"[asio] ffmpeg start failed: {e}", file=_s.stderr)
             return False
@@ -736,6 +736,25 @@ class AudioEngine(_BaseAudioEngine):
         t.setInterval(15)  # ~66Hz — faster response, avoids buffer drain
         t.start()
         return True
+
+    def _check_ffmpeg_errors(self):
+        """Read ffmpeg stderr for any error messages."""
+        proc = getattr(self, '_ffmpeg_proc', None)
+        if proc is None:
+            return
+        try:
+            import select, sys as _s
+            import os as _os
+            # Non-blocking read of stderr
+            fd = proc.stderr.fileno()
+            if fd >= 0:
+                _os.set_blocking(fd, False)
+            err = proc.stderr.read()
+            if err:
+                _s.stderr.write(f"[ffmpeg-err] {err.decode('utf-8', errors='replace')}\n")
+                _s.stderr.flush()
+        except Exception:
+            pass
 
     def _stop_asio(self):
         """Stop ASIO feed timer and close device."""
@@ -808,8 +827,12 @@ class AudioEngine(_BaseAudioEngine):
                     import sys as _s
                     print(f"[asio] WAV dumped: Desktop/asio_dump.wav", file=_s.stderr)
 
-            # Feed directly to ASIO (F32LE format)
-            _a.asio_write(data)
+            # Convert s16le → f32le for ASIO
+            import array as _arr
+            s16 = _arr.array('h')
+            s16.frombytes(data)
+            f32 = _arr.array('f', (v / 32768.0 for v in s16))
+            _a.asio_write(f32.tobytes())
             # Track position (deferred)
             rate = self._pipeline_sample_rate or 44100
             self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
