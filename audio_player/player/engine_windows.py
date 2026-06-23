@@ -734,8 +734,12 @@ class AudioEngine(_BaseAudioEngine):
         if getattr(self, '_ffmpeg_proc', None) is None:
             return
 
-        import audio_player.platform.windows.asio_backend as _a
         import sys as _s
+        try:
+            import audio_player.platform.windows.asio_backend as _a
+        except Exception as _ie:
+            print(f"[asio-feed] import failed: {_ie}", file=_s.stderr)
+            return
 
         if not _a._running:
             return
