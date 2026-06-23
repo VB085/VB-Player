@@ -179,6 +179,17 @@ class PlaylistManager(QAbstractListModel):
                 if self._tracks[i].get("source_type") != "url":
                     if self._loader is not None:
                         self._loader.enqueue(i, self._tracks[i]["path"])
+                    else:
+                        # MSYS2: load synchronously in main thread + emit signal
+                        try:
+                            meta = read_metadata(self._tracks[i]["path"])
+                            self._tracks[i]["metadata"] = meta
+                            self._tracks[i]["has_metadata"] = True
+                            idx = self.index(i, 0)
+                            self.dataChanged.emit(idx, idx, [])
+                            self.metadataLoaded.emit(i, meta)
+                        except Exception:
+                            pass
 
     def add_url(self, url: str, title: str = None):
         """Add a single stream URL to the playlist."""
@@ -227,6 +238,16 @@ class PlaylistManager(QAbstractListModel):
         if entry["source_type"] != "url":
             if self._loader is not None:
                 self._loader.enqueue(pos, filepath)
+            else:
+                try:
+                    meta = read_metadata(filepath)
+                    self._tracks[pos]["metadata"] = meta
+                    self._tracks[pos]["has_metadata"] = True
+                    idx = self.index(pos, 0)
+                    self.dataChanged.emit(idx, idx, [])
+                    self.metadataLoaded.emit(pos, meta)
+                except Exception:
+                    pass
 
     def add_folder(self, path: str):
         folder = Path(path)
