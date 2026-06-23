@@ -698,6 +698,17 @@ class AudioEngine(_BaseAudioEngine):
 
         self._is_asio_ffmpeg = True
         self._asio_bytes_total = 0
+
+        # BEEP TEST: kill ffmpeg → feed will generate sine wave instead
+        try:
+            self._ffmpeg_proc.kill()
+            self._ffmpeg_proc.wait(timeout=3)
+        except Exception:
+            pass
+        self._ffmpeg_proc = None
+        self._asio_beep_tested = False  # reset for beep test
+        if hasattr(self, '_beep_start'):
+            del self._beep_start
         return True
 
     # ── ASIO Lifecycle ────────────────────────────────────────────────
