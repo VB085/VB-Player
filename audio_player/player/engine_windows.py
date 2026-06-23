@@ -711,9 +711,6 @@ class AudioEngine(_BaseAudioEngine):
         rate = self._pipeline_sample_rate or 44100
 
         _a.asio_close()
-        import sys as _s
-        print(f"[asio] module file: {_a.__file__}", file=_s.stderr)
-        print(f"[asio] asio_write func: {_a.asio_write}", file=_s.stderr)
         result = _a.asio_open(clsid, rate)
         if result is None:
             self.errorOccurred.emit(
@@ -732,7 +729,6 @@ class AudioEngine(_BaseAudioEngine):
             self._asio_feed_timer = t
         t.setInterval(15)  # ~66Hz — faster response, avoids buffer drain
         t.start()
-        self._asio_dbg_count = 0
         return True
 
     def _stop_asio(self):
@@ -749,65 +745,38 @@ class AudioEngine(_BaseAudioEngine):
         if getattr(self, '_ffmpeg_proc', None) is None:
             return
 
-        import sys as _s
-
         if not _a._running:
-            if getattr(self, '_asio_dbg_count', 0) < 3:
-                print("[asio-feed] asio not running, skip", file=_s.stderr)
-                self._asio_dbg_count = getattr(self, '_asio_dbg_count', 0) + 1
             return
 
-        _dbg = getattr(self, '_asio_dbg_count', 0)
         try:
-            # Throttle: keep ring buffer well ahead of ASIO consumption
+            # Keep ring buffer well ahead of ASIO consumption
             bs = getattr(_a, '_bs', 2048)  # ASIO buffer size in samples
             target = bs * 6  # aim for 6x buffer = ~279ms at 44.1kHz
             used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
             if used >= target:
-                return  # enough buffered, skip this tick
-            # Read enough to reach target + one chunk
+                return
             want_samples = target - used + bs
             max_bytes = want_samples * _a._ch * 4
 
             data = self._ffmpeg_proc.stdout.read(min(max_bytes, 65536))
             if not data:
-                if _dbg < 3:
-                    print("[asio-feed] ffmpeg EOF", file=_s.stderr)
-                    self._asio_dbg_count = _dbg + 1
                 self._ffmpeg_proc = None
                 return
 
-            if _dbg < 5:
-                print(f"[asio-feed] {len(data)} bytes, "
-                      f"ring used={used}/{_a.RING_SAMPLES}spl, "
-                      f"wpos={_a._wpos} rpos={_a._rpos}", file=_s.stderr)
-                _dbg += 1
-                self._asio_dbg_count = _dbg
-            # Debug: inspect asio_write before calling
-            if _dbg < 5:
-                print(f"[asio-feed] calling asio_write({len(data)} bytes), "
-                      f"func={_a.asio_write}, "
-                      f"running={_a._running}, ch={_a._ch}, "
-                      f"ring_is_None={_a._ring is None}", file=_s.stderr)
-            ok = _a.asio_write(data)
-            if _dbg < 5:
-                print(f"[asio-feed] asio_write returned: {ok}", file=_s.stderr)
+            _a.asio_write(data)
             # Track position (deferred — avoid re-entrancy with Qt paint)
             rate = self._pipeline_sample_rate or 44100
             self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
             pos_ms = int(self._asio_bytes_total / (rate * 2 * 4) * 1000)
             if abs(pos_ms - self._position_ms) > 200:
                 self._position_ms = pos_ms
-                # Defer signal to avoid crash if feed overlaps Qt paint cycle
                 QTimer.singleShot(0, lambda p=pos_ms: self.positionChanged.emit(p))
 
             if (getattr(self, '_ffmpeg_proc', None) is None
                     and _a._wpos == _a._rpos):
                 self.trackFinished.emit()
-        except Exception as e:
-            if _dbg < 3:
-                print(f"[asio-feed] error: {e}", file=_s.stderr)
-                self._asio_dbg_count = _dbg + 1
+        except Exception:
+            pass
 
     def _poll(self):
         if getattr(self, '_is_asio_ffmpeg', False):
