@@ -730,7 +730,7 @@ class AudioEngine(_BaseAudioEngine):
             t = QTimer(self)
             t.timeout.connect(self._asio_feed)
             self._asio_feed_timer = t
-        t.setInterval(20)  # 50Hz — enough for 2048-sample ASIO buffer
+        t.setInterval(15)  # ~66Hz — faster response, avoids buffer drain
         t.start()
         self._asio_dbg_count = 0
         return True
@@ -759,15 +759,17 @@ class AudioEngine(_BaseAudioEngine):
 
         _dbg = getattr(self, '_asio_dbg_count', 0)
         try:
-            # Throttle: only read as much as the ring buffer can hold
+            # Throttle: keep ring buffer at least 3x ASIO buffer size full
+            bs = getattr(_a, '_bs', 2048)  # ASIO buffer size in samples
+            target = bs * 4  # aim for 4x buffer = ~185ms at 44.1kHz
             used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
-            free = _a.RING_SAMPLES - used - (_a._ch * 256)
-            max_bytes = max(0, free * _a._ch * 4)
-            if max_bytes < 4096:
-                return
+            if used >= target:
+                return  # enough buffered, skip this tick
+            # Read enough to reach target + one chunk
+            want_samples = target - used + bs
+            max_bytes = want_samples * _a._ch * 4
 
-            # Read small chunks — matches ASIO buffer rate better
-            data = self._ffmpeg_proc.stdout.read(min(max_bytes, 16384))
+            data = self._ffmpeg_proc.stdout.read(min(max_bytes, 65536))
             if not data:
                 if _dbg < 3:
                     print("[asio-feed] ffmpeg EOF", file=_s.stderr)
