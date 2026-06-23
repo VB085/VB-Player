@@ -83,17 +83,19 @@ def asio_open(clsid_str: str, rate: int):
 def asio_write(data: bytes):
     """Write interleaved F32LE PCM to per-channel ring buffers (numpy de-interleave)."""
     global _wpos
+    # Force print to confirm this function is actually called
+    import sys as _sw; _sw.stderr.write(f"[asio-write] ENTER: len={len(data)}, running={_running}, ch={_ch}, ring={_ring is not None}\n"); _sw.stderr.flush()
     if not _running:
-        import sys; print("[asio-write] not running", file=sys.stderr)
+        _sw.stderr.write("[asio-write] EXIT: not running\n"); _sw.stderr.flush()
         return False
     if not data:
-        import sys; print("[asio-write] empty data", file=sys.stderr)
+        _sw.stderr.write("[asio-write] EXIT: empty data\n"); _sw.stderr.flush()
         return False
     if _ch <= 0:
-        import sys; print(f"[asio-write] bad ch={_ch}", file=sys.stderr)
+        _sw.stderr.write(f"[asio-write] EXIT: bad ch={_ch}\n"); _sw.stderr.flush()
         return False
     if _ring is None:
-        import sys; print("[asio-write] ring is None", file=sys.stderr)
+        _sw.stderr.write("[asio-write] EXIT: ring is None\n"); _sw.stderr.flush()
         return False
     try:
         import numpy as np

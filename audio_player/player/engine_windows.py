@@ -700,6 +700,9 @@ class AudioEngine(_BaseAudioEngine):
         rate = self._pipeline_sample_rate or 44100
 
         _a.asio_close()
+        import sys as _s
+        print(f"[asio] module file: {_a.__file__}", file=_s.stderr)
+        print(f"[asio] asio_write func: {_a.asio_write}", file=_s.stderr)
         result = _a.asio_open(clsid, rate)
         if result is None:
             self.errorOccurred.emit(
