@@ -722,11 +722,13 @@ class AudioEngine(_BaseAudioEngine):
         asio_close()
 
     def _asio_feed(self):
-        """Read PCM from ffmpeg stdout, write to ASIO ring buffer."""
+        """Read PCM from ffmpeg stdout, write to ASIO ring buffer (throttled)."""
         if getattr(self, '_ffmpeg_proc', None) is None:
             return
 
-        from audio_player.platform.windows.asio_backend import asio_write, _running
+        from audio_player.platform.windows.asio_backend import (
+            asio_write, _running, _wpos, _rpos, RING_SAMPLES, _ch,
+        )
         import sys as _s
 
         if not _running:
@@ -734,26 +736,40 @@ class AudioEngine(_BaseAudioEngine):
 
         _dbg = getattr(self, '_asio_dbg_count', 0)
         try:
-            data = self._ffmpeg_proc.stdout.read(65536)
+            # Throttle: only read as much as the ring buffer can hold
+            # ring buffer is in samples per channel, convert to bytes
+            used = (_wpos - _rpos) % RING_SAMPLES  # samples currently buffered
+            free = RING_SAMPLES - used - (_ch * 256)  # leave 256-sample margin
+            max_bytes = max(0, free * _ch * 4)
+            if max_bytes < 4096:  # less than 4KB free — skip this tick
+                return
+
+            data = self._ffmpeg_proc.stdout.read(min(max_bytes, 65536))
             if not data:
                 if _dbg < 3:
                     print("[asio-feed] ffmpeg EOF", file=_s.stderr)
                     self._asio_dbg_count = _dbg + 1
                 self._ffmpeg_proc = None
-                self.trackFinished.emit()
-                return
+                return  # let ASIO drain remaining buffer, then trackFinished
+
             if _dbg < 5:
-                print(f"[asio-feed] {len(data)} bytes", file=_s.stderr)
+                print(f"[asio-feed] {len(data)} bytes, "
+                      f"ring used={used}/{RING_SAMPLES}spl", file=_s.stderr)
                 _dbg += 1
                 self._asio_dbg_count = _dbg
             asio_write(data)
-            # Track position by bytes written
+            # Track position by bytes written since start
             rate = self._pipeline_sample_rate or 44100
             self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)
             pos_ms = int(self._asio_bytes_total / (rate * 2 * 4) * 1000)
             if abs(pos_ms - self._position_ms) > 200:
                 self._position_ms = pos_ms
                 self.positionChanged.emit(pos_ms)
+
+            # Check if track is done: ffmpeg EOF + ring buffer drained
+            if (getattr(self, '_ffmpeg_proc', None) is None
+                    and _wpos == _rpos):
+                self.trackFinished.emit()
         except Exception as e:
             if _dbg < 3:
                 print(f"[asio-feed] error: {e}", file=_s.stderr)
