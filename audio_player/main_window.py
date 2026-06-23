@@ -104,8 +104,12 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._engine = AudioEngine(self)
         self._playlist = PlaylistManager(self)
         self._equalizer_mgr = EqualizerManager(self)
-        self._analyzer = AudioAnalyzer(self)
-        self._lyrics_fetcher = LyricsFetcher(self)
+        # MSYS2 Python 3.14: QThread access violations — disable on Windows
+        self._analyzer = AudioAnalyzer(self) if not _WIN32 else None
+        self._lyrics_fetcher = LyricsFetcher(self) if not _WIN32 else None
+        if _WIN32:
+            import sys as _sys
+            print("[init] AudioAnalyzer + LyricsFetcher disabled on Windows", file=_sys.stderr)
         self._album_view = AlbumGridView(self._playlist)
 
         self._library = LibraryManager(self)
@@ -139,7 +143,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._fullscreen_lyrics = FullscreenLyricsWindow()
 
         self._connect_signals()
-        self._connect_analyzer()
+        if self._analyzer is not None:
+            self._connect_analyzer()
         self._spectrum.lyrics_overlay.fullscreenRequested.connect(self._show_fullscreen_lyrics)
         self._setup_shortcuts()
         self._restore_settings()
@@ -727,7 +732,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _on_tray_quit(self):
         self._quitting = True
         self._engine.stop()
-        self._lyrics_fetcher.cleanup()
+        if self._lyrics_fetcher is not None:
+            self._lyrics_fetcher.cleanup()
         if self._system_media:
             self._system_media.cleanup()
         if self._blur_enabler:
@@ -758,7 +764,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         custom_url = str(s.value("lyrics_custom_url", "")) if custom_on else ""
         from audio_player.ui.settings_dialog import _deobfuscate
         custom_token = _deobfuscate(str(s.value("lyrics_custom_token", ""))) if custom_on else ""
-        self._lyrics_fetcher.configure(online_enabled, lrclib_on, custom_url, custom_token)
+        if self._lyrics_fetcher is not None:
+            self._lyrics_fetcher.configure(online_enabled, lrclib_on, custom_url, custom_token)
 
         br = int(s.value("border_radius", 0) or 0)
         if br > 0:
@@ -1080,7 +1087,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._device_registry.stop()
         self._http_server.stop()
         self._engine.stop()
-        self._lyrics_fetcher.cleanup()
+        if self._lyrics_fetcher is not None:
+            self._lyrics_fetcher.cleanup()
         if self._system_media:
             self._system_media.cleanup()
         if self._blur_enabler:
@@ -1252,13 +1260,14 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         custom_on = str(s.value("lyrics_source_custom", "false")).lower() == "true"
         custom_url = str(s.value("lyrics_custom_url", "")) if custom_on else ""
         custom_token = _deobfuscate(str(s.value("lyrics_custom_token", ""))) if custom_on else ""
-        self._lyrics_fetcher.configure(
-            online_enabled=True,
-            lrclib_enabled=lrclib_on,
-            custom_url=custom_url,
-            custom_token=custom_token,
-        )
-        self._lyrics_fetcher.fetch(meta.title, meta.artist, meta.duration_seconds)
+        if self._lyrics_fetcher is not None:
+            self._lyrics_fetcher.configure(
+                online_enabled=True,
+                lrclib_enabled=lrclib_on,
+                custom_url=custom_url,
+                custom_token=custom_token,
+            )
+            self._lyrics_fetcher.fetch(meta.title, meta.artist, meta.duration_seconds)
 
     def _on_online_lyrics_fetched(self, lines):
         if not lines:
@@ -1276,7 +1285,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if filepath:
             meta = read_metadata(filepath)
             if meta.title:
-                self._lyrics_fetcher.cache_result(meta.artist, meta.title, lines)
+                if self._lyrics_fetcher is not None:
+                    self._lyrics_fetcher.cache_result(meta.artist, meta.title, lines)
         # Auto-save if enabled
         auto_save = str(s.value("auto_save_lyrics", "false")).lower() == "true"
         if auto_save and filepath and not filepath.startswith(("http://", "https://")):

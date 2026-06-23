@@ -76,12 +76,24 @@ def asio_open(clsid_str: str, rate: int):
 def asio_write(data: bytes):
     global _wpos
     if not _running: return False
-    src = (ctypes.c_float * (len(data)//4)).from_buffer_copy(data)
-    ns = len(src) // _ch; w = _wpos
+    if not data or _ch <= 0 or _ring is None:
+        return False
+    n_floats = len(data) // 4
+    ns = n_floats // _ch
+    if ns == 0:
+        return False
+    # Use memoryview + struct for safe float unpacking
+    import struct
+    fmt = f"<{n_floats}f"
+    try:
+        floats = struct.unpack(fmt, data)
+    except Exception:
+        return False
+    w = _wpos
     for ci in range(_ch):
         dst = _ring[ci]
         for i in range(ns):
-            dst[(w + i) % RING_SAMPLES] = src[i * _ch + ci]
+            dst[(w + i) % RING_SAMPLES] = floats[i * _ch + ci]
     _wpos = (w + ns) % RING_SAMPLES
     return True
 
