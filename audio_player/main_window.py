@@ -45,6 +45,9 @@ from audio_player.ui.widgets.playlist_browse import (
 )
 from audio_player.ui.widgets.fullscreen_lyrics import FullscreenLyricsWindow
 from audio_player.ui.widgets.frameless_resize import FramelessResizeMixin
+if sys.platform == "win32":
+    from audio_player.platform.windows import materials as _win_materials
+    from audio_player.platform.windows.windows_shell import TaskbarManager
 from audio_player.ui.widgets.tag_editor_dialog import TagEditorDialog
 from audio_player.ui.widgets.network_page import NetworkPage
 from audio_player.ui.settings_dialog import SettingsDialog
@@ -59,6 +62,8 @@ from audio_player.player.http_server import EmbeddedHttpServer
 from audio_player.player.dlna.registry import DeviceRegistry
 from audio_player.platform import platform_info
 
+
+_WIN32 = sys.platform == "win32"
 
 class MainWindow(FramelessResizeMixin, QMainWindow):
     def __init__(self):
@@ -110,7 +115,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Playback backend
         self._local_backend = LocalBackend(self._engine, self)
         self._http_server = EmbeddedHttpServer()
-        self._http_server.start()
+        if not _WIN32:  # MSYS2 Python 3.14: threading access violations
+            self._http_server.start()
         self._cast_ctrl = CastController(self._local_backend, self)
         self._cast_ctrl.set_http_server(self._http_server)
         self._device_registry = DeviceRegistry(self)
@@ -155,11 +161,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # React to language changes
         languageChanged.connect(self._refresh_language)
 
-        # Auto-scan watch folders on startup
-        self._auto_scan_library()
+        # Auto-scan watch folders on startup (MSYS2: skip — threading crashes)
+        if not _WIN32:
+            self._auto_scan_library()
 
-        # Start DLNA device discovery
-        self._device_registry.start()
+        # Start DLNA device discovery (MSYS2: skip — socket threading crashes)
+        if not _WIN32:
+            self._device_registry.start()
 
         # System tray
         self._setup_tray()
@@ -180,8 +188,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         from audio_player.ui.title_bar import TitleBar
         self._title_bar = TitleBar(self)
         self._title_bar.minimizeClicked.connect(self.showMinimized)
-        self._title_bar.maximizeClicked.connect(
-            lambda: self.showNormal() if self.isMaximized() else self.showMaximized())
+        self._title_bar.maximizeClicked.connect(self._toggle_maximize)
         self._title_bar.closeClicked.connect(self.close)
         if self._use_csd:
             self._title_bar.hide()
@@ -735,8 +742,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._settings_ctrl.restore_settings(None, self._sidebar)
         self._network_page.load_output_settings()
 
-        # Restore last playback state
-        self._restore_playback_state()
+        # Restore last playback state (MSYS2: skip — _MetaLoader thread crashes)
+        if not _WIN32:
+            self._restore_playback_state()
 
         s = QSettings("VBPlayer", "VB Player")
 
@@ -777,6 +785,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._playback_ctrl.playbackStateChanged.connect(lambda playing: (
             self._bar_update("set_playing", playing),
             self._hifi_page.set_playing(playing),
+            self._update_taskbar_progress(playing),
         ))
         self._playback_ctrl.logMessage.connect(self._log_message)
         self._playback_ctrl.errorOccurred.connect(lambda msg: self._log_message(_("log.error", msg=msg)))
@@ -932,6 +941,17 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         for bar in (self._now_playing_bar, self._pill):
             getattr(bar, method)(*args)
 
+    def _update_taskbar_progress(self, playing: bool = None):
+        """Update Windows taskbar progress bar."""
+        if not hasattr(self, '_taskbar') or self._taskbar is None:
+            return
+        dur = self._engine.duration if hasattr(self, '_engine') else 0
+        pos = self._engine.position if hasattr(self, '_engine') else 0
+        if dur > 0:
+            self._taskbar.set_progress(pos, dur)
+        if playing is not None:
+            self._taskbar.set_playing(playing)
+
     def _refresh_covers(self):
         """Re-render album covers after radius setting change."""
         meta = read_metadata(self._engine.current_file) if self._engine.current_file else None
@@ -1065,6 +1085,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._system_media.cleanup()
         if self._blur_enabler:
             self._blur_enabler.cleanup()
+        if hasattr(self, '_taskbar') and self._taskbar is not None:
+            self._taskbar.cleanup()
         self._tray_mgr.hide_tray()
         # Drain metadata worker pools before Qt destroys them
         for pl in [self._playlist, self._fav_playlist, self._pls_playlist]:
@@ -1356,6 +1378,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._waveform.set_position(ratio)
             self._spectrum.set_position_ratio(ratio)
             self._spectrum.lyrics_overlay.set_position(ms)
+            # Throttled taskbar update — every ~500ms is enough
+            if not hasattr(self, '_last_tb_update') or abs(ms - self._last_tb_update) > 500:
+                self._last_tb_update = ms
+                if hasattr(self, '_taskbar') and self._taskbar is not None:
+                    self._taskbar.set_progress(ms, dur)
         self._fullscreen_lyrics.set_position(ms)
         self._hifi_page.set_position(ms)
         self._hifi_page.set_lyrics_position(ms)
@@ -1378,20 +1405,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         dlg.exec()
 
     def _show_np_page(self):
-        """Open Now Playing overlay with slide-up from bottom bar."""
-        self._pill_wrapper.hide()  # hide pill during HiFi overlay
-        if self._now_playing_bar.isVisible():
-            self._now_playing_bar.hide()
-            bar_global = self._now_playing_bar.mapToGlobal(QPoint(0, 0))
-        else:
-            bar_global = self.mapToGlobal(QPoint(0, self.height()))
-        win_global = self.mapToGlobal(QPoint(0, 0))
-        from_rect = QRect(win_global.x(), bar_global.y(),
-                          self.width(), self.height())
+        """Open Now Playing overlay — overlay-local coords, no drift."""
+        self._pill_wrapper.hide()
+        self._now_playing_bar.hide()
+        ow = self._hifi_overlay.width()
+        oh = self._hifi_overlay.height()
         self._hifi_page.show()
         self._hifi_overlay.setCurrentWidget(self._hifi_page)
-        # Slide-up animation via geometry
-        to_rect = self.geometry()
+        from_rect = QRect(0, oh, ow, oh)
+        to_rect = QRect(0, 0, ow, oh)
         self._hifi_page.setGeometry(from_rect)
         anim = QPropertyAnimation(self._hifi_page, b"geometry")
         anim.setDuration(350)
@@ -1399,19 +1421,27 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         anim.setEndValue(to_rect)
         anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         anim.start()
-        self._hifi_page._slide_anim = anim  # keep ref
+        self._hifi_page._slide_anim = anim
 
     def _collapse_hifi(self):
         """Return from overlay to normal view."""
-        s = QSettings("VBPlayer", "VB Player")
-        style = str(s.value("playback_bar_style", "full") or "full")
-        if style == "full":
-            self._now_playing_bar.show()
-        elif style == "pill":
-            self._pill_wrapper.show()
-            self._position_pill()
         self._hifi_overlay.setCurrentWidget(self._body)
         self._hifi_page.hide()
+        if self._bar_style == "full":
+            self._now_playing_bar.show()
+        elif self._bar_style == "pill":
+            self._pill_wrapper.show()
+            self._position_pill()
+
+    def _toggle_maximize(self):
+        """Toggle maximize — save/restore normal geometry so restore works correctly."""
+        if self.isMaximized():
+            if hasattr(self, '_normal_geo') and self._normal_geo is not None:
+                self.setGeometry(self._normal_geo)
+            self.showNormal()
+        else:
+            self._normal_geo = self.geometry()
+            self.showMaximized()
 
     def _toggle_fullscreen(self):
         """Toggle fullscreen mode."""
@@ -1501,9 +1531,21 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _on_shuffle_changed(self, enabled: bool):
         self._playlist.shuffle = enabled
 
+    def _on_media_key(self, action: str):
+        """Dispatch multimedia keyboard keys to playback controller."""
+        if action == "play_pause":
+            self._playback_ctrl.toggle()
+        elif action == "next":
+            self._playback_ctrl.next_track()
+        elif action == "prev":
+            self._playback_ctrl.prev_track()
+        elif action == "stop":
+            self._engine.stop()
+
     def _cycle_playback_mode_shortcut(self):
         """Advance playback mode: sequential → repeat all → repeat one → shuffle."""
-        self._playback_mode.cycle_mode()
+        if hasattr(self, '_playback_mode'):
+            self._playback_mode.cycle_mode()
 
     # ================================================================
     #  File Operations
@@ -1586,6 +1628,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 f"border-radius:5px;padding:5px 12px;font-size:11px;}}"
                 f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
             )
+        # Update DWM title bar for theme
+        if sys.platform == "win32" and hasattr(self, '_win_done') and self._win_done:
+            hwnd = int(self.winId())
+            if is_light:
+                _win_materials.apply_light_titlebar(hwnd)
+            else:
+                _win_materials.enable_dark_mode_for_window(hwnd)
 
     def _init_blur(self):
         """Set up KWin blur if on KDE X11."""
@@ -1603,6 +1652,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if want != self._use_translucent:
             self._use_translucent = want
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, want)
+        # Update DWM backdrop on Win11
+        if sys.platform == "win32" and hasattr(self, '_win_done') and self._win_done:
+            hwnd = int(self.winId())
+            if self._material == "acrylic":
+                _win_materials.apply_acrylic(hwnd)
+            elif self._material == "mica":
+                _win_materials.apply_mica(hwnd)
+            else:
+                _win_materials.clear_backdrop(hwnd)
         self.update()
 
     def _refresh_accent_colors(self):
@@ -1632,7 +1690,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             reload_btn.setText(_("manage.reload_albums"))
         # Sidebar
         self._sidebar.refresh_language()
-        self._playback_mode.refresh_language()
+        if hasattr(self, '_playback_mode'):
+            self._playback_mode.refresh_language()
         # Album view
         self._album_view.refresh_language()
         self._album_detail_page.refresh_language()
@@ -1697,8 +1756,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _apply_ui_radius(self, radius: int):
         QSettings("VBPlayer", "VB Player").setValue("ui_radius", radius)
         self._ui_radius = radius
-        self._seek_slider._apply_sizing(radius)
-        self._volume_control._refresh_style(radius)
+        if hasattr(self, '_seek_slider'):
+            self._seek_slider._apply_sizing(radius)
+        if hasattr(self, '_volume_control'):
+            self._volume_control._refresh_style(radius)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1713,6 +1774,28 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._position_pill()
         if self._blur_enabler:
             self._blur_enabler.enable()
+
+        # One-time Windows native init (HWND only valid after first show)
+        if sys.platform == "win32" and not getattr(self, '_win_done', False):
+            self._win_done = True
+            try:
+                hwnd = int(self.winId())
+                # Must run FIRST: enables DWM animations for frameless window
+                _win_materials.enable_dwm_frame(hwnd)
+                if self._material == "acrylic":
+                    _win_materials.apply_acrylic(hwnd)
+                elif self._material == "mica":
+                    _win_materials.apply_mica(hwnd)
+                _win_materials.apply_rounded_corners(hwnd)
+                if current_theme_mode() == "dark":
+                    _win_materials.enable_dark_mode_for_window(hwnd)
+            except Exception as e:
+                print(f"[win] DWM backdrop failed: {e}", file=sys.stderr)
+            try:
+                self._taskbar = TaskbarManager(hwnd)
+            except Exception as e:
+                print(f"[win] Taskbar init failed: {e}", file=sys.stderr)
+                self._taskbar = None
 
     def changeEvent(self, event):
         super().changeEvent(event)

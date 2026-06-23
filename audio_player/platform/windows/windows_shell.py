@@ -7,6 +7,7 @@ import ctypes
 import struct
 from ctypes import wintypes
 
+HRESULT = getattr(wintypes, 'HRESULT', wintypes.LONG)  # MSYS2 compat
 
 # ---------------------------------------------------------------------------
 # COM boilerplate
@@ -133,7 +134,7 @@ class TaskbarManager:
         try:
             self._taskbar = _COM(CLSID_TaskbarList, IID_ITaskbarList3)
             # HrInit at vtable[3]
-            self._taskbar._call(3, wintypes.HRESULT)()
+            self._taskbar._call(3, HRESULT)()
         except OSError as e:
             import sys
             print(f"[taskbar] init failed: {e}", file=sys.stderr)
@@ -163,7 +164,7 @@ class TaskbarManager:
 
         # ThumbBarAddButtons at vtable[15]
         self._taskbar._call(
-            15, wintypes.HRESULT,
+            15, HRESULT,
             wintypes.HWND, wintypes.UINT, ctypes.c_void_p,
         )(self._hwnd, len(buttons), tb)
 
@@ -178,7 +179,7 @@ class TaskbarManager:
                 tb.iId = bid
                 tb.dwFlags = THBF_ENABLED if enabled else THBF_DISABLED
                 self._taskbar._call(
-                    16, wintypes.HRESULT,
+                    16, HRESULT,
                     wintypes.HWND, wintypes.UINT, ctypes.c_void_p,
                 )(self._hwnd, 1, ctypes.byref(tb))
                 break
@@ -196,7 +197,7 @@ class TaskbarManager:
             return
         # SetProgressState at vtable[10]
         self._taskbar._call(
-            10, wintypes.HRESULT,
+            10, HRESULT,
             wintypes.HWND, wintypes.INT,
         )(self._hwnd, state)
 
@@ -206,7 +207,7 @@ class TaskbarManager:
             return
         # SetProgressValue at vtable[9]
         self._taskbar._call(
-            9, wintypes.HRESULT,
+            9, HRESULT,
             wintypes.HWND, ctypes.c_ulonglong, ctypes.c_ulonglong,
         )(self._hwnd, completed, total)
 
