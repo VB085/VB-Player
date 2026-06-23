@@ -79,19 +79,29 @@ def asio_write(data: bytes):
     if not data or _ch <= 0 or _ring is None:
         return False
     try:
-        import array
+        import array, sys as _sys
         n_floats = len(data) // 4
         ns = n_floats // _ch
         if ns == 0:
             return False
-        # copy data immediately — avoid GStreamer buffer lifetime issues
+        # Safety: don't overflow ring buffer
+        available = (RING_SAMPLES - ((_wpos - _rpos) % RING_SAMPLES)) % RING_SAMPLES
+        if ns > available:
+            ns = available
+            if ns == 0:
+                return False  # buffer full, drop sample
+        # copy to avoid GStreamer buffer lifetime issues
         floats_arr = array.array('f')
-        floats_arr.frombytes(data)
+        floats_arr.frombytes(data[:ns * _ch * 4])
         w = _wpos
         for ci in range(_ch):
             dst = _ring[ci]
+            if dst is None:
+                return False
             for i in range(ns):
-                dst[(w + i) % RING_SAMPLES] = floats_arr[i * _ch + ci]
+                idx = (w + i) % RING_SAMPLES
+                val = floats_arr[i * _ch + ci]
+                dst[idx] = val
         _wpos = (w + ns) % RING_SAMPLES
         return True
     except Exception:
