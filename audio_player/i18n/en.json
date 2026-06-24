@@ -1,4 +1,4 @@
-{
+﻿{
   "app.title": "VB Player",
   "nav.all_songs": "All Songs",
   "nav.albums": "Albums",
@@ -334,5 +334,11 @@
   "device.not_connected": "Not connected to device",
   "log.library_loaded": "Library loaded: {count} tracks, {albums} albums",
   "log.output_device": "Output device: {name}",
-  "nav.now_playing": "Now Playing"
+  "nav.now_playing": "Now Playing",
+  "menu.file": "File",
+  "menu.playback": "Playback",
+  "menu.view": "View",
+  "menu.window": "Window",
+  "menu.fullscreen": "Fullscreen",
+  "menu.minimize": "Minimize"
 }

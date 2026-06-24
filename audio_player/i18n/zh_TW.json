@@ -1,4 +1,4 @@
-{
+﻿{
   "app.title": "VB Player",
   "nav.all_songs": "全部歌曲",
   "nav.albums": "專輯",
@@ -290,5 +290,11 @@
   "device.not_connected": "未連線到裝置",
   "log.library_loaded": "媒體庫已載入: {count} 首歌曲, {albums} 張專輯",
   "log.output_device": "輸出裝置: {name}",
-  "nav.now_playing": "正在播放"
+  "nav.now_playing": "正在播放",
+  "menu.file": "檔案",
+  "menu.playback": "播放",
+  "menu.view": "檢視",
+  "menu.window": "視窗",
+  "menu.fullscreen": "全螢幕",
+  "menu.minimize": "最小化"
 }

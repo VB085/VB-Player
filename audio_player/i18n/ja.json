@@ -1,4 +1,4 @@
-{
+﻿{
   "app.title": "VB Player",
   "nav.all_songs": "全ての曲",
   "nav.albums": "アルバム",
@@ -290,5 +290,11 @@
   "device.not_connected": "デバイス未接続",
   "log.library_loaded": "ライブラリ読込完了: {count} 曲, {albums} アルバム",
   "log.output_device": "出力デバイス: {name}",
-  "nav.now_playing": "再生中"
+  "nav.now_playing": "再生中",
+  "menu.file": "ファイル",
+  "menu.playback": "再生",
+  "menu.view": "表示",
+  "menu.window": "ウインドウ",
+  "menu.fullscreen": "フルスクリーン",
+  "menu.minimize": "最小化"
 }
