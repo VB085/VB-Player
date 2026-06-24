@@ -112,9 +112,6 @@ def _color_distance(a: QColor, b: QColor) -> float:
 
 def set_dynamic_accent(color: QColor):
     global _accent_name, _pending_color, _pending_timer
-    import sys
-    if sys.platform == "win32":
-        return  # MSYS2: app.setStyleSheet crashes with access violation
     s = QSettings("VBPlayer", "VB Player")
     if str(s.value("dynamic_accent_enabled", "true")).lower() != "true":
         return

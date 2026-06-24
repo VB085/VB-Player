@@ -1388,8 +1388,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _apply_album_accent(self, meta):
         """Extract accent color from album art and apply it dynamically."""
-        if _WIN32:
-            return  # MSYS2: app.setStyleSheet crashes during ASIO playback
         from audio_player.ui.color_extractor import extract_accent
         from audio_player.app import set_dynamic_accent
         cover_data = getattr(meta, 'cover_data', None)
