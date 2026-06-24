@@ -1009,7 +1009,7 @@ class SettingsDialog(*_SettingsBase):
         self._about_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_title)
 
-        self._about_ver = QLabel("v0.6.4")
+        self._about_ver = QLabel("v0.7.0")
         self._about_ver.setStyleSheet("font-size: 13px; color: #888;")
         self._about_ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_ver)

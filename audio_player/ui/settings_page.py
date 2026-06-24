@@ -586,12 +586,12 @@ class SettingsPage(QWidget):
         self._about_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_title)
 
-        self._about_ver = QLabel("v0.6.4")
+        self._about_ver = QLabel("v0.7.0")
         self._about_ver.setStyleSheet('font-family: "HarmonyOS Sans SC"; font-size: 13px; color: #888;')
         self._about_ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._about_ver)
 
-        self._about_desc = QLabel("PyQt6 + GStreamer")
+        self._about_desc = QLabel("PyQt6 + GStreamer + ASIO")
         self._about_desc.setStyleSheet('font-family: "HarmonyOS Sans SC"; font-size: 13px; color: #888;')
         self._about_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._about_desc.setWordWrap(True)
@@ -1110,4 +1110,4 @@ class SettingsPage(QWidget):
             self._sidebar_log_cb.setText(_("settings.sidebar_log"))
         # About
         self._about_title.setText(_("app.title"))
-        self._about_ver.setText("v0.6.4")
+        self._about_ver.setText("v0.7.0")
