@@ -1,7 +1,7 @@
 # VB Player
 
-[![Version](https://img.shields.io/badge/version-0.6.3-7c3aed)](https://github.com/VB085/VB-Player)
-[![License](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.7.0-7c3aed)](https://github.com/VB085/VB-Player)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-10b981)]()
 
 跨平台 HiFi 音乐播放器，基于 PyQt6 + GStreamer，为高解析度音频回放设计。
@@ -13,7 +13,8 @@
 ## 功能亮点
 
 ### 音频引擎
-- **跨平台后端** — Windows (WASAPI/ASIO)、macOS (CoreAudio)、Linux (ALSA/PipeWire)
+- **跨平台后端** — Windows (WASAPI / ASIO)、macOS (CoreAudio)、Linux (ALSA / PipeWire)
+- **原生 ASIO** — 基于 [asio-ctypes](https://github.com/VB085/asio-ctypes)，16/24/32-bit 整数格式支持
 - **独占模式** — bit-perfect DAC 直通
 - **DSD 解码** — .dsf / .dff 支持，PCM 软解 / Native 硬解 / DoP
 - **10 段参数均衡器** — 6 组预设，实时调节
