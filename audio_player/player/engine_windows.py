@@ -41,9 +41,12 @@ def enumerate_hw_devices() -> list[dict]:
             clsid = props.get_string('device.clsid') or ''
 
             if api == 'asio':
-                name = props.get_string('asio.device.description') or d.get_display_name()
-                hw = f"asio:{clsid}" if clsid else ""
-                driver_tag = "ASIO"
+                # Skip — GStreamer's ASIO probe may corrupt driver state
+                # (we use native COM backend instead)
+                continue
+                # name = props.get_string('asio.device.description') or d.get_display_name()
+                # hw = f"asio:{clsid}" if clsid else ""
+                # driver_tag = "ASIO"
             else:
                 name = props.get_string('device.description') or d.get_display_name()
                 if name and 'microphone' in name.lower():
@@ -67,6 +70,36 @@ def enumerate_hw_devices() -> list[dict]:
             })
 
         mon.stop()
+
+        # Add ASIO devices from registry (GStreamer probe may corrupt driver)
+        if _sys.platform == "win32":
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                     r"SOFTWARE\ASIO")
+                i = 0
+                while True:
+                    try:
+                        clsid = winreg.EnumKey(key, i)
+                        sub = winreg.OpenKey(key, clsid)
+                        name, _ = winreg.QueryValueEx(sub, "CLSID")
+                        # name from registry is the driver description
+                        driver_name = winreg.QueryValueEx(sub, "Description")[0]
+                        devices.append({
+                            "card": len(devices),
+                            "device": 0,
+                            "hw": f"asio:{clsid}",
+                            "name": driver_name,
+                            "driver": "ASIO",
+                            "api": "asio",
+                        })
+                        winreg.CloseKey(sub)
+                        i += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
+            except Exception:
+                pass
     except Exception as _e:
         import sys; print(f"[{__name__}] {_e}", file=sys.stderr)
 
@@ -725,20 +758,6 @@ class AudioEngine(_BaseAudioEngine):
         import sys as _s
         print(f"[asio] Opened {clsid[:12]}... at {rate}Hz, "
               f"{channels}ch, buffer={buf_size}", file=_s.stderr)
-
-        # TEST: pre-fill ring buffer with 440Hz beep before starting feed
-        # (standalone test pattern: write data → callback plays it)
-        import math, struct as _st
-        ns = _a.RING_SAMPLES // 4  # fill quarter = ~1.5s at 44.1kHz
-        data = bytearray(ns * _a._ch * 4)
-        phase = 0.0
-        for i in range(ns):
-            val = math.sin(phase) * 0.3
-            _st.pack_into('<f', data, i * 8, val)       # L
-            _st.pack_into('<f', data, i * 8 + 4, val)   # R
-            phase += 2.0 * math.pi * 440.0 / rate
-        _a.asio_write(bytes(data))
-        print(f"[asio] pre-filled {ns} beep frames, wpos={_a._wpos}", file=_s.stderr)
 
         t = getattr(self, '_asio_feed_timer', None)
         if t is None:
