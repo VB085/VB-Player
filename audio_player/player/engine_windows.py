@@ -140,20 +140,20 @@ class AudioEngine(_BaseAudioEngine):
             hw = self._exclusive_device or ""
             if hw.startswith("asio:"):
                 clsid = hw[5:]
-                # audioresample + capsfilter → 48kHz + asiosink
-                # Most ASIO drivers only accept 48kHz via GStreamer
+                # audioconvert + capsfilter → 48kHz + asiosink
                 bin = Gst.Bin.new("asio-sink-bin")
+                conv = Gst.ElementFactory.make("audioconvert", None)
                 resample = Gst.ElementFactory.make("audioresample", None)
                 capsf = Gst.ElementFactory.make("capsfilter", None)
                 sink = Gst.ElementFactory.make("asiosink", None)
-                if any(x is None for x in [resample, capsf, sink]):
+                if any(x is None for x in [conv, resample, capsf, sink]):
                     raise RuntimeError(_("engine.asio_unavailable"))
                 capsf.set_property("caps", Gst.Caps.from_string("audio/x-raw,rate=48000"))
                 sink.set_property("device-clsid", clsid)
-                ghost = Gst.GhostPad.new("sink", resample.get_static_pad("sink"))
+                ghost = Gst.GhostPad.new("sink", conv.get_static_pad("sink"))
                 bin.add_pad(ghost)
-                bin.add(resample); bin.add(capsf); bin.add(sink)
-                resample.link(capsf); capsf.link(sink)
+                bin.add(conv); bin.add(resample); bin.add(capsf); bin.add(sink)
+                conv.link(resample); resample.link(capsf); capsf.link(sink)
                 return bin
             else:
                 sink = Gst.ElementFactory.make("wasapi2sink", None)
