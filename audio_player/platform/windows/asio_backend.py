@@ -1,6 +1,8 @@
 """ASIO Backend — COM + callback + per-channel ring buffer + bulk memmove."""
 import ctypes, struct
-ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
+ole32 = ctypes.windll.ole32
+# ASIO standard interface IID (not driver-specific)
+IID_IASIO = struct.pack('<IHH8B', 0x8B3B31B5, 0xC24A, 0x4400, 0xA3, 0x02, 0x42, 0x98, 0xAF, 0xA7, 0xC2, 0x8E)
 RING_SAMPLES = 262144
 
 # ASIO sample type constants (from ASIO SDK asio.h)
@@ -114,9 +116,8 @@ def asio_open(clsid_str: str, rate: int, sample_type_override: str = "auto"):
     import sys as _sys
     ole32.CoInitializeEx(None, 2)
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
-    # Use the driver's own CLSID as the IID (standard ASIO approach)
-    # This works for FiiO, Realtek, and other standard ASIO drivers
-    hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, ctypes.byref(c), ctypes.byref(p))
+    iid = (ctypes.c_char * 16)(*IID_IASIO)
+    hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, iid, ctypes.byref(p))
     if hr or not p:
         print(f"[asio] CoCreateInstance failed: hr={hr}, p={p}", file=_sys.stderr)
         return None
@@ -225,7 +226,8 @@ def asio_close():
 
 def asio_set_rate(clsid_str: str, rate: int):
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
-    hr = ole32.CoCreateInstance(ctypes.byref(c),None,1,ctypes.byref(c),ctypes.byref(p))
+    iid = (ctypes.c_char * 16)(*IID_IASIO)
+    hr = ole32.CoCreateInstance(ctypes.byref(c),None,1,iid,ctypes.byref(p))
     if hr or not p: return
     vt = ctypes.cast(p, ctypes.POINTER(ctypes.c_void_p))[0]
     V = lambda i,r,*a: ctypes.WINFUNCTYPE(r, ctypes.c_void_p, *a)(ctypes.cast(ctypes.cast(vt, ctypes.POINTER(ctypes.c_void_p))[i], ctypes.c_void_p).value)
