@@ -661,18 +661,16 @@ class AudioEngine(_BaseAudioEngine):
             self.errorOccurred.emit(_("engine.ffmpeg_not_found"))
             return False
 
-        # Read metadata for duration + sample rate
+        # Read metadata for duration
         try:
             meta = read_metadata(filepath)
-            target_rate = meta.sample_rate if meta.sample_rate > 0 else 44100
             duration_ms = int(meta.duration_seconds * 1000) if meta.duration_seconds > 0 else 0
         except Exception:
-            target_rate = 44100
             duration_ms = 0
 
+        # Force 44100 — same as verified standalone beep test
+        target_rate = 44100
         ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
-        if ext in ("dsf", "dff"):
-            target_rate = 88200
 
         # Build ffmpeg command — explicit format, no stdin interaction
         ffmpeg_cmd = [
