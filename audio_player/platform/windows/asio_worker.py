@@ -69,14 +69,13 @@ def asio_open(clsid_str, rate):
             for ci in range(ch_ref):
                 dst = ctypes.cast(bi_ref[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
                 end = r + n
+                dst_ptr = ctypes.cast(dst, ctypes.c_void_p).value
                 if end <= RING_SAMPLES:
-                    ctypes.memmove(dst, ctypes.addressof(ring_ref[ci]) + r * 4, n * 4)
+                    ctypes.memmove(dst_ptr, ctypes.addressof(ring_ref[ci]) + r * 4, n * 4)
                 else:
                     sz = RING_SAMPLES - r
-                    ctypes.memmove(dst, ctypes.addressof(ring_ref[ci]) + r * 4, sz * 4)
-                    ctypes.memmove(
-                        ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
-                        ring_ref[ci], (n - sz) * 4)
+                    ctypes.memmove(dst_ptr, ctypes.addressof(ring_ref[ci]) + r * 4, sz * 4)
+                    ctypes.memmove(dst_ptr + sz * 4, ring_ref[ci], (n - sz) * 4)
         else:
             for ci in range(ch_ref):
                 dst = ctypes.cast(bi_ref[ci].buf[idx], ctypes.c_void_p)
@@ -125,31 +124,10 @@ def asio_write(data):
         dst = _ring[ci]
         for i in range(ns):
             dst[(w + i) % RING_SAMPLES] = src[i * _ch + ci]
-    # DUMP: read back first 1024 frames from ring buffer and save as WAV
-    if not hasattr(asio_write, '_dumped'):
-        asio_write._dumped = True
-        import array, struct as _st, os
-
-        rate = 44100
-        desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
-
-        # Dump INPUT data
-        frames_in = min(ns, rate * 2)
-        s16_in = array.array('h')
-        for i in range(frames_in):
-            for ci in range(_ch):
-                s16_in.append(int(max(-1., min(1., src[i * _ch + ci])) * 32767))
-        _write_wav(os.path.join(desktop, 'wIN.wav'), s16_in, rate, _ch)
-
-        # Dump RING BUFFER data after write
-        frames_out = min(ns, rate * 2)
-        s16 = array.array('h')
-        for i in range(frames_out):
-            for ci in range(_ch):
-                val = _ring[ci][(w + i) % RING_SAMPLES]
-                s16.append(int(max(-1., min(1., val)) * 32767))
-        _write_wav(os.path.join(desktop, 'wRING.wav'), s16, rate, _ch)
-        import sys; sys.stderr.write(f"[write-dump] INPUT={frames_in} frames, RING={frames_out} frames\n")
+    # DUMP: save first 3 seconds to ring buffer, then export from main loop
+    if not hasattr(asio_write, '_total_written'):
+        asio_write._total_written = 0
+    asio_write._total_written += ns
 
     wpos_cell[0] = (w + ns) % RING_SAMPLES
     return True
@@ -207,6 +185,19 @@ if __name__ == "__main__":
                 time.sleep(0.01)
             if eof and wpos_cell[0] == rpos_cell[0]:
                 time.sleep(0.1)
+                # Dump first 3 seconds from ring buffer
+                import array as _arr, struct as _st, os
+                total = getattr(asio_write, '_total_written', 0)
+                rate = 44100
+                n_dump = min(total, rate * 3)
+                s16_dump = _arr.array('h')
+                for i in range(n_dump):
+                    for ci in range(_ch):
+                        val = _ring[ci][i % RING_SAMPLES]
+                        s16_dump.append(int(max(-1., min(1., val)) * 32767))
+                desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
+                _write_wav(os.path.join(desktop, 'wFINAL.wav'), s16_dump, rate, _ch)
+                import sys; sys.stderr.write(f"[dump] {n_dump} frames (from ring[0..{n_dump}]) → wFINAL.wav\n")
                 break
     except KeyboardInterrupt:
         pass
