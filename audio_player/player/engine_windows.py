@@ -119,6 +119,16 @@ class AudioEngine(_BaseAudioEngine):
         return ""
 
     def pause(self):
+        # Mute instead of pausing pipeline — avoids buffer drain and
+        # "sliced" audio when resuming on WASAPI
+        if not getattr(self, '_is_asio_gst', False) and self._pipeline is not None:
+            if self._app_state == PlaybackState.Playing:
+                self._volume_elem.set_property("volume", 0.0)
+                self._poll_timer.stop()
+                self._app_state = PlaybackState.Paused
+                self.stateChanged.emit(PlaybackState.Paused)
+                self._was_muted = True
+            return
         super().pause()
 
     def stop(self):
@@ -148,6 +158,17 @@ class AudioEngine(_BaseAudioEngine):
                         if self._pipeline is not None:
                             self._pipeline.set_state(Gst.State.PLAYING)
                     return
+            if not self._poll_timer.isActive():
+                self._poll_timer.setInterval(50)
+                self._poll_timer.start()
+            return
+        # WASAPI resume from mute: just restore volume (pipeline kept running)
+        if getattr(self, '_was_muted', False):
+            self._was_muted = False
+            if self._volume_elem is not None:
+                self._volume_elem.set_property("volume", self._volume_level)
+            self._app_state = PlaybackState.Playing
+            self.stateChanged.emit(PlaybackState.Playing)
             if not self._poll_timer.isActive():
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()
