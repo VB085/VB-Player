@@ -167,6 +167,8 @@ class ASIODevice:
 
         @self._CB_BS
         def _cb_bs(idx, dp):
+            import sys as _s
+            _s.stderr.write(f"[cb] idx={idx}\n"); _s.stderr.flush()
             r = rpos_cell[0]
             w = getattr(self, wpos_attr)
             n = min((w - r) % RING_SAMPLES, bs_ref)

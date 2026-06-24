@@ -48,10 +48,16 @@ def asio_write(data: bytes) -> bool:
     ok = _dev.write(data)
     if ok:
         _wpos = _dev._wpos
-        _rpos = _dev.rpos  # property — reads from callback cell
         _ch = _dev._channels
         _bs = _dev._buffer_size
     return ok
+
+
+def rpos() -> int:
+    """Live read position from the ASIO callback cell (real-time)."""
+    if _dev is not None:
+        return _dev.rpos
+    return _rpos
 
 
 def asio_close():

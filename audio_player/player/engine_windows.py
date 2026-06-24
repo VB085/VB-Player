@@ -791,7 +791,7 @@ class AudioEngine(_BaseAudioEngine):
         while not stop.is_set():
             if not _a._running: time.sleep(0.005); continue
             try:
-                # Throttle: keep ring buffer at ~4x ASIO buffer
+                _a._rpos = _a.rpos()  # sync from callback cell (real-time rpos)
                 bs = getattr(_a, '_bs', 2048)
                 used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
                 if used >= bs * 4:
