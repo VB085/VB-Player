@@ -1,13 +1,11 @@
-"""ASIO Backend — COM + callback + interleaved ring buffer."""
-import ctypes, struct, threading as _thr
+"""ASIO Backend — COM + callback + per-channel ring buffer + bulk memmove."""
+import ctypes, struct
 ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
-RING_SAMPLES = 262144  # frames (per channel)
+RING_SAMPLES = 262144  # frames per channel
 
 _ptr, _ch, _bs = None, 0, 0
-_ring = None  # single interleaved float array: [L0,R0,L1,R1,...]
-_ring_i = None  # interleaved bytearray for main-thread writes
-_bi, _cbs = None, None
-_wpos, _rpos = 0, 0  # in frames
+_ring, _bi, _cbs = None, None, None
+_wpos, _rpos = 0, 0
 _running = False
 
 CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
@@ -17,61 +15,26 @@ CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
 
 @CB_BS
 def cb_bs(idx, dp):
+    """Bulk memmove from per-channel ring buffers to ASIO output — no Python loops."""
     global _rpos
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs)
     r = _rpos
-    bytes_per_frame = _ch * 4
-    # Accumulate callback output for diagnostic dump
-    _dump_buf = getattr(cb_bs, '_dump_buf', None)
-    if _dump_buf is None:
-        cb_bs._dump_buf = bytearray()
-        _dump_buf = cb_bs._dump_buf
-    _dump_target = 256 * 1024  # collect 256KB (~1.5s at 44.1kHz stereo f32)
-    if len(_dump_buf) < _dump_target and n > 0 and _ring is not None:
-        import array
-        out = array.array('f')
-        for i in range(n):
-            src_off = ((r + i) % RING_SAMPLES) * bytes_per_frame
-            for ci in range(_ch):
-                ptr = ctypes.cast(ctypes.c_void_p(ctypes.addressof(_ring) + src_off + ci * 4),
-                                  ctypes.POINTER(ctypes.c_float))
-                out.append(ptr[0])
-        _dump_buf.extend(out.tobytes())  # F32LE bytes, same format as asio_dump
-        if len(_dump_buf) >= _dump_target:
-            # Convert to 16-bit WAV
-            import struct as _st, os
-            f32_all = array.array('f')
-            f32_all.frombytes(bytes(_dump_buf))
-            s16 = array.array('h', (int(max(-1., min(1., v)) * 32767) for v in f32_all))
-            wav_data = s16.tobytes()
-            rate = 44100
-            wav = bytearray(44 + len(wav_data))
-            wav[0:4] = b'RIFF'; _st.pack_into('<I', wav, 4, 36 + len(wav_data))
-            wav[8:16] = b'WAVEfmt '; _st.pack_into('<I', wav, 16, 16)
-            _st.pack_into('<H', wav, 20, 1); _st.pack_into('<H', wav, 22, _ch)
-            _st.pack_into('<I', wav, 24, rate); _st.pack_into('<I', wav, 28, rate * _ch * 2)
-            _st.pack_into('<H', wav, 32, _ch * 2); _st.pack_into('<H', wav, 34, 16)
-            wav[36:40] = b'data'; _st.pack_into('<I', wav, 40, len(wav_data))
-            wav[44:] = wav_data
-            desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
-            with open(os.path.join(desktop, 'asio_cb_dump.wav'), 'wb') as f:
-                f.write(bytes(wav))
-            import sys; sys.stderr.write(f"[cb] dumped {len(_dump_buf)} bytes → Desktop/asio_cb_dump.wav\n")
-
     if n > 0 and _ring is not None:
-        # Read from interleaved ring buffer, write to per-channel ASIO output.
-        # Uses ctypes array indexing (like the verified standalone beep test).
-        src_floats = ctypes.cast(ctypes.addressof(_ring), ctypes.POINTER(ctypes.c_float))
         for ci in range(_ch):
             dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
-            for i in range(n):
-                src_idx = ((r + i) % RING_SAMPLES) * _ch + ci
-                dst[i] = src_floats[src_idx]
+            end = r + n
+            if end <= RING_SAMPLES:
+                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
+            else:
+                sz = RING_SAMPLES - r
+                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
+                ctypes.memmove(
+                    ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
+                    _ring[ci], (n - sz) * 4)
     else:
         for ci in range(_ch):
             dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
-            for i in range(_bs):
-                dst[i] = 0.0
+            ctypes.memset(ctypes.cast(dst, ctypes.c_void_p), 0, _bs * 4)
     _rpos = (r + n) % RING_SAMPLES
     return 0
 
@@ -101,10 +64,9 @@ def asio_open(clsid_str: str, rate: int):
     mn,mx,pf,gr = ctypes.c_long(),ctypes.c_long(),ctypes.c_long(),ctypes.c_long()
     V(11,ctypes.c_long,ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long))(p,ctypes.byref(mn),ctypes.byref(mx),ctypes.byref(pf),ctypes.byref(gr))
     _bs = pf.value or mx.value or 1024
-    # Single interleaved ring buffer: [L0,R0,L1,R1,...] — RING_SAMPLES frames × _ch floats
-    _ring = (ctypes.c_float * (RING_SAMPLES * _ch))()
+    _ring = [(ctypes.c_float * RING_SAMPLES)() for _ in range(_ch)]
     _wpos = _rpos = 0
-    cb_bs._dump_buf = bytearray()  # reset callback dump
+    cb_bs._dump_buf = bytearray()
 
     class BI(ctypes.Structure): _fields_ = [('i',ctypes.c_long),('n',ctypes.c_long),('buf',ctypes.c_void_p*2)]
     _bi = (BI * _ch)(); _bi_ref = _bi
@@ -119,32 +81,30 @@ def asio_open(clsid_str: str, rate: int):
     return (_ch, _bs)
 
 def asio_write(data: bytes):
-    """Write interleaved F32LE PCM directly to ring buffer — no de-interleave."""
+    """De-interleave F32LE → per-channel ring buffers using array slicing."""
     global _wpos
     if not _running or not data or _ch <= 0 or _ring is None:
         return False
     try:
-        frames = (len(data) // 4) // _ch
-        if frames == 0:
+        import array
+        ns = (len(data) // 4) // _ch
+        if ns == 0:
             return False
-        n_bytes = frames * _ch * 4
+        all_f = array.array('f')
+        all_f.frombytes(data[:ns * _ch * 4])
         w = _wpos
-        byte_offset = (w % RING_SAMPLES) * _ch * 4
-        buf_end = byte_offset + n_bytes
-        buf_total = RING_SAMPLES * _ch * 4
-        if buf_end <= buf_total:
-            ctypes.memmove(
-                ctypes.c_void_p(ctypes.addressof(_ring) + byte_offset),
-                data[:n_bytes], n_bytes)
-        else:
-            first = buf_total - byte_offset
-            ctypes.memmove(
-                ctypes.c_void_p(ctypes.addressof(_ring) + byte_offset),
-                data[:first], first)
-            ctypes.memmove(
-                ctypes.addressof(_ring),
-                data[first:n_bytes], n_bytes - first)
-        _wpos = (w + frames) % RING_SAMPLES
+        for ci in range(_ch):
+            col = all_f[ci::_ch]  # de-interleave via extended slice
+            col_bytes = col.tobytes()
+            dest_addr = ctypes.addressof(_ring[ci])
+            pos = w
+            if pos + ns <= RING_SAMPLES:
+                ctypes.memmove(dest_addr + pos * 4, col_bytes, ns * 4)
+            else:
+                first = RING_SAMPLES - pos
+                ctypes.memmove(dest_addr + pos * 4, col_bytes[:first * 4], first * 4)
+                ctypes.memmove(dest_addr, col_bytes[first * 4:], (ns - first) * 4)
+        _wpos = (w + ns) % RING_SAMPLES
         return True
     except Exception:
         return False
