@@ -157,7 +157,8 @@ class AudioEngine(_BaseAudioEngine):
 
     def _teardown_pipeline(self):
         self._kill_ffmpeg_proc()
-        self._stop_asio()
+        if getattr(self, '_is_asio_gst', False):
+            self._stop_asio()
         self._asio_started = False
         self._is_asio_gst = False
         self._appsink = None
