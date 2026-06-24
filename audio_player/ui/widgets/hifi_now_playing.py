@@ -1,4 +1,4 @@
-"""HiFi Now Playing — immersive full-page playback dashboard."""
+﻿"""HiFi Now Playing — immersive full-page playback dashboard."""
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
@@ -104,6 +104,8 @@ class HiFiNowPlayingPage(QWidget):
         self._old_cached_bg: QPixmap | None = None  # previous bg during crossfade
         self._bg_fade_progress: float = 1.0  # 0=old, 1=new
         self._bg_fade_helper: _OpacityHelper | None = None
+        self._macos_vibrancy = False  # True on macOS: use NSVisualEffectView instead of blur
+        self._macos_vibrancy_view = None
         self._bg_fade_anim: QPropertyAnimation | None = None
         self._title = ""
         self._artist = ""
@@ -721,6 +723,14 @@ class HiFiNowPlayingPage(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
+        # macOS vibrancy: apply once after first show
+        if sys.platform == "darwin" and not self._macos_vibrancy and self.isVisible() and self.width() > 0:
+            self._macos_vibrancy = True
+            try:
+                from audio_player.platform.macos.materials import enable_vibrancy
+                self._macos_vibrancy_view = enable_vibrancy(self, material="hudWindow")
+            except Exception:
+                self._macos_vibrancy = False  # fall back to software blur
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
@@ -729,6 +739,7 @@ class HiFiNowPlayingPage(QWidget):
         # ---- Background: blurred cover with crossfade ----
         if self._cover_pixmap and not self._cover_pixmap.isNull():
             if self._blurred_bg is None:
+            if not self._macos_vibrancy:
                 self._blurred_bg = _blur_pixmap(self._cover_pixmap)
             if self._cached_bg is None or self._cached_bg.size() != self.size():
                 self._cached_bg = self._blurred_bg.scaled(

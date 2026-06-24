@@ -136,6 +136,18 @@ class AudioEngine(_BaseAudioEngine):
             if not getattr(self, '_asio_started', False):
                 if self._start_asio():
                     self._asio_started = True
+                else:
+                    # ASIO failed - fall back to standard pipeline
+                    import sys as _s
+                    print("[asio] Falling back to standard pipeline", file=_s.stderr)
+                    self._is_asio_gst = False
+                    self._teardown_pipeline()
+                    # Rebuild as standard pipeline
+                    if self._current_file:
+                        self._build_pipeline(self._current_file)
+                        if self._pipeline is not None:
+                            self._pipeline.set_state(Gst.State.PLAYING)
+                    return
             if not self._poll_timer.isActive():
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()

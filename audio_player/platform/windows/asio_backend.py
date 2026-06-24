@@ -111,18 +111,31 @@ def _mkclsid(s):
 
 def asio_open(clsid_str: str, rate: int, sample_type_override: str = "auto"):
     global _ptr, _bi, _ring, _cbs, _ch, _bs, _wpos, _rpos, _running, _sample_type
+    import sys as _sys
     ole32.CoInitializeEx(None, 2)
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
     # Use the driver's own CLSID as the IID (standard ASIO approach)
     # This works for FiiO, Realtek, and other standard ASIO drivers
     hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, ctypes.byref(c), ctypes.byref(p))
-    if hr or not p: return None
+    if hr or not p:
+        print(f"[asio] CoCreateInstance failed: hr={hr}, p={p}", file=_sys.stderr)
+        return None
+    print(f"[asio] CoCreateInstance OK, clsid={clsid_str}", file=_sys.stderr)
     _ptr = p; vt = ctypes.cast(p, ctypes.POINTER(ctypes.c_void_p))[0]
     V = lambda i,r,*a: ctypes.WINFUNCTYPE(r, ctypes.c_void_p, *a)(ctypes.cast(ctypes.cast(vt, ctypes.POINTER(ctypes.c_void_p))[i], ctypes.c_void_p).value)
-    if V(3, ctypes.c_long, ctypes.c_void_p)(p, None) != 1: asio_close(); return None
-    if V(14, ctypes.c_long, ctypes.c_double)(p, float(rate)): asio_close(); return None
+    init_result = V(3, ctypes.c_long, ctypes.c_void_p)(p, None)
+    print(f"[asio] Init result: {init_result}", file=_sys.stderr)
+    if init_result != 1:
+        print(f"[asio] Init failed (returned {init_result}, expected 1)", file=_sys.stderr)
+        asio_close(); return None
+    rate_result = V(14, ctypes.c_long, ctypes.c_double)(p, float(rate))
+    print(f"[asio] SetSampleRate({rate}) result: {rate_result}", file=_sys.stderr)
+    if rate_result:
+        print(f"[asio] SetSampleRate failed", file=_sys.stderr)
+        asio_close(); return None
     ic,oc = ctypes.c_long(),ctypes.c_long(); V(9,ctypes.c_long,ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long))(p,ctypes.byref(ic),ctypes.byref(oc))
     _ch = max(oc.value, 2)
+    print(f"[asio] Channels: in={ic.value}, out={oc.value}", file=_sys.stderr)
     mn,mx,pf,gr = ctypes.c_long(),ctypes.c_long(),ctypes.c_long(),ctypes.c_long()
     V(11,ctypes.c_long,ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long),ctypes.POINTER(ctypes.c_long))(p,ctypes.byref(mn),ctypes.byref(mx),ctypes.byref(pf),ctypes.byref(gr))
     _bs = pf.value or mx.value or 1024
@@ -169,8 +182,11 @@ def asio_open(clsid_str: str, rate: int, sample_type_override: str = "auto"):
     _cbs = CB(); _cbs.bs=ctypes.cast(cb_bs,ctypes.c_void_p); _cbs.sr=ctypes.cast(cb_sr,ctypes.c_void_p); _cbs.am=ctypes.cast(cb_am,ctypes.c_void_p); _cbs.ti=ctypes.cast(cb_ti,ctypes.c_void_p)
 
     if V(19,ctypes.c_long,ctypes.c_void_p,ctypes.c_long,ctypes.c_long,ctypes.c_void_p)(p,ctypes.byref(_bi),_ch,_bs,ctypes.byref(_cbs)):
+        print(f"[asio] CreateBuffers failed", file=_sys.stderr)
         asio_close(); return None
-    V(7,ctypes.c_long)(p); _running = True
+    start_result = V(7,ctypes.c_long)(p)
+    print(f"[asio] Start result: {start_result}", file=_sys.stderr)
+    _running = True
     return (_ch, _bs)
 
 def asio_write(data: bytes):
