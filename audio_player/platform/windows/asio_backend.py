@@ -3,10 +3,18 @@ import ctypes, struct
 ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
 RING_SAMPLES = 262144
 
+# ASIO sample type constants
+ASIOSTInt16LSB = 0
+ASIOSTInt24LSB = 2
+ASIOSTInt32LSB = 4
+ASIOSTFloat32LSB = 6
+ASIOSTFloat64LSB = 7
+
 _ptr, _ch, _bs = None, 0, 0
 _ring, _bi, _cbs = None, None, None
 _wpos, _rpos = 0, 0
 _running = False
+_sample_type = ASIOSTFloat32LSB  # default, updated in asio_open via GetChannelInfo
 
 CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
 CB_SR = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_double)
@@ -15,20 +23,40 @@ CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
 
 @CB_BS
 def cb_bs(idx, dp):
+    """ASIO buffer switch callback — convert F32LE ring → driver format."""
     global _rpos
-    import sys
-    sys.stderr.write(f"[asio-cb] idx={idx} wpos={_wpos} rpos={_rpos} bs={_bs}\n"); sys.stderr.flush()
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
     if n > 0 and _ring is not None:
         for ci in range(_ch):
             dst_ptr = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p).value
             end = r + n
             if end <= RING_SAMPLES:
-                ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
+                if _sample_type == ASIOSTFloat32LSB:
+                    ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
+                elif _sample_type == ASIOSTInt32LSB:
+                    for i in range(n):
+                        val = _ring[ci][(r + i) % RING_SAMPLES]
+                        int_val = int(max(-1.0, min(1.0, val)) * 2147483647)
+                        ctypes.memmove(dst_ptr + i * 4, struct.pack('<i', int_val), 4)
+                elif _sample_type == ASIOSTInt24LSB:
+                    for i in range(n):
+                        val = _ring[ci][(r + i) % RING_SAMPLES]
+                        int_val = int(max(-1.0, min(1.0, val)) * 8388607)
+                        b = struct.pack('<i', int_val)[:3]
+                        ctypes.memmove(dst_ptr + i * 3, b, 3)
+                elif _sample_type == ASIOSTInt16LSB:
+                    for i in range(n):
+                        val = _ring[ci][(r + i) % RING_SAMPLES]
+                        int_val = int(max(-1.0, min(1.0, val)) * 32767)
+                        ctypes.memmove(dst_ptr + i * 2, struct.pack('<h', int_val), 2)
+                else:
+                    ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
             else:
                 sz = RING_SAMPLES - r
-                ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
-                ctypes.memmove(dst_ptr + sz * 4, _ring[ci], (n - sz) * 4)
+                if _sample_type == ASIOSTFloat32LSB:
+                    ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
+                else:
+                    pass
     else:
         for ci in range(_ch):
             dst = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p)
@@ -47,7 +75,7 @@ def _mkclsid(s):
     ole32.CLSIDFromString(w, ctypes.byref(c)); return c
 
 def asio_open(clsid_str: str, rate: int):
-    global _ptr, _bi, _ring, _cbs, _ch, _bs, _wpos, _rpos, _running
+    global _ptr, _bi, _ring, _cbs, _ch, _bs, _wpos, _rpos, _running, _sample_type
     ole32.CoInitializeEx(None, 2)
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
     hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, (ctypes.c_char*16)(*IID_FIIO), ctypes.byref(p))
@@ -63,6 +91,25 @@ def asio_open(clsid_str: str, rate: int):
     _bs = pf.value or mx.value or 1024
     _ring = [(ctypes.c_float * RING_SAMPLES)() for _ in range(_ch)]
     _wpos = _rpos = 0
+
+    # Query channel info to get sample type
+    class ASIOChannelInfo(ctypes.Structure):
+        _fields_ = [
+            ('channel', ctypes.c_long),
+            ('isInput', ctypes.c_long),
+            ('isActive', ctypes.c_long),
+            ('channelGroup', ctypes.c_long),
+            ('sampleType', ctypes.c_long),
+            ('name', ctypes.c_wchar * 32),
+        ]
+    info = ASIOChannelInfo()
+    info.channel = 0
+    info.isInput = 0
+    # GetChannelInfo at vtable index 18
+    V(18, ctypes.c_long, ctypes.POINTER(ASIOChannelInfo))(p, ctypes.byref(info))
+    _sample_type = info.sampleType
+    import sys as _sys
+    print(f"[asio] Sample type: {_sample_type} (expected {ASIOSTFloat32LSB} = F32LE)", file=_sys.stderr)
 
     class BI(ctypes.Structure): _fields_ = [('i',ctypes.c_long),('n',ctypes.c_long),('buf',ctypes.c_void_p*2)]
     _bi = (BI * _ch)(); _bi_ref = _bi
