@@ -820,13 +820,6 @@ class AudioEngine(_BaseAudioEngine):
                 if ok:
                     _a.asio_write(info.data)
                     buf.unmap(info)
-                    # Track position
-                    rate = self._pipeline_sample_rate or 44100
-                    self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(info.data)
-                    pos_ms = int(self._asio_bytes_total / (rate * 2 * 4) * 1000)
-                    if abs(pos_ms - self._position_ms) > 200:
-                        self._position_ms = pos_ms
-                        self.positionChanged.emit(pos_ms)
             except Exception:
                 time.sleep(0.01)
 
@@ -1036,9 +1029,29 @@ class AudioEngine(_BaseAudioEngine):
 
     def _poll(self):
         if getattr(self, '_is_asio_gst', False):
-            # ASIO ffmpeg: position tracked in _asio_feed via byte counting.
-            # Duration already set from metadata in _build_asio_ffmpeg_pipe.
-            # No GStreamer pipeline to query.
+            # For ASIO with GStreamer pipeline: use GStreamer's position query
+            # The pipeline is still running, so we can query position from it
+            if self._pipeline is not None:
+                # Still drain bus messages for EOS/errors
+                bus = self._pipeline.get_bus()
+                while True:
+                    msg = bus.pop()
+                    if msg is None:
+                        break
+                    self._handle_message(msg)
+                # Query position from GStreamer pipeline
+                ok, pos_ns = self._pipeline.query_position(Gst.Format.TIME)
+                if ok:
+                    ms = pos_ns // 1000000
+                    if ms != self._position_ms:
+                        self._position_ms = ms
+                        self.positionChanged.emit(ms)
+                # Query duration
+                if self._duration_ms <= 0:
+                    ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
+                    if ok:
+                        self._duration_ms = dur_ns // 1000000
+                        self.durationChanged.emit(self._duration_ms)
             return
         super()._poll()
 
