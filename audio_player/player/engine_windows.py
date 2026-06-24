@@ -827,13 +827,7 @@ class AudioEngine(_BaseAudioEngine):
                     import sys as _s
                     print(f"[asio] WAV: Desktop/asio_dump.wav", file=_s.stderr)
 
-            # Attenuate by 0.5 — FiiO driver may clip at full scale
-            import array as _arr
-            f32 = _arr.array('f')
-            f32.frombytes(data)
-            for i in range(len(f32)):
-                f32[i] *= 0.5
-            _a.asio_write(f32.tobytes())
+            _a.asio_write(data)
             # Track position (deferred)
             rate = self._pipeline_sample_rate or 44100
             self._asio_bytes_total = getattr(self, '_asio_bytes_total', 0) + len(data)

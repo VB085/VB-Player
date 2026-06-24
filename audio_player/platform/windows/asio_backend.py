@@ -122,33 +122,29 @@ def asio_open(clsid_str: str, rate: int):
     return (_ch, _bs)
 
 def asio_write(data: bytes):
-    """De-interleave F32LE → per-channel ring buffers using array slicing."""
+    """Write interleaved F32LE PCM to per-channel ring buffers.
+
+    Uses the same from_buffer_copy + ctypes array indexing as the
+    verified standalone beep test. No optimization, just correctness.
+    """
     global _wpos
-    if not _running or not data or _ch <= 0 or _ring is None:
+    if not _running: return False
+    if not data or _ch <= 0 or _ring is None:
         return False
-    try:
-        import array
-        ns = (len(data) // 4) // _ch
-        if ns == 0:
-            return False
-        all_f = array.array('f')
-        all_f.frombytes(data[:ns * _ch * 4])
-        w = _wpos
-        for ci in range(_ch):
-            col = all_f[ci::_ch]  # de-interleave via extended slice
-            col_bytes = col.tobytes()
-            dest_addr = ctypes.addressof(_ring[ci])
-            pos = w
-            if pos + ns <= RING_SAMPLES:
-                ctypes.memmove(dest_addr + pos * 4, col_bytes, ns * 4)
-            else:
-                first = RING_SAMPLES - pos
-                ctypes.memmove(dest_addr + pos * 4, col_bytes[:first * 4], first * 4)
-                ctypes.memmove(dest_addr, col_bytes[first * 4:], (ns - first) * 4)
-        _wpos = (w + ns) % RING_SAMPLES
-        return True
-    except Exception:
+
+    ns = (len(data) // 4) // _ch
+    if ns == 0:
         return False
+
+    # Same approach as standalone beep test (verified clean)
+    src = (ctypes.c_float * (ns * _ch)).from_buffer_copy(data[:ns * _ch * 4])
+    w = _wpos
+    for ci in range(_ch):
+        dst = _ring[ci]
+        for i in range(ns):
+            dst[(w + i) % RING_SAMPLES] = src[i * _ch + ci]
+    _wpos = (w + ns) % RING_SAMPLES
+    return True
 
 def asio_close():
     global _ptr, _running, _bi, _ring, _cbs
