@@ -118,98 +118,9 @@ class AudioEngine(_BaseAudioEngine):
     def _default_exclusive_device(self) -> str:
         return ""
 
-    def pause(self):
-        if getattr(self, '_is_asio_gst', False):
-            # Stop feeding but keep ASIO open (ring buffer drains → silence)
-            t = getattr(self, '_asio_feed_timer', None)
-            if t is not None:
-                t.stop()
-            self._poll_timer.stop()
-            self._app_state = PlaybackState.Paused
-            self.stateChanged.emit(PlaybackState.Paused)
-            return
-        super().pause()
-
-    def stop(self):
-        if getattr(self, '_is_asio_gst', False):
-            self._stop_asio()
-            self._kill_ffmpeg_proc()
-            super().stop()
-            return
-        super().stop()
-
-    def play(self):
-        if not self._current_file:
-            return
-        # ASIO ffmpeg path: no GStreamer pipeline
-        if (self._exclusive_mode
-                and (self._exclusive_device or "").startswith("asio:")):
-            # Build ffmpeg pipe if first play after load
-            if not getattr(self, '_is_asio_gst', False):
-                self._build_asio_ffmpeg_pipe(self._current_file)
-            elif getattr(self, '_ffmpeg_proc', None) is None:
-                self._build_asio_ffmpeg_pipe(self._current_file)
-            if not self._poll_timer.isActive():
-                self._poll_timer.setInterval(50)
-                self._poll_timer.start()
-            if not getattr(self, '_asio_started', False):
-                if self._start_asio():
-                    self._asio_started = True
-            else:
-                # Resume from pause: restart feed timer
-                t = getattr(self, '_asio_feed_timer', None)
-                if t is not None and not t.isActive():
-                    t.start()
-            # Set state — base class requires Gst pipeline for this
-            if self._app_state != PlaybackState.Playing:
-                self._app_state = PlaybackState.Playing
-                self.stateChanged.emit(PlaybackState.Playing)
-            return
-        # Standard GStreamer path
-        super().play()
-
     def _teardown_pipeline(self):
         self._kill_ffmpeg_proc()
-        self._stop_asio()
-        self._asio_started = False
-        self._is_asio_gst = False
-        self._appsink = None
         super()._teardown_pipeline()
-
-    def seek(self, position_ms: int):
-        if getattr(self, '_is_asio_gst', False):
-            self._seek_asio_ffmpeg(position_ms)
-            return
-        super().seek(position_ms)
-
-    def _seek_asio_ffmpeg(self, position_ms: int):
-        """Seek: restart ffmpeg with -ss, reopen ASIO."""
-        filepath = self._current_file
-        if not filepath:
-            return
-        self._stop_asio()
-        self._kill_ffmpeg_proc()
-        # Rebuild with seek offset
-        import subprocess
-        ffmpeg = self._find_ffmpeg()
-        if not ffmpeg:
-            return
-        rate = self._pipeline_sample_rate or 44100
-        seek_sec = position_ms / 1000.0
-        ffmpeg_cmd = [
-            ffmpeg, "-ss", str(seek_sec), "-i", filepath,
-            "-f", "f32le", "-acodec", "pcm_f32le",
-            "-ar", str(rate), "-ac", "2",
-            "-loglevel", "quiet",
-            "pipe:1",
-        ]
-        try:
-            self._ffmpeg_proc = subprocess.Popen(
-                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except Exception:
-            return
-        self._asio_bytes_total = position_ms * rate * 2 * 4 // 1000
-        self._start_asio()
 
     def _cleanup_preloaded(self):
         """Kill any ffmpeg subprocess from the preloaded pipeline."""
@@ -229,10 +140,18 @@ class AudioEngine(_BaseAudioEngine):
             hw = self._exclusive_device or ""
             if hw.startswith("asio:"):
                 clsid = hw[5:]
+                # audioresample + asiosink (GStreamer negotiates rate)
+                bin = Gst.Bin.new("asio-sink-bin")
+                resample = Gst.ElementFactory.make("audioresample", None)
                 sink = Gst.ElementFactory.make("asiosink", None)
-                if sink is None:
+                if any(x is None for x in [resample, sink]):
                     raise RuntimeError(_("engine.asio_unavailable"))
                 sink.set_property("device-clsid", clsid)
+                ghost = Gst.GhostPad.new("sink", resample.get_static_pad("sink"))
+                bin.add_pad(ghost)
+                bin.add(resample); bin.add(sink)
+                resample.link(sink)
+                return bin
             else:
                 sink = Gst.ElementFactory.make("wasapi2sink", None)
                 if sink is None:
@@ -1059,14 +978,7 @@ class AudioEngine(_BaseAudioEngine):
             import sys
             print("[engine] DSD playback requires ffmpeg with DSD support", file=sys.stderr)
 
-        # ASIO: GStreamer decodebin → appsink → thread → asio_write
-        if self._exclusive_mode:
-            hw = self._exclusive_device or ""
-            if hw.startswith("asio:"):
-                self._build_asio_gst_pipeline(filepath)
-                return
-
-        # Standard PCM pipeline (decodebin-based, used for non-DSD files)
+        # Standard PCM pipeline — ASIO goes through _create_sink (asiosink+48kHz capsfilter)
         self._teardown_pipeline()
 
         try:
@@ -1137,3 +1049,4 @@ class AudioEngine(_BaseAudioEngine):
         except Exception as e:
             self._teardown_pipeline()
             self.errorOccurred.emit(str(e))
+

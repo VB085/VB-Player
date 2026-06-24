@@ -4,6 +4,7 @@ __pycache__/
 .vscode/
 .scratch/
 .agents/
+.claude/
 build/
 dist/
 *.pyc
