@@ -130,25 +130,26 @@ def asio_write(data):
         asio_write._dumped = True
         import array, struct as _st, os
 
-        # Dump INPUT data (what ffmpeg sent us)
-        frames_in = min(4096, ns)
+        rate = 44100
+        desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
+
+        # Dump INPUT data
+        frames_in = min(ns, rate * 2)
         s16_in = array.array('h')
         for i in range(frames_in):
             for ci in range(_ch):
                 s16_in.append(int(max(-1., min(1., src[i * _ch + ci])) * 32767))
-        rate = 44100
-        desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
-        _write_wav(os.path.join(desktop, 'worker_INPUT.wav'), s16_in, rate, _ch)
+        _write_wav(os.path.join(desktop, 'wIN.wav'), s16_in, rate, _ch)
 
         # Dump RING BUFFER data after write
-        frames = min(4096, RING_SAMPLES - w)
+        frames_out = min(ns, rate * 2)
         s16 = array.array('h')
-        for i in range(frames):
+        for i in range(frames_out):
             for ci in range(_ch):
                 val = _ring[ci][(w + i) % RING_SAMPLES]
                 s16.append(int(max(-1., min(1., val)) * 32767))
-        _write_wav(os.path.join(desktop, 'worker_RING.wav'), s16, rate, _ch)
-        import sys; sys.stderr.write(f"[write-dump] Desktop/worker_INPUT.wav + worker_RING.wav\n")
+        _write_wav(os.path.join(desktop, 'wRING.wav'), s16, rate, _ch)
+        import sys; sys.stderr.write(f"[write-dump] INPUT={frames_in} frames, RING={frames_out} frames\n")
 
     wpos_cell[0] = (w + ns) % RING_SAMPLES
     return True
