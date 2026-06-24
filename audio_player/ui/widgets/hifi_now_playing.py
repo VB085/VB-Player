@@ -738,8 +738,7 @@ class HiFiNowPlayingPage(QWidget):
 
         # ---- Background: blurred cover with crossfade ----
         if self._cover_pixmap and not self._cover_pixmap.isNull():
-            if self._blurred_bg is None:
-            if not self._macos_vibrancy:
+            if self._blurred_bg is None or not self._macos_vibrancy:
                 self._blurred_bg = _blur_pixmap(self._cover_pixmap)
             if self._cached_bg is None or self._cached_bg.size() != self.size():
                 self._cached_bg = self._blurred_bg.scaled(
