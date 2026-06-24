@@ -62,15 +62,16 @@ def cb_bs(idx, dp):
         for i in range(n):
             src_off = ((r + i) % RING_SAMPLES) * bytes_per_frame
             for ci in range(_ch):
-                dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
-                ctypes.memmove(
-                    ctypes.c_void_p(ctypes.addressof(dst.contents) + i * 4),
-                    ctypes.c_void_p(ctypes.addressof(_ring) + src_off + ci * 4),
-                    4)
+                # Cast buf[idx] to a raw pointer — avoid addressof(dst.contents)
+                # which gives address of a temporary Python object, not the ASIO buffer.
+                base = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p).value
+                dst_ptr = ctypes.c_void_p(base + i * 4)
+                src_ptr = ctypes.c_void_p(ctypes.addressof(_ring) + src_off + ci * 4)
+                ctypes.memmove(dst_ptr, src_ptr, 4)
     else:
         for ci in range(_ch):
-            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
-            ctypes.memset(ctypes.cast(dst, ctypes.c_void_p), 0, _bs * 4)
+            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p)
+            ctypes.memset(dst, 0, _bs * 4)
     _rpos = (r + n) % RING_SAMPLES
     return 0
 
