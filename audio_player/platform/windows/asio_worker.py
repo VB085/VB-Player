@@ -21,6 +21,8 @@ CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
 @CB_BS
 def cb_bs(idx, dp):
     global _rpos
+    import sys
+    sys.stderr.write(f"[CB] idx={idx} wpos={_wpos} rpos={_rpos} bs={_bs}\n"); sys.stderr.flush()
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
     if n > 0 and _ring is not None:
         for ci in range(_ch):
@@ -87,26 +89,17 @@ def asio_open(clsid_str, rate):
 def asio_write(data):
     global _wpos
     if not _running or not data or _ch <= 0 or _ring is None: return False
-    try:
-        ns = (len(data) // 4) // _ch
-        if ns == 0: return False
-        all_f = array.array('f')
-        all_f.frombytes(data[:ns * _ch * 4])
-        w = _wpos
-        for ci in range(_ch):
-            col = all_f[ci::_ch].tobytes()
-            dest = ctypes.addressof(_ring[ci])
-            pos = w
-            if pos + ns <= RING_SAMPLES:
-                ctypes.memmove(dest + pos * 4, col, ns * 4)
-            else:
-                first = RING_SAMPLES - pos
-                ctypes.memmove(dest + pos * 4, col[:first * 4], first * 4)
-                ctypes.memmove(dest, col[first * 4:], (ns - first) * 4)
-        _wpos = (w + ns) % RING_SAMPLES
-        return True
-    except Exception:
-        return False
+    ns = (len(data) // 4) // _ch
+    if ns == 0: return False
+    # SAME approach as standalone beep test
+    src = (ctypes.c_float * (ns * _ch)).from_buffer_copy(data[:ns * _ch * 4])
+    w = _wpos
+    for ci in range(_ch):
+        dst = _ring[ci]
+        for i in range(ns):
+            dst[(w + i) % RING_SAMPLES] = src[i * _ch + ci]
+    _wpos = (w + ns) % RING_SAMPLES
+    return True
 
 def asio_close():
     global _ptr, _running, _bi, _ring, _cbs

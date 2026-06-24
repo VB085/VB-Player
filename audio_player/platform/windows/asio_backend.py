@@ -16,6 +16,8 @@ CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
 @CB_BS
 def cb_bs(idx, dp):
     global _rpos
+    import sys
+    sys.stderr.write(f"[asio-cb] idx={idx} wpos={_wpos} rpos={_rpos} bs={_bs}\n"); sys.stderr.flush()
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
     if n > 0 and _ring is not None:
         for ci in range(_ch):
