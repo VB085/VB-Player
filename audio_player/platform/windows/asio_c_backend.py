@@ -1,7 +1,7 @@
 """Thin Python wrapper around asio_ext C extension — mirrors asio_backend API."""
 import asio_ext
 
-RING_SAMPLES = asio_ext.ring_frames
+RING_SAMPLES = asio_ext.ring_frames  # constant from C extension
 
 # Module-level properties (backed by asio_ext)
 _ch = 0

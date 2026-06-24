@@ -25,14 +25,6 @@ static volatile long  g_wpos = 0;        /* write position (frames) */
 static volatile long  g_rpos = 0;        /* read position (frames) */
 static CRITICAL_SECTION g_lock;          /* protects ring buffer access */
 
-/* Helper: call ASIO vtable function */
-static ASErr _call(int idx, ...) {
-    void **vt = *(void***)g_dev;
-    void *fn = vt[idx];
-    /* Minimal: all ASIO calls have similar signatures, cast and pray */
-    return ((ASErr(*)(void*,...))fn)(g_dev);
-}
-
 /* ASIO buffer info struct */
 typedef struct { long isIn; long ch; void *buf[2]; } ASIOBufInfo;
 
@@ -43,7 +35,6 @@ static long __cdecl _bufSwitch(long idx, long dir) {
     long w = g_wpos, r = g_rpos;
     long n = (w - r) & RING_MASK;
     if (n > g_bs) n = g_bs;
-    long stride = (long)(g_ch * sizeof(float));
     if (n > 0 && g_ring && g_bufs) {
         for (long ci = 0; ci < g_ch; ci++) {
             float *dst = ((float**)g_bufs)[ci * 2 + idx];
@@ -207,26 +198,6 @@ static PyObject *ext_used(PyObject *self, PyObject *args) {
     return PyLong_FromLong(used);
 }
 
-/* Python: asio_ext.bs, asio_ext.ch, asio_ext.ring_frames */
-static PyObject *ext_get(PyObject *self, void *closure) {
-    int id = (int)(intptr_t)closure;
-    switch (id) {
-        case 0: return PyLong_FromLong(g_bs);
-        case 1: return PyLong_FromLong(g_ch);
-        case 2: return PyLong_FromLong(RING_FRAMES);
-        case 3: return PyBool_FromLong(g_dev != NULL);
-    }
-    Py_RETURN_NONE;
-}
-
-static PyGetSetDef ext_getsets[] = {
-    {"bs", ext_get, NULL, NULL, (void*)0},
-    {"ch", ext_get, NULL, NULL, (void*)1},
-    {"ring_frames", ext_get, NULL, NULL, (void*)2},
-    {"running", ext_get, NULL, NULL, (void*)3},
-    {NULL}
-};
-
 static PyMethodDef methods[] = {
     {"open", ext_open, METH_VARARGS, "Open ASIO device (clsid, rate) → (ch, bs) or None"},
     {"write", ext_write, METH_VARARGS, "Write interleaved F32LE PCM bytes → bool"},
@@ -240,5 +211,16 @@ static struct PyModuleDef module = {
 };
 
 PyMODINIT_FUNC PyInit_asio_ext(void) {
-    return PyModule_Create(&module);
+    PyObject *m = PyModule_Create(&module);
+    if (!m) return NULL;
+    /* Expose attributes as module-level ints */
+    PyObject *bs = PyLong_FromLong(0);
+    PyObject *ch = PyLong_FromLong(0);
+    PyObject *rf = PyLong_FromLong(RING_FRAMES);
+    PyObject *rn = Py_False;
+    PyModule_AddObject(m, "bs", bs);
+    PyModule_AddObject(m, "ch", ch);
+    PyModule_AddObject(m, "ring_frames", rf);
+    PyModule_AddObject(m, "running", rn);
+    return m;
 }
