@@ -137,25 +137,29 @@ if __name__ == "__main__":
     # Read from stdin, throttle to ring buffer capacity
     chunk_size = bs * ch * 4
     eof = False
-    buf = bytearray()
+    total_written = 0
+    dbg_count = 0
     print("Playing...", file=sys.stderr, flush=True)
     try:
         while _running:
-            # Top up ring buffer when below 3x ASIO buffer
             free = RING_SAMPLES - ((_wpos - _rpos) % RING_SAMPLES) - bs * 2
             if free > bs and not eof:
-                # Read more from stdin
                 want = min(free * ch * 4, chunk_size * 4)
                 data = sys.stdin.buffer.read(want)
                 if data:
-                    asio_write(data)
+                    ok = asio_write(data)
+                    total_written += len(data)
+                    if dbg_count < 5:
+                        print(f"  wrote {len(data)}B (ok={ok}), wpos={_wpos}, rpos={_rpos}, free={free}",
+                              file=sys.stderr, flush=True)
+                        dbg_count += 1
                 else:
-                    eof = True  # stdin closed, just drain
+                    eof = True
+                    print(f"  EOF after {total_written}B", file=sys.stderr, flush=True)
             else:
-                time.sleep(0.01)  # ring buffer full, wait for callback
-            # If EOF and ring buffer drained, exit
+                time.sleep(0.01)
             if eof and _wpos == _rpos:
-                time.sleep(0.1)  # brief settle
+                time.sleep(0.1)
                 break
     except KeyboardInterrupt:
         pass
