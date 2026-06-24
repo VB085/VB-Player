@@ -726,6 +726,20 @@ class AudioEngine(_BaseAudioEngine):
         print(f"[asio] Opened {clsid[:12]}... at {rate}Hz, "
               f"{channels}ch, buffer={buf_size}", file=_s.stderr)
 
+        # TEST: pre-fill ring buffer with 440Hz beep before starting feed
+        # (standalone test pattern: write data → callback plays it)
+        import math, struct as _st
+        ns = _a.RING_SAMPLES // 4  # fill quarter = ~1.5s at 44.1kHz
+        data = bytearray(ns * _a._ch * 4)
+        phase = 0.0
+        for i in range(ns):
+            val = math.sin(phase) * 0.3
+            _st.pack_into('<f', data, i * 8, val)       # L
+            _st.pack_into('<f', data, i * 8 + 4, val)   # R
+            phase += 2.0 * math.pi * 440.0 / rate
+        _a.asio_write(bytes(data))
+        print(f"[asio] pre-filled {ns} beep frames, wpos={_a._wpos}", file=_s.stderr)
+
         t = getattr(self, '_asio_feed_timer', None)
         if t is None:
             t = QTimer(self)
