@@ -804,6 +804,8 @@ class AudioEngine(_BaseAudioEngine):
             return
 
         try:
+            # Sync globals from closure cells (callback writes cells, we read globals)
+            _a._rpos = _a._rcell[0] if hasattr(_a, '_rcell') else _a._rpos
             # Keep ring buffer well ahead of ASIO consumption
             bs = getattr(_a, '_bs', 2048)
             target = bs * 6

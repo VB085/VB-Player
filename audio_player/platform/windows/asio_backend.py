@@ -74,7 +74,59 @@ def asio_open(clsid_str: str, rate: int):
     for i in range(_ch): _bi[i].i = 0; _bi[i].n = i
 
     class CB(ctypes.Structure): _fields_ = [('bs',ctypes.c_void_p),('sr',ctypes.c_void_p),('am',ctypes.c_void_p),('ti',ctypes.c_void_p)]
-    _cbs = CB(); _cbs.bs=ctypes.cast(cb_bs,ctypes.c_void_p); _cbs.sr=ctypes.cast(cb_sr,ctypes.c_void_p); _cbs.am=ctypes.cast(cb_am,ctypes.c_void_p); _cbs.ti=ctypes.cast(cb_ti,ctypes.c_void_p)
+
+    # Shared state via mutable list cells — enables closure capture
+    # (standalone test pattern: avoided MSYS2 global-var issues)
+    _ring_ref = _ring
+    _bi_ref = _bi
+    _bs_ref = _bs
+    _ch_ref = _ch
+    _wcell = [_wpos]  # mutable: cell[0] = value
+    _rcell = [_rpos]
+
+    @CB_BS
+    def _cb_bs(idx, dp):
+        w = _wcell[0]
+        r = _rcell[0]
+        n = min((w - r) % RING_SAMPLES, _bs_ref)
+        if n > 0 and _ring_ref is not None:
+            for ci in range(_ch_ref):
+                dst = ctypes.cast(_bi_ref[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+                end = r + n
+                if end <= RING_SAMPLES:
+                    ctypes.memmove(dst, ctypes.addressof(_ring_ref[ci]) + r * 4, n * 4)
+                else:
+                    sz = RING_SAMPLES - r
+                    ctypes.memmove(dst, ctypes.addressof(_ring_ref[ci]) + r * 4, sz * 4)
+                    ctypes.memmove(
+                        ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
+                        _ring_ref[ci], (n - sz) * 4)
+        else:
+            for ci in range(_ch_ref):
+                dst = ctypes.cast(_bi_ref[ci].buf[idx], ctypes.c_void_p)
+                ctypes.memset(dst, 0, _bs_ref * 4)
+        _rcell[0] = (r + n) % RING_SAMPLES
+        return 0
+
+    @CB_SR
+    def _cb_sr(r): return 0
+
+    @CB_AM
+    def _cb_am(s, v, m, o): return 0
+
+    @CB_TI
+    def _cb_ti(p, i, d):
+        _cb_bs(i, d)
+
+    _cbs = CB()
+    _cbs.bs = ctypes.cast(_cb_bs, ctypes.c_void_p)
+    _cbs.sr = ctypes.cast(_cb_sr, ctypes.c_void_p)
+    _cbs.am = ctypes.cast(_cb_am, ctypes.c_void_p)
+    _cbs.ti = ctypes.cast(_cb_ti, ctypes.c_void_p)
+
+    # Sync initial cell values to globals
+    _wpos = _wcell[0]
+    _rpos = _rcell[0]
 
     if V(19,ctypes.c_long,ctypes.c_void_p,ctypes.c_long,ctypes.c_long,ctypes.c_void_p)(p,ctypes.byref(_bi),_ch,_bs,ctypes.byref(_cbs)):
         asio_close(); return None
@@ -92,11 +144,11 @@ def asio_write(data: bytes):
         all_f = array.array('f')
         all_f.frombytes(data[:ns * _ch * 4])
         with _lock:
-            w = _wpos
+            w = _wcell[0]
             for ci in range(_ch):
                 col = all_f[ci::_ch]
                 col_bytes = col.tobytes()
-                dest = ctypes.addressof(_ring[ci])
+                dest = ctypes.addressof(_ring_ref[ci])
                 pos = w
                 if pos + ns <= RING_SAMPLES:
                     ctypes.memmove(dest + pos * 4, col_bytes, ns * 4)
@@ -104,7 +156,9 @@ def asio_write(data: bytes):
                     first = RING_SAMPLES - pos
                     ctypes.memmove(dest + pos * 4, col_bytes[:first * 4], first * 4)
                     ctypes.memmove(dest, col_bytes[first * 4:], (ns - first) * 4)
-            _wpos = (w + ns) % RING_SAMPLES
+            _wcell[0] = (w + ns) % RING_SAMPLES
+            _wpos = _wcell[0]  # sync to global for engine _asio_feed
+            _rpos = _rcell[0]
         return True
     except Exception:
         return False
