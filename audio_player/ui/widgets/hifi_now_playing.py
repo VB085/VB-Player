@@ -1,5 +1,6 @@
 ﻿"""HiFi Now Playing — immersive full-page playback dashboard."""
 
+import sys
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QMenu
