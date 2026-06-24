@@ -127,9 +127,20 @@ class AudioEngine(_BaseAudioEngine):
     def play(self):
         if not self._current_file:
             return
-        # ASIO: use standard GStreamer pipeline with asiosink
-        # _create_sink() handles ASIO via audioconvert+asiosink
-        # No special handling needed - just call super().play()
+        # ASIO: use GStreamer appsink pipeline + ASIO feed thread
+        if getattr(self, '_is_asio_gst', False):
+            # Start GStreamer pipeline
+            if self._pipeline is not None:
+                self._pipeline.set_state(Gst.State.PLAYING)
+            # Start ASIO feed thread if not already running
+            if not getattr(self, '_asio_started', False):
+                if self._start_asio():
+                    self._asio_started = True
+            if not self._poll_timer.isActive():
+                self._poll_timer.setInterval(50)
+                self._poll_timer.start()
+            return
+        # Standard GStreamer path (including asiosink)
         super().play()
 
     def _teardown_pipeline(self):
@@ -139,6 +150,32 @@ class AudioEngine(_BaseAudioEngine):
         self._is_asio_gst = False
         self._appsink = None
         super()._teardown_pipeline()
+
+    def _poll(self):
+        # For ASIO with GStreamer pipeline: use GStreamer's position query
+        if getattr(self, '_is_asio_gst', False) and self._pipeline is not None:
+            # Drain bus messages
+            bus = self._pipeline.get_bus()
+            while True:
+                msg = bus.pop()
+                if msg is None:
+                    break
+                self._handle_message(msg)
+            # Query position from GStreamer pipeline
+            ok, pos_ns = self._pipeline.query_position(Gst.Format.TIME)
+            if ok:
+                ms = pos_ns // 1000000
+                if ms != self._position_ms:
+                    self._position_ms = ms
+                    self.positionChanged.emit(ms)
+            # Query duration
+            if self._duration_ms <= 0:
+                ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
+                if ok:
+                    self._duration_ms = dur_ns // 1000000
+                    self.durationChanged.emit(self._duration_ms)
+            return
+        super()._poll()
 
     def _cleanup_preloaded(self):
         """Kill any ffmpeg subprocess from the preloaded pipeline."""
