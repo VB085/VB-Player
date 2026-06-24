@@ -67,15 +67,28 @@ def asio_open(clsid_str, rate):
         n = min((w - r) % RING_SAMPLES, bs_ref)
         if n > 0 and ring_ref is not None:
             for ci in range(ch_ref):
-                dst = ctypes.cast(bi_ref[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+                dst_ptr = ctypes.cast(bi_ref[ci].buf[idx], ctypes.c_void_p).value
                 end = r + n
-                dst_ptr = ctypes.cast(dst, ctypes.c_void_p).value
                 if end <= RING_SAMPLES:
                     ctypes.memmove(dst_ptr, ctypes.addressof(ring_ref[ci]) + r * 4, n * 4)
                 else:
                     sz = RING_SAMPLES - r
                     ctypes.memmove(dst_ptr, ctypes.addressof(ring_ref[ci]) + r * 4, sz * 4)
                     ctypes.memmove(dst_ptr + sz * 4, ring_ref[ci], (n - sz) * 4)
+            # DUMP: read back from ASIO output buffer AFTER memmove (first cb only)
+            if not getattr(_cb_bs, '_dumped_cb', False):
+                _cb_bs._dumped_cb = True
+                import array, os
+                out = array.array('f')
+                for i in range(n):
+                    for cci in range(ch_ref):
+                        src = ctypes.cast(bi_ref[cci].buf[idx], ctypes.c_void_p).value
+                        val = ctypes.cast(src + i * 4, ctypes.POINTER(ctypes.c_float))[0]
+                        out.append(val)
+                s16 = array.array('h', (int(max(-1., min(1., v)) * 32767) for v in out))
+                desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
+                _write_wav(os.path.join(desktop, 'cb_ASIO.wav'), s16, 44100, ch_ref)
+                import sys; sys.stderr.write(f"[cb-dump] {n}frames memmove'd → cb_ASIO.wav\n")
         else:
             for ci in range(ch_ref):
                 dst = ctypes.cast(bi_ref[ci].buf[idx], ctypes.c_void_p)
