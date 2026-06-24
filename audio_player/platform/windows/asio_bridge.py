@@ -7,6 +7,7 @@ The engine_windows module expects module-level functions and globals:
     _a._wpos, _a._rpos, _a._ch, _a._bs, _a._running, _a.RING_SAMPLES
 """
 import asio_ctypes
+import sys
 
 _dev = None  # current ASIODevice instance
 
