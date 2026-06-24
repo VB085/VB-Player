@@ -59,19 +59,19 @@ def cb_bs(idx, dp):
             import sys; sys.stderr.write(f"[cb] dumped {len(_dump_buf)} bytes → Desktop/asio_cb_dump.wav\n")
 
     if n > 0 and _ring is not None:
-        for i in range(n):
-            src_off = ((r + i) % RING_SAMPLES) * bytes_per_frame
-            for ci in range(_ch):
-                # Cast buf[idx] to a raw pointer — avoid addressof(dst.contents)
-                # which gives address of a temporary Python object, not the ASIO buffer.
-                base = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p).value
-                dst_ptr = ctypes.c_void_p(base + i * 4)
-                src_ptr = ctypes.c_void_p(ctypes.addressof(_ring) + src_off + ci * 4)
-                ctypes.memmove(dst_ptr, src_ptr, 4)
+        # Read from interleaved ring buffer, write to per-channel ASIO output.
+        # Uses ctypes array indexing (like the verified standalone beep test).
+        src_floats = ctypes.cast(ctypes.addressof(_ring), ctypes.POINTER(ctypes.c_float))
+        for ci in range(_ch):
+            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+            for i in range(n):
+                src_idx = ((r + i) % RING_SAMPLES) * _ch + ci
+                dst[i] = src_floats[src_idx]
     else:
         for ci in range(_ch):
-            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p)
-            ctypes.memset(dst, 0, _bs * 4)
+            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+            for i in range(_bs):
+                dst[i] = 0.0
     _rpos = (r + n) % RING_SAMPLES
     return 0
 
