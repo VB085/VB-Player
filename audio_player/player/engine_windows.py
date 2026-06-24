@@ -82,7 +82,7 @@ def enumerate_hw_devices() -> list[dict]:
                     try:
                         clsid = winreg.EnumKey(key, i)
                         sub = winreg.OpenKey(key, clsid)
-                        name, _ = winreg.QueryValueEx(sub, "CLSID")
+                        _dummy = winreg.QueryValueEx(sub, "CLSID")[1]  # eat CLSID value
                         # name from registry is the driver description
                         driver_name = winreg.QueryValueEx(sub, "Description")[0]
                         devices.append({
