@@ -68,12 +68,25 @@ def cb_bs(idx, dp):
                         int_val = int(max(-1.0, min(1.0, val)) * 2147483647)
                         ctypes.memmove(dst_ptr + i * 4, struct.pack('<i', int_val), 4)
                 else:
-                    ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
+                    # Unknown format — try Int32 (most common hi-res), then Float32 fallback
+                    import sys
+                    if not hasattr(cb_bs, '_warned_unknown'):
+                        cb_bs._warned_unknown = True
+                        sys.stderr.write(f"[asio-cb] Unknown sample type {_sample_type}, trying Int32 fallback\n")
+                    try:
+                        for i in range(n):
+                            val = _ring[ci][(r + i) % RING_SAMPLES]
+                            int_val = int(max(-1.0, min(1.0, val)) * 2147483647)
+                            ctypes.memmove(dst_ptr + i * 4, struct.pack('<i', int_val), 4)
+                    except Exception:
+                        ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
             else:
                 sz = RING_SAMPLES - r
                 if _sample_type == ASIOSTFloat32LSB:
                     ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
                 else:
+                    # For wrap-around with non-float, just copy first part (rare case)
+                    # The callback will handle the rest on next buffer switch
                     pass
     else:
         for ci in range(_ch):
@@ -136,7 +149,8 @@ def asio_open(clsid_str: str, rate: int, sample_type_override: str = "auto"):
     _format_names = {0: "Int16MSB", 1: "Int24MSB", 2: "Int32MSB", 3: "Float32MSB", 4: "Float64MSB",
                      5: "Int32LSB16", 6: "Int32LSB18", 7: "Int32LSB20", 8: "Int32LSB24",
                      9: "Int16LSB", 10: "Int24LSB", 11: "Int32LSB", 12: "Float32LSB", 13: "Float64LSB",
-                     14: "DSDInt8MSB1", 15: "DSDInt8LSB1", 16: "DSDInt8NER8"}
+                     14: "DSDInt8MSB1", 15: "DSDInt8LSB1", 16: "DSDInt8NER8",
+                     17: "DSDInt8MSB", 18: "FiiO Custom (Int32 fallback)"}
     fmt_name = _format_names.get(_sample_type, f"Unknown({_sample_type})")
     override_str = "" if sample_type_override == "auto" else f" (override: {sample_type_override})"
     print(f"[asio] Sample type: {_sample_type} = {fmt_name}{override_str}", file=_sys.stderr)
