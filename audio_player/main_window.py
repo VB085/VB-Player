@@ -748,8 +748,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._settings_ctrl.restore_settings(None, self._sidebar)
         self._network_page.load_output_settings()
 
-        # Restore last playback state (safe now: metadata loading is synchronous on MSYS2)
-        self._restore_playback_state()
+        # Restore last playlist WITHOUT auto-playing (MSYS2: play triggers ASIO during init)
+        self._restore_playlist_only()
 
         s = QSettings("VBPlayer", "VB Player")
 
@@ -1113,6 +1113,20 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         paths = [p for p in paths if p]
         s.setValue("restore/playlist", paths)
         s.setValue("restore/index", self._playlist.current_index)
+
+    def _restore_playlist_only(self):
+        """Restore playlist WITHOUT triggering playback (safe at startup)."""
+        s = QSettings("VBPlayer", "VB Player")
+        if not s.value("restore/enabled", False):
+            return
+        paths = s.value("restore/playlist", [])
+        if isinstance(paths, list) and paths:
+            self._playlist.blockSignals(True)
+            self._playlist.clear()
+            self._playlist.add_files(paths)
+            self._playlist.blockSignals(False)
+            if hasattr(self, '_playlist_proxy'):
+                self._playlist_proxy.invalidate()
 
     def _restore_playback_state(self):
         """Restore last playback state if saved."""
