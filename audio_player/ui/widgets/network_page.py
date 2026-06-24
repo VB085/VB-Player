@@ -724,6 +724,9 @@ class NetworkPage(QWidget):
         self._exclusive_cb.setChecked(exclusive)
         self._device_combo.setEnabled(exclusive)
         self._exclusive_cb.blockSignals(False)
+        # Update ASIO format visibility based on exclusive mode
+        self._asio_format_label.setVisible(exclusive)
+        self._asio_format_combo.setVisible(exclusive)
         if exclusive:
             self._load_hw_devices()
             idx = self._device_combo.findData(exclusive_dev)
