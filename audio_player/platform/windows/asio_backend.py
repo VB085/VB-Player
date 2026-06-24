@@ -3,6 +3,8 @@ import ctypes, struct
 ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
 RING_SAMPLES = 262144
 
+import threading as _thr
+_lock = _thr.Lock()
 _ptr, _ch, _bs = None, 0, 0
 _ring, _bi, _cbs = None, None, None
 _wpos, _rpos = 0, 0
@@ -13,25 +15,27 @@ CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
 @CB_BS
 def cb_bs(idx, dp):
     global _rpos
-    n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
-    if n > 0 and _ring is not None:
-        for ci in range(_ch):
-            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
-            end = r + n
-            if end <= RING_SAMPLES:
-                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
-            else:
-                sz = RING_SAMPLES - r
-                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
-                src = _ring[ci]
-                ctypes.memmove(
-                    ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
-                    src, (n - sz) * 4)
-    else:
-        for ci in range(_ch):
-            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p)
-            ctypes.memset(dst, 0, _bs * 4)
-    _rpos = (r + n) % RING_SAMPLES; return 0
+    with _lock:
+        n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
+        if n > 0 and _ring is not None:
+            for ci in range(_ch):
+                dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+                end = r + n
+                if end <= RING_SAMPLES:
+                    ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
+                else:
+                    sz = RING_SAMPLES - r
+                    ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
+                    src = _ring[ci]
+                    ctypes.memmove(
+                        ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
+                        src, (n - sz) * 4)
+        else:
+            for ci in range(_ch):
+                dst = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p)
+                ctypes.memset(dst, 0, _bs * 4)
+        _rpos = (r + n) % RING_SAMPLES
+    return 0
 
 CB_SR = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_double)
 @CB_SR
@@ -87,19 +91,20 @@ def asio_write(data: bytes):
         if ns == 0: return False
         all_f = array.array('f')
         all_f.frombytes(data[:ns * _ch * 4])
-        w = _wpos
-        for ci in range(_ch):
-            col = all_f[ci::_ch]
-            col_bytes = col.tobytes()
-            dest = ctypes.addressof(_ring[ci])
-            pos = w
-            if pos + ns <= RING_SAMPLES:
-                ctypes.memmove(dest + pos * 4, col_bytes, ns * 4)
-            else:
-                first = RING_SAMPLES - pos
-                ctypes.memmove(dest + pos * 4, col_bytes[:first * 4], first * 4)
-                ctypes.memmove(dest, col_bytes[first * 4:], (ns - first) * 4)
-        _wpos = (w + ns) % RING_SAMPLES
+        with _lock:
+            w = _wpos
+            for ci in range(_ch):
+                col = all_f[ci::_ch]
+                col_bytes = col.tobytes()
+                dest = ctypes.addressof(_ring[ci])
+                pos = w
+                if pos + ns <= RING_SAMPLES:
+                    ctypes.memmove(dest + pos * 4, col_bytes, ns * 4)
+                else:
+                    first = RING_SAMPLES - pos
+                    ctypes.memmove(dest + pos * 4, col_bytes[:first * 4], first * 4)
+                    ctypes.memmove(dest, col_bytes[first * 4:], (ns - first) * 4)
+            _wpos = (w + ns) % RING_SAMPLES
         return True
     except Exception:
         return False
