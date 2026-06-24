@@ -119,14 +119,6 @@ class AudioEngine(_BaseAudioEngine):
         return ""
 
     def pause(self):
-        if not getattr(self, '_is_asio_gst', False) and self._pipeline is not None:
-            if self._app_state == PlaybackState.Playing:
-                self._volume_elem.set_property("volume", 0.0)
-                self._poll_timer.stop()
-                self._app_state = PlaybackState.Paused
-                self.stateChanged.emit(PlaybackState.Paused)
-                self._was_muted = True
-            return
         super().pause()
 
     def stop(self):
@@ -156,17 +148,6 @@ class AudioEngine(_BaseAudioEngine):
                         if self._pipeline is not None:
                             self._pipeline.set_state(Gst.State.PLAYING)
                     return
-            if not self._poll_timer.isActive():
-                self._poll_timer.setInterval(50)
-                self._poll_timer.start()
-            return
-        # WASAPI resume from mute: just restore volume (no seek — smooth)
-        if getattr(self, '_was_muted', False):
-            self._was_muted = False
-            if self._volume_elem is not None:
-                self._volume_elem.set_property("volume", self._volume_level)
-            self._app_state = PlaybackState.Playing
-            self.stateChanged.emit(PlaybackState.Playing)
             if not self._poll_timer.isActive():
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()
@@ -203,8 +184,6 @@ class AudioEngine(_BaseAudioEngine):
                     self._duration_ms = dur_ns // 1000000
                     self.durationChanged.emit(self._duration_ms)
             return
-        if getattr(self, '_was_muted', False):
-            return  # position frozen during mute-pause
         super()._poll()
 
     def _cleanup_preloaded(self):
@@ -247,9 +226,9 @@ class AudioEngine(_BaseAudioEngine):
                 if sink is None:
                     raise RuntimeError(_("engine.wasapi_unavailable"))
                 sink.set_property("exclusive", True)
-                sink.set_property("low-latency", True)
-                sink.set_property("buffer-time", 10000)
-                sink.set_property("latency-time", 3333)
+                sink.set_property("low-latency", False)
+                sink.set_property("buffer-time", 50000)
+                sink.set_property("latency-time", 10000)
                 if hw:
                     sink.set_property("device", hw)
         else:
