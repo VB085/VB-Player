@@ -134,19 +134,31 @@ if __name__ == "__main__":
     ch, bs = result
     print(f"ASIO ready: {ch}ch, {bs}buf, {rate}Hz", file=sys.stderr, flush=True)
 
-    # Read from stdin in chunks, feed to ASIO
-    chunk_size = bs * ch * 4  # one buffer worth of bytes
+    # Read from stdin, throttle to ring buffer capacity
+    chunk_size = bs * ch * 4
+    eof = False
+    buf = bytearray()
+    print("Playing...", file=sys.stderr, flush=True)
     try:
         while _running:
-            data = sys.stdin.buffer.read(chunk_size)
-            if not data:
-                break  # EOF from parent
-            asio_write(data)
+            # Top up ring buffer when below 3x ASIO buffer
+            free = RING_SAMPLES - ((_wpos - _rpos) % RING_SAMPLES) - bs * 2
+            if free > bs and not eof:
+                # Read more from stdin
+                want = min(free * ch * 4, chunk_size * 4)
+                data = sys.stdin.buffer.read(want)
+                if data:
+                    asio_write(data)
+                else:
+                    eof = True  # stdin closed, just drain
+            else:
+                time.sleep(0.01)  # ring buffer full, wait for callback
+            # If EOF and ring buffer drained, exit
+            if eof and _wpos == _rpos:
+                time.sleep(0.1)  # brief settle
+                break
     except KeyboardInterrupt:
         pass
     finally:
-        # Drain remaining
-        while _wpos != _rpos:
-            time.sleep(0.05)
         asio_close()
         print("ASIO closed", file=sys.stderr, flush=True)
