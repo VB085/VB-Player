@@ -748,9 +748,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._settings_ctrl.restore_settings(None, self._sidebar)
         self._network_page.load_output_settings()
 
-        # Restore last playback state (MSYS2: skip — _MetaLoader thread crashes)
-        if not _WIN32:
-            self._restore_playback_state()
+        # Restore last playback state (safe now: metadata loading is synchronous on MSYS2)
+        self._restore_playback_state()
 
         s = QSettings("VBPlayer", "VB Player")
 
