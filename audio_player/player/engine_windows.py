@@ -229,12 +229,10 @@ class AudioEngine(_BaseAudioEngine):
             hw = self._exclusive_device or ""
             if hw.startswith("asio:"):
                 clsid = hw[5:]
-                # Use standard asiosink — let GStreamer negotiate rate
                 sink = Gst.ElementFactory.make("asiosink", None)
                 if sink is None:
                     raise RuntimeError(_("engine.asio_unavailable"))
                 sink.set_property("device-clsid", clsid)
-                return sink
             else:
                 sink = Gst.ElementFactory.make("wasapi2sink", None)
                 if sink is None:
