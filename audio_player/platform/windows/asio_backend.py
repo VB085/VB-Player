@@ -3,12 +3,24 @@ import ctypes, struct
 ole32 = ctypes.windll.ole32; IID_FIIO = struct.pack('<IHH8B', 0x6B3BA606,0x8664,0x4426,0x89,0x94,0x0F,0x1E,0x6F,0xE6,0x19,0x9F)
 RING_SAMPLES = 262144
 
-# ASIO sample type constants
-ASIOSTInt16LSB = 0
-ASIOSTInt24LSB = 2
-ASIOSTInt32LSB = 4
-ASIOSTFloat32LSB = 6
-ASIOSTFloat64LSB = 7
+# ASIO sample type constants (from ASIO SDK asio.h)
+ASIOSTInt16MSB = 0
+ASIOSTInt24MSB = 1
+ASIOSTInt32MSB = 2
+ASIOSTFloat32MSB = 3
+ASIOSTFloat64MSB = 4
+ASIOSTInt32LSB16 = 5  # 32-bit container, 16-bit data
+ASIOSTInt32LSB18 = 6  # 32-bit container, 18-bit data
+ASIOSTInt32LSB20 = 7  # 32-bit container, 20-bit data
+ASIOSTInt32LSB24 = 8  # 32-bit container, 24-bit data
+ASIOSTInt16LSB = 9
+ASIOSTInt24LSB = 10
+ASIOSTInt32LSB = 11
+ASIOSTFloat32LSB = 12
+ASIOSTFloat64LSB = 13
+ASIOSTDSDInt8MSB1 = 14  # DSD
+ASIOSTDSDInt8LSB1 = 15
+ASIOSTDSDInt8NER8 = 16
 
 _ptr, _ch, _bs = None, 0, 0
 _ring, _bi, _cbs = None, None, None
@@ -38,17 +50,23 @@ def cb_bs(idx, dp):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
                         int_val = int(max(-1.0, min(1.0, val)) * 2147483647)
                         ctypes.memmove(dst_ptr + i * 4, struct.pack('<i', int_val), 4)
-                elif _sample_type == ASIOSTInt24LSB:
+                elif _sample_type == ASIOSTInt24LSB or _sample_type == 10:
                     for i in range(n):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
                         int_val = int(max(-1.0, min(1.0, val)) * 8388607)
                         b = struct.pack('<i', int_val)[:3]
                         ctypes.memmove(dst_ptr + i * 3, b, 3)
-                elif _sample_type == ASIOSTInt16LSB:
+                elif _sample_type == ASIOSTInt16LSB or _sample_type == 9:
                     for i in range(n):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
                         int_val = int(max(-1.0, min(1.0, val)) * 32767)
                         ctypes.memmove(dst_ptr + i * 2, struct.pack('<h', int_val), 2)
+                elif _sample_type == 18:
+                    # FiiO-specific: try INT32LSB first (most common for hi-res DACs)
+                    for i in range(n):
+                        val = _ring[ci][(r + i) % RING_SAMPLES]
+                        int_val = int(max(-1.0, min(1.0, val)) * 2147483647)
+                        ctypes.memmove(dst_ptr + i * 4, struct.pack('<i', int_val), 4)
                 else:
                     ctypes.memmove(dst_ptr, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
             else:
@@ -109,7 +127,12 @@ def asio_open(clsid_str: str, rate: int):
     V(18, ctypes.c_long, ctypes.POINTER(ASIOChannelInfo))(p, ctypes.byref(info))
     _sample_type = info.sampleType
     import sys as _sys
-    print(f"[asio] Sample type: {_sample_type} (expected {ASIOSTFloat32LSB} = F32LE)", file=_sys.stderr)
+    _format_names = {0: "Int16MSB", 1: "Int24MSB", 2: "Int32MSB", 3: "Float32MSB", 4: "Float64MSB",
+                     5: "Int32LSB16", 6: "Int32LSB18", 7: "Int32LSB20", 8: "Int32LSB24",
+                     9: "Int16LSB", 10: "Int24LSB", 11: "Int32LSB", 12: "Float32LSB", 13: "Float64LSB",
+                     14: "DSDInt8MSB1", 15: "DSDInt8LSB1", 16: "DSDInt8NER8"}
+    fmt_name = _format_names.get(_sample_type, f"Unknown({info.sampleType})")
+    print(f"[asio] Sample type: {info.sampleType} = {fmt_name}", file=_sys.stderr)
 
     class BI(ctypes.Structure): _fields_ = [('i',ctypes.c_long),('n',ctypes.c_long),('buf',ctypes.c_void_p*2)]
     _bi = (BI * _ch)(); _bi_ref = _bi
