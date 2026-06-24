@@ -102,3 +102,22 @@ ASIOSTInt32LSB24 = 27
 2. 回调是否触发：加 `sys.stderr.flush()` 打印，QTimer 可能吞异常
 3. `_cbs` 要全局：局部变量 GC 后回调不触发
 4. 独立进程测试：`asio_worker.py` 隔离 Qt/GIL 影响
+
+## WASAPI 暂停恢复切碎问题
+
+### 现象
+WASAPI 独占模式暂停后播放，音频断续（几秒才放一段），进度条跳。
+
+### 根因
+`wasapi2sink` 的 `buffer-time=10000` (10ms) 太小，配合 `low-latency=True`。
+暂停时管道停止，音频 buffer 排空。恢复时 10ms buffer 来不及填满，
+导致连续 underrun → 声音"切碎"。
+
+### 解决
+```python
+sink.set_property("low-latency", False)    # 关闭低延迟
+sink.set_property("buffer-time", 50000)    # 10ms → 50ms
+sink.set_property("latency-time", 10000)   # 3ms → 10ms
+```
+更大的 buffer 给管道更多时间在恢复时填充。暂停/恢复完全使用 GStreamer
+基类的标准逻辑，不做任何自定义覆盖。
