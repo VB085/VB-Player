@@ -119,23 +119,9 @@ class AudioEngine(_BaseAudioEngine):
         return ""
 
     def pause(self):
-        if getattr(self, '_is_asio_gst', False):
-            # Stop feeding but keep ASIO open (ring buffer drains → silence)
-            t = getattr(self, '_asio_feed_timer', None)
-            if t is not None:
-                t.stop()
-            self._poll_timer.stop()
-            self._app_state = PlaybackState.Paused
-            self.stateChanged.emit(PlaybackState.Paused)
-            return
         super().pause()
 
     def stop(self):
-        if getattr(self, '_is_asio_gst', False):
-            self._stop_asio()
-            self._kill_ffmpeg_proc()
-            super().stop()
-            return
         super().stop()
 
     def play(self):
@@ -153,41 +139,6 @@ class AudioEngine(_BaseAudioEngine):
         self._is_asio_gst = False
         self._appsink = None
         super()._teardown_pipeline()
-
-    def seek(self, position_ms: int):
-        if getattr(self, '_is_asio_gst', False):
-            self._seek_asio_ffmpeg(position_ms)
-            return
-        super().seek(position_ms)
-
-    def _seek_asio_ffmpeg(self, position_ms: int):
-        """Seek: restart ffmpeg with -ss, reopen ASIO."""
-        filepath = self._current_file
-        if not filepath:
-            return
-        self._stop_asio()
-        self._kill_ffmpeg_proc()
-        # Rebuild with seek offset
-        import subprocess
-        ffmpeg = self._find_ffmpeg()
-        if not ffmpeg:
-            return
-        rate = self._pipeline_sample_rate or 44100
-        seek_sec = position_ms / 1000.0
-        ffmpeg_cmd = [
-            ffmpeg, "-ss", str(seek_sec), "-i", filepath,
-            "-f", "f32le", "-acodec", "pcm_f32le",
-            "-ar", str(rate), "-ac", "2",
-            "-loglevel", "quiet",
-            "pipe:1",
-        ]
-        try:
-            self._ffmpeg_proc = subprocess.Popen(
-                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except Exception:
-            return
-        self._asio_bytes_total = position_ms * rate * 2 * 4 // 1000
-        self._start_asio()
 
     def _cleanup_preloaded(self):
         """Kill any ffmpeg subprocess from the preloaded pipeline."""
