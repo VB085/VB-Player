@@ -688,10 +688,18 @@ class AudioEngine(_BaseAudioEngine):
             queue = Gst.ElementFactory.make("queue", None)
             conv = Gst.ElementFactory.make("audioconvert", None)
             resample = Gst.ElementFactory.make("audioresample", None)
+            volume = Gst.ElementFactory.make("volume", None)
+            volume.set_property("volume", self._volume_level)
+            eq = Gst.ElementFactory.make("equalizer-nbands", None)
+            eq.set_property("num-bands", 10)
+            for i, freq in enumerate(BAND_FREQUENCIES):
+                band = eq.get_child_by_index(i)
+                band.set_property("freq", float(freq))
+                band.set_property("gain", self._eq_gains[i] if self._eq_enabled else 0.0)
             capsf = Gst.ElementFactory.make("capsfilter", None)
             appsink = Gst.ElementFactory.make("appsink", None)
 
-            if any(x is None for x in [filesrc, decodebin, queue, conv, resample, capsf, appsink]):
+            if any(x is None for x in [filesrc, decodebin, queue, conv, resample, volume, eq, capsf, appsink]):
                 raise RuntimeError("GStreamer plugins missing")
 
             caps_str = f"audio/x-raw,format=F32LE,rate={target_rate},channels=2,layout=interleaved"
@@ -701,10 +709,10 @@ class AudioEngine(_BaseAudioEngine):
             appsink.set_property("max-buffers", 4)
             appsink.set_property("drop", False)
 
-            for e in [filesrc, decodebin, queue, conv, resample, capsf, appsink]:
+            for e in [filesrc, decodebin, queue, conv, resample, volume, eq, capsf, appsink]:
                 pipeline.add(e)
             filesrc.link(decodebin)
-            queue.link(conv); conv.link(resample); resample.link(capsf); capsf.link(appsink)
+            queue.link(conv); conv.link(resample); resample.link(volume); volume.link(eq); eq.link(capsf); capsf.link(appsink)
 
             self._pipeline = pipeline
             self._appsink = appsink
@@ -718,6 +726,8 @@ class AudioEngine(_BaseAudioEngine):
             if duration_ms > 0: self.durationChanged.emit(duration_ms)
             self._is_asio_gst = True
             self._asio_bytes_total = 0
+            self._volume_elem = volume
+            self._eq_elem = eq
             return True
         except Exception as e:
             self._teardown_pipeline()
@@ -835,8 +845,6 @@ class AudioEngine(_BaseAudioEngine):
         try:
             self._ffmpeg_proc = subprocess.Popen(
                 ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # Drain stderr after 500ms to catch ffmpeg errors
-            QTimer.singleShot(500, lambda: self._check_ffmpeg_errors())
         except Exception as e:
             import sys as _s; print(f"[asio] ffmpeg start failed: {e}", file=_s.stderr)
             return False
