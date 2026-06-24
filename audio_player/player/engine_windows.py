@@ -10,7 +10,7 @@ from audio_player.player._types import PlaybackState
 from audio_player.i18n import _
 import sys as _sys
 if _sys.platform == "win32":
-    import audio_player.platform.windows.asio_backend as _a
+    import audio_player.platform.windows.asio_bridge as _a
 else:
     _a = None  # Linux/macOS — no ASIO backend
 

@@ -7,6 +7,11 @@ if sys.stderr is None or not sys.stderr:
     sys.stdout = sys.stderr
 faulthandler.enable()
 
+# asio-ctypes library (local development)
+_asio_ctypes_path = Path(__file__).resolve().parent.parent / "asio-ctypes" / "src"
+if _asio_ctypes_path.is_dir():
+    sys.path.insert(0, str(_asio_ctypes_path))
+
 # Catch SIGABRT — exit cleanly instead of core dump (Qt 6.11 QThread bug)
 def _abort_handler(signum, frame):
     print("\nSIGABRT caught — exiting cleanly", file=sys.stderr)
