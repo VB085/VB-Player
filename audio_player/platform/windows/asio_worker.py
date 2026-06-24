@@ -16,41 +16,11 @@ _ring, _bi, _cbs = None, None, None
 _wpos, _rpos = 0, 0
 _running = False
 
-CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
-
-@CB_BS
-def cb_bs(idx, dp):
-    global _rpos
-    import sys
-    sys.stderr.write(f"[CB] idx={idx} wpos={_wpos} rpos={_rpos} bs={_bs}\n"); sys.stderr.flush()
-    n = min((_wpos - _rpos) % RING_SAMPLES, _bs); r = _rpos
-    if n > 0 and _ring is not None:
-        for ci in range(_ch):
-            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
-            end = r + n
-            if end <= RING_SAMPLES:
-                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
-            else:
-                sz = RING_SAMPLES - r
-                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
-                ctypes.memmove(
-                    ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
-                    _ring[ci], (n - sz) * 4)
-    else:
-        for ci in range(_ch):
-            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.c_void_p)
-            ctypes.memset(dst, 0, _bs * 4)
-    _rpos = (r + n) % RING_SAMPLES; return 0
-
-CB_SR = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_double)
-@CB_SR
-def cb_sr(r): return 0
-CB_AM = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)
-@CB_AM
-def cb_am(s,v,m,o): return 0
-CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
-@CB_TI
-def cb_ti(p,i,d): cb_bs(i,d)
+# CB types (used inside asio_open for closures)
+_CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
+_CB_SR = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_double)
+_CB_AM = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)
+_CB_TI = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_long, ctypes.c_long)
 
 def _mkclsid(s):
     w = ctypes.create_unicode_buffer(s); c = (ctypes.c_byte*16)()
@@ -79,7 +49,51 @@ def asio_open(clsid_str, rate):
     for i in range(_ch): _bi[i].i = 0; _bi[i].n = i
 
     class CB(ctypes.Structure): _fields_ = [('bs',ctypes.c_void_p),('sr',ctypes.c_void_p),('am',ctypes.c_void_p),('ti',ctypes.c_void_p)]
-    _cbs = CB(); _cbs.bs=ctypes.cast(cb_bs,ctypes.c_void_p); _cbs.sr=ctypes.cast(cb_sr,ctypes.c_void_p); _cbs.am=ctypes.cast(cb_am,ctypes.c_void_p); _cbs.ti=ctypes.cast(cb_ti,ctypes.c_void_p)
+
+    # Callbacks as CLOSURES — capture _ring, _bi, _rpos directly (standalone test pattern)
+    ring_ref = _ring
+    bi_ref = _bi
+    bs_ref = _bs
+    ch_ref = _ch
+    wpos_cell = [_wpos]  # mutable cell for closure to write
+    rpos_cell = [_rpos]
+
+    @_CB_BS
+    def _cb_bs(idx, dp):
+        w = wpos_cell[0]
+        r = rpos_cell[0]
+        n = min((w - r) % RING_SAMPLES, bs_ref)
+        if n > 0 and ring_ref is not None:
+            for ci in range(ch_ref):
+                dst = ctypes.cast(bi_ref[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+                end = r + n
+                if end <= RING_SAMPLES:
+                    ctypes.memmove(dst, ctypes.addressof(ring_ref[ci]) + r * 4, n * 4)
+                else:
+                    sz = RING_SAMPLES - r
+                    ctypes.memmove(dst, ctypes.addressof(ring_ref[ci]) + r * 4, sz * 4)
+                    ctypes.memmove(
+                        ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
+                        ring_ref[ci], (n - sz) * 4)
+        else:
+            for ci in range(ch_ref):
+                dst = ctypes.cast(bi_ref[ci].buf[idx], ctypes.c_void_p)
+                ctypes.memset(dst, 0, bs_ref * 4)
+        rpos_cell[0] = (r + n) % RING_SAMPLES
+        return 0
+
+    @_CB_SR
+    def _cb_sr(r): return 0
+    @_CB_AM
+    def _cb_am(s,v,m,o): return 0
+    @_CB_TI
+    def _cb_ti(p,i,d): _cb_bs(i,d)
+
+    _cbs = CB()
+    _cbs.bs = ctypes.cast(_cb_bs, ctypes.c_void_p)
+    _cbs.sr = ctypes.cast(_cb_sr, ctypes.c_void_p)
+    _cbs.am = ctypes.cast(_cb_am, ctypes.c_void_p)
+    _cbs.ti = ctypes.cast(_cb_ti, ctypes.c_void_p)
 
     if V(19,ctypes.c_long,ctypes.c_void_p,ctypes.c_long,ctypes.c_long,ctypes.c_void_p)(p,ctypes.byref(_bi),_ch,_bs,ctypes.byref(_cbs)):
         asio_close(); return None
@@ -87,18 +101,16 @@ def asio_open(clsid_str, rate):
     return (_ch, _bs)
 
 def asio_write(data):
-    global _wpos
     if not _running or not data or _ch <= 0 or _ring is None: return False
     ns = (len(data) // 4) // _ch
     if ns == 0: return False
-    # SAME approach as standalone beep test
     src = (ctypes.c_float * (ns * _ch)).from_buffer_copy(data[:ns * _ch * 4])
-    w = _wpos
+    w = wpos_cell[0]
     for ci in range(_ch):
         dst = _ring[ci]
         for i in range(ns):
             dst[(w + i) % RING_SAMPLES] = src[i * _ch + ci]
-    _wpos = (w + ns) % RING_SAMPLES
+    wpos_cell[0] = (w + ns) % RING_SAMPLES
     return True
 
 def asio_close():
@@ -136,6 +148,7 @@ if __name__ == "__main__":
     try:
         while _running:
             free = RING_SAMPLES - ((_wpos - _rpos) % RING_SAMPLES) - bs * 2
+            free = RING_SAMPLES - ((wpos_cell[0] - rpos_cell[0]) % RING_SAMPLES) - bs * 2
             if free > bs and not eof:
                 want = min(free * ch * 4, chunk_size * 4)
                 data = sys.stdin.buffer.read(want)
@@ -143,7 +156,7 @@ if __name__ == "__main__":
                     ok = asio_write(data)
                     total_written += len(data)
                     if dbg_count < 5:
-                        print(f"  wrote {len(data)}B (ok={ok}), wpos={_wpos}, rpos={_rpos}, free={free}",
+                        print(f"  wrote {len(data)}B (ok={ok}), wpos={wpos_cell[0]}, rpos={rpos_cell[0]}, free={free}",
                               file=sys.stderr, flush=True)
                         dbg_count += 1
                 else:
@@ -151,7 +164,7 @@ if __name__ == "__main__":
                     print(f"  EOF after {total_written}B", file=sys.stderr, flush=True)
             else:
                 time.sleep(0.01)
-            if eof and _wpos == _rpos:
+            if eof and wpos_cell[0] == rpos_cell[0]:
                 time.sleep(0.1)
                 break
     except KeyboardInterrupt:
