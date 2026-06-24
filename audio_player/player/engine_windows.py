@@ -80,10 +80,9 @@ def enumerate_hw_devices() -> list[dict]:
                 i = 0
                 while True:
                     try:
-                        clsid = winreg.EnumKey(key, i)
-                        sub = winreg.OpenKey(key, clsid)
-                        _dummy = winreg.QueryValueEx(sub, "CLSID")[1]  # eat CLSID value
-                        # name from registry is the driver description
+                        key_name = winreg.EnumKey(key, i)
+                        sub = winreg.OpenKey(key, key_name)
+                        clsid = winreg.QueryValueEx(sub, "CLSID")[0]  # the actual GUID
                         driver_name = winreg.QueryValueEx(sub, "Description")[0]
                         devices.append({
                             "card": len(devices),
