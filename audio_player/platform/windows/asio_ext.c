@@ -1,82 +1,244 @@
-/** ASIO Native Backend — full buffer management replacing GStreamer asiosink. */
+/** ASIO C Extension — ring buffer + callback in C, no Python in audio path. */
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
-#include <process.h>
 
-enum { VI_INIT=3, VI_START=7, VI_STOP=8, VI_GETCH=9, VI_GETBS=11,
-       VI_CANRATE=12, VI_GETRATE=13, VI_SETRATE=14, VI_CRBUF=19,
-       VI_DISPBUF=20, VI_OUTRDY=23 };
+/* vtable indices */
+enum { VI_RELEASE=2, VI_INIT=3, VI_START=7, VI_STOP=8,
+       VI_GETCH=9, VI_GETBS=11, VI_CANRATE=12, VI_SETRATE=14,
+       VI_CRBUF=19, VI_DISPBUF=20 };
+
+#define RING_FRAMES 262144
+#define RING_MASK (RING_FRAMES - 1)
 
 typedef long ASErr;
-#define VC(p,i,r,...) ((r(*)(void*,##__VA_ARGS__))(((void**)(*(void***)p))[i]))
 
-static CLSID mkclsid(const char*s){wchar_t w[64]={0};MultiByteToWideChar(CP_UTF8,0,s,-1,w,64);CLSID c={0};CLSIDFromString(w,&c);return c;}
+/* Global state */
+static void          *g_dev = NULL;      /* ASIO driver COM pointer */
+static float         *g_ring = NULL;     /* interleaved ring buffer [L,R,L,R,...] */
+static void         **g_bufs = NULL;     /* per-channel ASIO output buffer pointers (double-buffered) */
+static long           g_bs = 0;          /* ASIO buffer size in samples */
+static long           g_ch = 0;          /* channel count */
+static volatile long  g_wpos = 0;        /* write position (frames) */
+static volatile long  g_rpos = 0;        /* read position (frames) */
+static CRITICAL_SECTION g_lock;          /* protects ring buffer access */
 
-static void *g_a;static char **g_b;static long g_bs,g_ch;static volatile int g_nd;
-static HANDLE g_ev;
+/* Helper: call ASIO vtable function */
+static ASErr _call(int idx, ...) {
+    void **vt = *(void***)g_dev;
+    void *fn = vt[idx];
+    /* Minimal: all ASIO calls have similar signatures, cast and pray */
+    return ((ASErr(*)(void*,...))fn)(g_dev);
+}
 
-static long _cdecl cbBS(long i,long d){(void)i;(void)d;g_nd=1;SetEvent(g_ev);return 0;}
-static void _cdecl cbTI(void*p,long i,long d){cbBS(i,d);}
-static ASErr _cdecl cbSR(double r){(void)r;return 0;}
-static long _cdecl cbAM(long s,long v,void*m,double*o){(void)s;(void)v;(void)m;(void)o;return 0;}
-struct CB{void*bs;void*sr;void*am;void*ti;};
+/* ASIO buffer info struct */
+typedef struct { long isIn; long ch; void *buf[2]; } ASIOBufInfo;
 
-static PyObject* asio_open(PyObject*s,PyObject*a){
-    const char*cs;double r;if(!PyArg_ParseTuple(a,"sd",&cs,&r))return NULL;
-    if(g_a)Py_RETURN_FALSE;
-    CoInitializeEx(NULL,2);CLSID c=mkclsid(cs);void*p=NULL;
-    if(FAILED(CoCreateInstance(&c,NULL,CLSCTX_INPROC_SERVER,(IID*)&c,&p))||!p)Py_RETURN_FALSE;
-    if(VC(p,VI_INIT,long,void*)(p,NULL)!=1){VC(p,2,unsigned long)(p);Py_RETURN_FALSE;}
-    if(VC(p,VI_SETRATE,ASErr,double)(p,r)){VC(p,2,unsigned long)(p);Py_RETURN_FALSE;}
-    long ic=0,oc=0;VC(p,VI_GETCH,ASErr,long*,long*)(p,&ic,&oc);if(oc<2)oc=2;
-    long mn=0,mx=0,pf=0,gr=0;VC(p,VI_GETBS,ASErr,long*,long*,long*,long*)(p,&mn,&mx,&pf,&gr);
-    long bs=pf?pf:(mx?mx:1024);if(bs<64)bs=1024;
-    typedef struct{long isIn;long ch;void*b[2];}BI;
-    BI*bi=calloc(oc,sizeof(BI));for(long i=0;i<oc;i++){bi[i].isIn=0;bi[i].ch=i;}
-    struct CB cb={cbBS,cbSR,cbAM,cbTI};
-    if(VC(p,VI_CRBUF,ASErr,void*,long,long,void*)(p,bi,oc,bs,&cb)){
-        free(bi);VC(p,2,unsigned long)(p);Py_RETURN_FALSE;}
-    char**bb=calloc(oc,sizeof(char*));for(long i=0;i<oc;i++)bb[i]=bi[i].b[0];free(bi);
-    VC(p,VI_START,ASErr)(p);
-    g_a=p;g_b=bb;g_bs=bs;g_ch=oc;g_ev=CreateEvent(NULL,0,0,NULL);
-    return Py_BuildValue("ll",oc,bs);}
+/* ASIO callback: copy from ring buffer to output buffers */
+static long __cdecl _bufSwitch(long idx, long dir) {
+    (void)dir;
+    EnterCriticalSection(&g_lock);
+    long w = g_wpos, r = g_rpos;
+    long n = (w - r) & RING_MASK;
+    if (n > g_bs) n = g_bs;
+    long stride = (long)(g_ch * sizeof(float));
+    if (n > 0 && g_ring && g_bufs) {
+        for (long ci = 0; ci < g_ch; ci++) {
+            float *dst = ((float**)g_bufs)[ci * 2 + idx];
+            float *src = g_ring + ci; /* start at channel ci */
+            long r1 = r;
+            if (r1 + n <= RING_FRAMES) {
+                for (long i = 0; i < n; i++) {
+                    dst[i] = src[(r1 + i) * g_ch];
+                }
+            } else {
+                long sz = RING_FRAMES - r1;
+                for (long i = 0; i < sz; i++)
+                    dst[i] = src[(r1 + i) * g_ch];
+                for (long i = 0; i < n - sz; i++)
+                    dst[sz + i] = src[i * g_ch];
+            }
+        }
+        g_rpos = (r + n) & RING_MASK;
+    } else if (g_bufs) {
+        /* Underrun: output silence */
+        long bs = g_bs;
+        for (long ci = 0; ci < g_ch; ci++) {
+            float *dst = ((float**)g_bufs)[ci * 2 + idx];
+            memset(dst, 0, bs * sizeof(float));
+        }
+    }
+    LeaveCriticalSection(&g_lock);
+    return 0;
+}
+static long __cdecl _srChange(double r) { (void)r; return 0; }
+static long __cdecl _asioMsg(long s, long v, void *m, double *o) {
+    (void)s; (void)v; (void)m; (void)o; return 0;
+}
+static void __cdecl _timeInfo(void *p, long i, long d) { _bufSwitch(i, d); }
 
-static PyObject* asio_write(PyObject*s,PyObject*a){
-    Py_buffer v;if(!PyArg_ParseTuple(a,"y*",&v))return NULL;
-    if(!g_a){PyBuffer_Release(&v);Py_RETURN_FALSE;}
-    float*sr=(float*)v.buf;long ns=v.len/sizeof(float)/g_ch;if(ns>g_bs)ns=g_bs;
-    WaitForSingleObject(g_ev,2000);g_nd=0;
-    for(long c=0;c<g_ch;c++){float*d=(float*)g_b[c];for(long i=0;i<ns;i++)d[i]=sr[i*g_ch+c];}
-    VC(g_a,VI_OUTRDY,ASErr)(g_a);PyBuffer_Release(&v);Py_RETURN_TRUE;}
+typedef struct { void *bs; void *sr; void *am; void *ti; } ASIOCBs;
 
-static PyObject* asio_close(PyObject*s,PyObject*a){
-    if(!g_a)Py_RETURN_FALSE;
-    VC(g_a,VI_STOP,ASErr)(g_a);VC(g_a,VI_DISPBUF,ASErr)(g_a);VC(g_a,2,unsigned long)(g_a);
-    if(g_ev){CloseHandle(g_ev);g_ev=NULL;}free(g_b);g_b=NULL;g_a=NULL;g_ch=g_bs=0;Py_RETURN_TRUE;}
+/* Python: asio_ext.open(clsid_str, rate) → (channels, buf_size) or None */
+static PyObject *ext_open(PyObject *self, PyObject *args) {
+    const char *cs; double rate;
+    if (!PyArg_ParseTuple(args, "sd", &cs, &rate)) return NULL;
+    if (g_dev) { Py_RETURN_NONE; }
 
-static PyObject* asio_set_rate(PyObject*s,PyObject*a){
-    const char*cs;double r;if(!PyArg_ParseTuple(a,"sd",&cs,&r))return NULL;
-    CoInitializeEx(NULL,2);CLSID c=mkclsid(cs);void*p=NULL;
-    if(FAILED(CoCreateInstance(&c,NULL,CLSCTX_INPROC_SERVER,(IID*)&c,&p))||!p)Py_RETURN_FALSE;
-    VC(p,VI_INIT,long,void*)(p,NULL);VC(p,VI_SETRATE,ASErr,double)(p,r);VC(p,2,unsigned long)(p);Py_RETURN_TRUE;}
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
-static PyObject* asio_get_rates(PyObject*s,PyObject*a){
-    const char*cs;if(!PyArg_ParseTuple(a,"s",&cs))return NULL;
-    CoInitializeEx(NULL,2);CLSID c=mkclsid(cs);void*p=NULL;
-    if(FAILED(CoCreateInstance(&c,NULL,CLSCTX_INPROC_SERVER,(IID*)&c,&p))||!p)return PyList_New(0);
-    VC(p,VI_INIT,long,void*)(p,NULL);PyObject*l=PyList_New(0);
-    double rs[]={44100,48000,88200,96000,176400,192000,352800,384000};
-    for(int i=0;i<8;i++)if(VC(p,VI_CANRATE,ASErr,double)(p,rs[i])==0)PyList_Append(l,PyLong_FromLong((long)rs[i]));
-    VC(p,2,unsigned long)(p);return l;}
+    /* Parse CLSID string → GUID */
+    wchar_t w[64] = {0};
+    MultiByteToWideChar(CP_UTF8, 0, cs, -1, w, 64);
+    CLSID clsid; HRESULT hr = CLSIDFromString(w, &clsid);
+    if (FAILED(hr)) { Py_RETURN_NONE; }
 
-static PyMethodDef M[]={
-    {"open",asio_open,METH_VARARGS,"Open ASIO device and start streaming."},
-    {"write",asio_write,METH_VARARGS,"Write interleaved float32 PCM."},
-    {"close",asio_close,METH_VARARGS,"Close ASIO device."},
-    {"set_rate",asio_set_rate,METH_VARARGS,"Quick rate set."},
-    {"get_rates",asio_get_rates,METH_VARARGS,"Get supported rates."},{NULL}};
-static struct PyModuleDef md={PyModuleDef_HEAD_INIT,"asio_ext",NULL,-1,M};
-PyMODINIT_FUNC PyInit_asio_ext(void){return PyModule_Create(&md);}
+    /* Create ASIO driver instance */
+    void *dev = NULL;
+    /* FiiO workaround: use driver's own CLSID as IID */
+    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER, &clsid, &dev);
+    if (FAILED(hr) || !dev) { Py_RETURN_NONE; }
+
+    ASErr e;
+    /* Init */
+    e = ((ASErr(*)(void*,void*))(((void**)dev)[VI_INIT]))(dev, NULL);
+    if (e != 1) { ((void(*)(void*))(((void**)dev)[VI_RELEASE]))(dev); Py_RETURN_NONE; }
+    /* Set sample rate */
+    e = ((ASErr(*)(void*,double))(((void**)dev)[VI_SETRATE]))(dev, rate);
+    if (e != 0) { ((void(*)(void*))(((void**)dev)[VI_RELEASE]))(dev); Py_RETURN_NONE; }
+    /* Get channels */
+    long ic = 0, oc = 0;
+    ((ASErr(*)(void*,long*,long*))(((void**)dev)[VI_GETCH]))(dev, &ic, &oc);
+    if (oc < 2) oc = 2;
+    /* Get buffer size */
+    long mn = 0, mx = 0, pf = 0, gr = 0;
+    ((ASErr(*)(void*,long*,long*,long*,long*))(((void**)dev)[VI_GETBS]))(dev, &mn, &mx, &pf, &gr);
+    long bs = pf ? pf : (mx ? mx : 1024);
+    if (bs < 64) bs = 1024;
+
+    /* Create buffer infos */
+    ASIOBufInfo *bi = calloc(oc, sizeof(ASIOBufInfo));
+    for (long i = 0; i < oc; i++) { bi[i].isIn = 0; bi[i].ch = i; }
+    /* Setup callbacks */
+    ASIOCBs cb = { _bufSwitch, _srChange, _asioMsg, _timeInfo };
+    e = ((ASErr(*)(void*,void*,long,long,void*))(((void**)dev)[VI_CRBUF]))(dev, bi, oc, bs, &cb);
+    if (e != 0) { free(bi); ((void(*)(void*))(((void**)dev)[VI_RELEASE]))(dev); Py_RETURN_NONE; }
+
+    /* Extract buffer pointers */
+    void **bufs = calloc(oc * 2, sizeof(void*));
+    for (long i = 0; i < oc; i++) {
+        bufs[i * 2 + 0] = bi[i].buf[0];
+        bufs[i * 2 + 1] = bi[i].buf[1];
+    }
+    free(bi);
+
+    /* Create ring buffer */
+    float *ring = calloc(RING_FRAMES * oc, sizeof(float));
+
+    /* Start ASIO */
+    ((ASErr(*)(void*))(((void**)dev)[VI_START]))(dev);
+
+    /* Initialize globals */
+    InitializeCriticalSection(&g_lock);
+    g_dev = dev;
+    g_ring = ring;
+    g_bufs = bufs;
+    g_bs = bs;
+    g_ch = oc;
+    g_wpos = 0;
+    g_rpos = 0;
+
+    return Py_BuildValue("ll", oc, bs);
+}
+
+/* Python: asio_ext.write(data_bytes) → bool */
+static PyObject *ext_write(PyObject *self, PyObject *args) {
+    Py_buffer buf;
+    if (!PyArg_ParseTuple(args, "y*", &buf)) return NULL;
+    if (!g_dev || !g_ring) { PyBuffer_Release(&buf); Py_RETURN_FALSE; }
+
+    long ns = (long)(buf.len / sizeof(float) / g_ch);
+    if (ns <= 0) { PyBuffer_Release(&buf); Py_RETURN_FALSE; }
+
+    EnterCriticalSection(&g_lock);
+    long w = g_wpos;
+    /* Available space */
+    long used = (w - g_rpos) & RING_MASK;
+    long free = RING_FRAMES - used - 1;
+    if (ns > free) ns = free;
+    if (ns <= 0) { LeaveCriticalSection(&g_lock); PyBuffer_Release(&buf); Py_RETURN_FALSE; }
+
+    float *src = (float*)buf.buf;
+    long nbytes = ns * g_ch * (long)sizeof(float);
+    long offset = (w & RING_MASK) * g_ch;
+    if (offset + ns * g_ch <= RING_FRAMES * g_ch) {
+        memcpy(g_ring + offset, src, nbytes);
+    } else {
+        long first = RING_FRAMES * g_ch - offset;
+        memcpy(g_ring + offset, src, first * sizeof(float));
+        memcpy(g_ring, src + first, (ns * g_ch - first) * sizeof(float));
+    }
+    g_wpos = (w + ns) & RING_MASK;
+    LeaveCriticalSection(&g_lock);
+
+    PyBuffer_Release(&buf);
+    Py_RETURN_TRUE;
+}
+
+/* Python: asio_ext.close() */
+static PyObject *ext_close(PyObject *self, PyObject *args) {
+    if (!g_dev) Py_RETURN_FALSE;
+    ((ASErr(*)(void*))(((void**)g_dev)[VI_STOP]))(g_dev);
+    ((ASErr(*)(void*))(((void**)g_dev)[VI_DISPBUF]))(g_dev);
+    ((void(*)(void*))(((void**)g_dev)[VI_RELEASE]))(g_dev);
+    DeleteCriticalSection(&g_lock);
+    free(g_bufs); g_bufs = NULL;
+    free(g_ring); g_ring = NULL;
+    g_dev = NULL; g_ch = g_bs = 0; g_wpos = g_rpos = 0;
+    Py_RETURN_TRUE;
+}
+
+/* Python: asio_ext.used() → frames in ring buffer */
+static PyObject *ext_used(PyObject *self, PyObject *args) {
+    if (!g_dev) return PyLong_FromLong(0);
+    long used = (g_wpos - g_rpos) & RING_MASK;
+    return PyLong_FromLong(used);
+}
+
+/* Python: asio_ext.bs, asio_ext.ch, asio_ext.ring_frames */
+static PyObject *ext_get(PyObject *self, void *closure) {
+    int id = (int)(intptr_t)closure;
+    switch (id) {
+        case 0: return PyLong_FromLong(g_bs);
+        case 1: return PyLong_FromLong(g_ch);
+        case 2: return PyLong_FromLong(RING_FRAMES);
+        case 3: return PyBool_FromLong(g_dev != NULL);
+    }
+    Py_RETURN_NONE;
+}
+
+static PyGetSetDef ext_getsets[] = {
+    {"bs", ext_get, NULL, NULL, (void*)0},
+    {"ch", ext_get, NULL, NULL, (void*)1},
+    {"ring_frames", ext_get, NULL, NULL, (void*)2},
+    {"running", ext_get, NULL, NULL, (void*)3},
+    {NULL}
+};
+
+static PyMethodDef methods[] = {
+    {"open", ext_open, METH_VARARGS, "Open ASIO device (clsid, rate) → (ch, bs) or None"},
+    {"write", ext_write, METH_VARARGS, "Write interleaved F32LE PCM bytes → bool"},
+    {"close", ext_close, METH_VARARGS, "Close ASIO device"},
+    {"used", ext_used, METH_VARARGS, "Frames buffered in ring buffer"},
+    {NULL}
+};
+
+static struct PyModuleDef module = {
+    PyModuleDef_HEAD_INIT, "asio_ext", "ASIO native C backend", -1, methods
+};
+
+PyMODINIT_FUNC PyInit_asio_ext(void) {
+    return PyModule_Create(&module);
+}
