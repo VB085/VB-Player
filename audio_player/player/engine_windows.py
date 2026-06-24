@@ -119,17 +119,9 @@ class AudioEngine(_BaseAudioEngine):
         return ""
 
     def pause(self):
-        # Mute instead of pausing pipeline — avoids buffer drain and
-        # "sliced" audio when resuming on WASAPI
         if not getattr(self, '_is_asio_gst', False) and self._pipeline is not None:
             if self._app_state == PlaybackState.Playing:
-                self._volume_elem.set_property("volume", 0.0)
-                self._poll_timer.stop()
-                self._paused_position = self._position_ms  # save for resume seek
-                self._app_state = PlaybackState.Paused
-                self.stateChanged.emit(PlaybackState.Paused)
-                self._was_muted = True
-            return
+                self._paused_position = self._position_ms
         super().pause()
 
     def stop(self):
@@ -163,18 +155,18 @@ class AudioEngine(_BaseAudioEngine):
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()
             return
-        # WASAPI resume from mute: seek back to pause point, restore volume
-        if getattr(self, '_was_muted', False):
-            self._was_muted = False
-            if self._volume_elem is not None:
-                self._volume_elem.set_property("volume", self._volume_level)
-            # Seek back to where we paused (pipeline kept running, position drifted)
-            if hasattr(self, '_paused_position') and self._pipeline is not None:
-                target = self._paused_position
+        # WASAPI resume: seek-flush to refill the audio buffer properly
+        if (not getattr(self, '_is_asio_gst', False)
+                and self._app_state == PlaybackState.Paused
+                and self._pipeline is not None):
+            # Set pipeline to PLAYING first
+            self._pipeline.set_state(Gst.State.PLAYING)
+            # Seek to current position to flush and refill buffers
+            if hasattr(self, '_paused_position'):
                 self._pipeline.seek_simple(
                     Gst.Format.TIME,
                     Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
-                    target * 1000000)
+                    self._paused_position * 1000000)
             self._app_state = PlaybackState.Playing
             self.stateChanged.emit(PlaybackState.Playing)
             if not self._poll_timer.isActive():
@@ -213,9 +205,6 @@ class AudioEngine(_BaseAudioEngine):
                 if ok:
                     self._duration_ms = dur_ns // 1000000
                     self.durationChanged.emit(self._duration_ms)
-            return
-        # WASAPI mute-pause: skip position update (pipeline still running but muted)
-        if getattr(self, '_was_muted', False):
             return
         super()._poll()
 
