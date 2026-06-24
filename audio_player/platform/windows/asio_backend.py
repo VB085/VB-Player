@@ -9,18 +9,22 @@ ASIOSTInt24MSB = 1
 ASIOSTInt32MSB = 2
 ASIOSTFloat32MSB = 3
 ASIOSTFloat64MSB = 4
-ASIOSTInt32LSB16 = 5  # 32-bit container, 16-bit data
-ASIOSTInt32LSB18 = 6  # 32-bit container, 18-bit data
-ASIOSTInt32LSB20 = 7  # 32-bit container, 20-bit data
-ASIOSTInt32LSB24 = 8  # 32-bit container, 24-bit data
-ASIOSTInt16LSB = 9
-ASIOSTInt24LSB = 10
-ASIOSTInt32LSB = 11
-ASIOSTFloat32LSB = 12
-ASIOSTFloat64LSB = 13
-ASIOSTDSDInt8MSB1 = 14  # DSD
-ASIOSTDSDInt8LSB1 = 15
-ASIOSTDSDInt8NER8 = 16
+ASIOSTInt32MSB16 = 8
+ASIOSTInt32MSB18 = 9
+ASIOSTInt32MSB20 = 10
+ASIOSTInt32MSB24 = 11
+ASIOSTInt16LSB = 16
+ASIOSTInt24LSB = 17
+ASIOSTInt32LSB = 18  # ← FiiO uses this
+ASIOSTFloat32LSB = 19
+ASIOSTFloat64LSB = 20
+ASIOSTInt32LSB16 = 24
+ASIOSTInt32LSB18 = 25
+ASIOSTInt32LSB20 = 26
+ASIOSTInt32LSB24 = 27
+ASIOSTDSDInt8LSB1 = 32
+ASIOSTDSDInt8MSB1 = 33
+ASIOSTDSDInt8NER8 = 40
 
 _ptr, _ch, _bs = None, 0, 0
 _ring, _bi, _cbs = None, None, None
@@ -50,18 +54,18 @@ def cb_bs(idx, dp):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
                         int_val = int(max(-1.0, min(1.0, val)) * 2147483647)
                         ctypes.memmove(dst_ptr + i * 4, struct.pack('<i', int_val), 4)
-                elif _sample_type == ASIOSTInt24LSB or _sample_type == 10:
+                elif _sample_type == ASIOSTInt24LSB or _sample_type == ASIOSTInt32LSB24:
                     for i in range(n):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
                         int_val = int(max(-1.0, min(1.0, val)) * 8388607)
                         b = struct.pack('<i', int_val)[:3]
                         ctypes.memmove(dst_ptr + i * 3, b, 3)
-                elif _sample_type == ASIOSTInt16LSB or _sample_type == 9:
+                elif _sample_type == ASIOSTInt16LSB:
                     for i in range(n):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
                         int_val = int(max(-1.0, min(1.0, val)) * 32767)
                         ctypes.memmove(dst_ptr + i * 2, struct.pack('<h', int_val), 2)
-                elif _sample_type == 18:
+                elif _sample_type == ASIOSTInt32LSB:  # 18 = Int32LSB
                     # FiiO-specific: try INT32LSB first (most common for hi-res DACs)
                     for i in range(n):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
@@ -147,10 +151,10 @@ def asio_open(clsid_str: str, rate: int, sample_type_override: str = "auto"):
 
     import sys as _sys
     _format_names = {0: "Int16MSB", 1: "Int24MSB", 2: "Int32MSB", 3: "Float32MSB", 4: "Float64MSB",
-                     5: "Int32LSB16", 6: "Int32LSB18", 7: "Int32LSB20", 8: "Int32LSB24",
-                     9: "Int16LSB", 10: "Int24LSB", 11: "Int32LSB", 12: "Float32LSB", 13: "Float64LSB",
-                     14: "DSDInt8MSB1", 15: "DSDInt8LSB1", 16: "DSDInt8NER8",
-                     17: "DSDInt8MSB", 18: "FiiO Custom (Int32 fallback)"}
+                     8: "Int32MSB16", 9: "Int32MSB18", 10: "Int32MSB20", 11: "Int32MSB24",
+                     16: "Int16LSB", 17: "Int24LSB", 18: "Int32LSB", 19: "Float32LSB", 20: "Float64LSB",
+                     24: "Int32LSB16", 25: "Int32LSB18", 26: "Int32LSB20", 27: "Int32LSB24",
+                     32: "DSDInt8LSB1", 33: "DSDInt8MSB1", 40: "DSDInt8NER8"}
     fmt_name = _format_names.get(_sample_type, f"Unknown({_sample_type})")
     override_str = "" if sample_type_override == "auto" else f" (override: {sample_type_override})"
     print(f"[asio] Sample type: {_sample_type} = {fmt_name}{override_str}", file=_sys.stderr)
