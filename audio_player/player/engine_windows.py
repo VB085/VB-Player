@@ -125,6 +125,7 @@ class AudioEngine(_BaseAudioEngine):
             if self._app_state == PlaybackState.Playing:
                 self._volume_elem.set_property("volume", 0.0)
                 self._poll_timer.stop()
+                self._paused_position = self._position_ms  # save for resume seek
                 self._app_state = PlaybackState.Paused
                 self.stateChanged.emit(PlaybackState.Paused)
                 self._was_muted = True
@@ -162,11 +163,18 @@ class AudioEngine(_BaseAudioEngine):
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()
             return
-        # WASAPI resume from mute: just restore volume (pipeline kept running)
+        # WASAPI resume from mute: seek back to pause point, restore volume
         if getattr(self, '_was_muted', False):
             self._was_muted = False
             if self._volume_elem is not None:
                 self._volume_elem.set_property("volume", self._volume_level)
+            # Seek back to where we paused (pipeline kept running, position drifted)
+            if hasattr(self, '_paused_position') and self._pipeline is not None:
+                target = self._paused_position
+                self._pipeline.seek_simple(
+                    Gst.Format.TIME,
+                    Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+                    target * 1000000)
             self._app_state = PlaybackState.Playing
             self.stateChanged.emit(PlaybackState.Playing)
             if not self._poll_timer.isActive():
@@ -188,26 +196,26 @@ class AudioEngine(_BaseAudioEngine):
     def _poll(self):
         # For ASIO with GStreamer pipeline: use GStreamer's position query
         if getattr(self, '_is_asio_gst', False) and self._pipeline is not None:
-            # Drain bus messages
             bus = self._pipeline.get_bus()
             while True:
                 msg = bus.pop()
                 if msg is None:
                     break
                 self._handle_message(msg)
-            # Query position from GStreamer pipeline
             ok, pos_ns = self._pipeline.query_position(Gst.Format.TIME)
             if ok:
                 ms = pos_ns // 1000000
                 if ms != self._position_ms:
                     self._position_ms = ms
                     self.positionChanged.emit(ms)
-            # Query duration
             if self._duration_ms <= 0:
                 ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
                 if ok:
                     self._duration_ms = dur_ns // 1000000
                     self.durationChanged.emit(self._duration_ms)
+            return
+        # WASAPI mute-pause: skip position update (pipeline still running but muted)
+        if getattr(self, '_was_muted', False):
             return
         super()._poll()
 
