@@ -19,7 +19,26 @@ def cb_bs(idx, dp):
     global _rpos
     n = min((_wpos - _rpos) % RING_SAMPLES, _bs)
     r = _rpos
+    # DUMP: read what we're about to send to ASIO (one channel)
+    _dump_buf = getattr(cb_bs, '_dump_buf', None)
+    if _dump_buf is None:
+        cb_bs._dump_buf = bytearray()
+        _dump_buf = cb_bs._dump_buf
+    _dump_target = 256 * 1024
+
     if n > 0 and _ring is not None:
+        # Accumulate dump from ring buffer
+        if len(_dump_buf) < _dump_target:
+            import array
+            src = ctypes.cast(ctypes.addressof(_ring[0]) + r * 4,
+                            ctypes.POINTER(ctypes.c_float))
+            ch0 = array.array('f')
+            for i in range(n):
+                si = i
+                if r + i >= RING_SAMPLES: si = i - (RING_SAMPLES - r)
+                ch0.append(src[si])
+            _dump_buf.extend(ch0.tobytes())
+
         for ci in range(_ch):
             dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
             end = r + n
@@ -31,6 +50,28 @@ def cb_bs(idx, dp):
                 ctypes.memmove(
                     ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
                     _ring[ci], (n - sz) * 4)
+
+        # Write dump when enough collected
+        if len(_dump_buf) >= _dump_target and not getattr(cb_bs, '_dump_written', False):
+            cb_bs._dump_written = True
+            import struct as _st, os
+            f32 = array.array('f')
+            f32.frombytes(bytes(_dump_buf))
+            s16 = array.array('h', (int(max(-1., min(1., v)) * 32767) for v in f32))
+            wavd = s16.tobytes()
+            rate = 44100
+            wav = bytearray(44 + len(wavd))
+            wav[0:4] = b'RIFF'; _st.pack_into('<I', wav, 4, 36 + len(wavd))
+            wav[8:16] = b'WAVEfmt '; _st.pack_into('<I', wav, 16, 16)
+            _st.pack_into('<H', wav, 20, 1); _st.pack_into('<H', wav, 22, 1)
+            _st.pack_into('<I', wav, 24, rate); _st.pack_into('<I', wav, 28, rate * 2)
+            _st.pack_into('<H', wav, 32, 2); _st.pack_into('<H', wav, 34, 16)
+            wav[36:40] = b'data'; _st.pack_into('<I', wav, 40, len(wavd))
+            wav[44:] = wavd
+            desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
+            with open(os.path.join(desktop, 'asio_cb_dump.wav'), 'wb') as f:
+                f.write(bytes(wav))
+            import sys; sys.stderr.write(f"[cb] dumped to asio_cb_dump.wav\n")
     else:
         for ci in range(_ch):
             dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
