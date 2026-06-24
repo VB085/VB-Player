@@ -162,6 +162,7 @@ class ASIODevice:
         ch_ref = self._channels
         st_ref = self._sample_type
         rpos_cell = [0]
+        self._rpos_cell = rpos_cell  # expose for external read
         wpos_attr = "_wpos"
 
         @self._CB_BS
@@ -261,9 +262,14 @@ class ASIODevice:
         return self._sample_type
 
     @property
+    def rpos(self) -> int:
+        """Callback read position (updated by ASIO driver thread)."""
+        return self._rpos_cell[0]
+
+    @property
     def buffered(self) -> int:
         """Frames currently buffered in the ring buffer."""
-        return (self._wpos - self._rpos) % RING_SAMPLES
+        return (self._wpos - self.rpos) % RING_SAMPLES
 
     @property
     def free(self) -> int:
