@@ -31,6 +31,7 @@ class NetworkPage(QWidget):
     exclusiveModeToggled = pyqtSignal(bool)
     exclusiveDeviceChanged = pyqtSignal(str)
     dsdModeChanged = pyqtSignal(str)
+    asioFormatChanged = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -167,6 +168,27 @@ class NetworkPage(QWidget):
         self._dsd_combo.setToolTip(_("settings.dsd_tooltip"))
         self._dsd_combo.currentIndexChanged.connect(self._on_dsd_mode_changed)
         ao_layout.addWidget(self._dsd_combo)
+
+        # ASIO sample format override
+        self._asio_format_label = QLabel(_("settings.asio_format"))
+        self._asio_format_label.setObjectName("settingsLabel")
+        ao_layout.addWidget(self._asio_format_label)
+        self._asio_format_combo = _NoWheelComboBox()
+        self._asio_format_combo.addItem(_("settings.asio_format_auto"), "auto")
+        self._asio_format_combo.addItem("Float32", "float32")
+        self._asio_format_combo.addItem("Int32", "int32")
+        self._asio_format_combo.addItem("Int24", "int24")
+        self._asio_format_combo.addItem("Int16", "int16")
+        self._asio_format_combo.setToolTip(_("settings.asio_format_tooltip"))
+        self._asio_format_combo.currentIndexChanged.connect(self._on_asio_format_changed)
+        ao_layout.addWidget(self._asio_format_combo)
+
+        # Show/hide ASIO format based on exclusive mode
+        def _update_asio_format_visibility(checked):
+            self._asio_format_label.setVisible(checked)
+            self._asio_format_combo.setVisible(checked)
+        self._exclusive_cb.toggled.connect(_update_asio_format_visibility)
+        _update_asio_format_visibility(self._exclusive_cb.isChecked())
 
         content_layout.addWidget(self._audio_out_group)
 
@@ -492,6 +514,13 @@ class NetworkPage(QWidget):
             s.setValue("dsd_mode", mode)
             self.dsdModeChanged.emit(mode)
 
+    def _on_asio_format_changed(self, idx: int):
+        fmt = self._asio_format_combo.itemData(idx)
+        if fmt:
+            s = QSettings("VBPlayer", "VB Player")
+            s.setValue("asio_sample_type", fmt)
+            self.asioFormatChanged.emit(fmt)
+
     def _load_hw_devices(self):
         if getattr(self, '_hw_loaded', False):
             return
@@ -524,6 +553,11 @@ class NetworkPage(QWidget):
         idx = self._dsd_combo.findData(mode)
         if idx >= 0:
             self._dsd_combo.setCurrentIndex(idx)
+
+    def set_asio_format(self, fmt: str):
+        idx = self._asio_format_combo.findData(fmt)
+        if idx >= 0:
+            self._asio_format_combo.setCurrentIndex(idx)
 
     def refresh_device_list(self, exclusive_on: bool = False):
         """Rebuild unified device list: local, wired, BT, network."""
@@ -699,4 +733,9 @@ class NetworkPage(QWidget):
         dsd_idx = self._dsd_combo.findData(dsd_mode)
         if dsd_idx >= 0:
             self._dsd_combo.setCurrentIndex(dsd_idx)
+        # Restore ASIO sample format
+        asio_fmt = str(s.value("asio_sample_type", "auto") or "auto")
+        asio_idx = self._asio_format_combo.findData(asio_fmt)
+        if asio_idx >= 0:
+            self._asio_format_combo.setCurrentIndex(asio_idx)
         self.refresh_device_list(exclusive_on=exclusive)

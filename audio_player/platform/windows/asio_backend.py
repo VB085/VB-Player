@@ -92,7 +92,7 @@ def _mkclsid(s):
     w = ctypes.create_unicode_buffer(s); c = (ctypes.c_byte*16)()
     ole32.CLSIDFromString(w, ctypes.byref(c)); return c
 
-def asio_open(clsid_str: str, rate: int):
+def asio_open(clsid_str: str, rate: int, sample_type_override: str = "auto"):
     global _ptr, _bi, _ring, _cbs, _ch, _bs, _wpos, _rpos, _running, _sample_type
     ole32.CoInitializeEx(None, 2)
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
@@ -123,16 +123,23 @@ def asio_open(clsid_str: str, rate: int):
     info = ASIOChannelInfo()
     info.channel = 0
     info.isInput = 0
-    # GetChannelInfo at vtable index 18
     V(18, ctypes.c_long, ctypes.POINTER(ASIOChannelInfo))(p, ctypes.byref(info))
-    _sample_type = info.sampleType
+
+    # Override sample type if specified
+    _type_map = {"float32": ASIOSTFloat32LSB, "int32": ASIOSTInt32LSB, "int24": ASIOSTInt24LSB, "int16": ASIOSTInt16LSB}
+    if sample_type_override == "auto":
+        _sample_type = info.sampleType
+    else:
+        _sample_type = _type_map.get(sample_type_override, info.sampleType)
+
     import sys as _sys
     _format_names = {0: "Int16MSB", 1: "Int24MSB", 2: "Int32MSB", 3: "Float32MSB", 4: "Float64MSB",
                      5: "Int32LSB16", 6: "Int32LSB18", 7: "Int32LSB20", 8: "Int32LSB24",
                      9: "Int16LSB", 10: "Int24LSB", 11: "Int32LSB", 12: "Float32LSB", 13: "Float64LSB",
                      14: "DSDInt8MSB1", 15: "DSDInt8LSB1", 16: "DSDInt8NER8"}
-    fmt_name = _format_names.get(_sample_type, f"Unknown({info.sampleType})")
-    print(f"[asio] Sample type: {info.sampleType} = {fmt_name}", file=_sys.stderr)
+    fmt_name = _format_names.get(_sample_type, f"Unknown({_sample_type})")
+    override_str = "" if sample_type_override == "auto" else f" (override: {sample_type_override})"
+    print(f"[asio] Sample type: {_sample_type} = {fmt_name}{override_str}", file=_sys.stderr)
 
     class BI(ctypes.Structure): _fields_ = [('i',ctypes.c_long),('n',ctypes.c_long),('buf',ctypes.c_void_p*2)]
     _bi = (BI * _ch)(); _bi_ref = _bi

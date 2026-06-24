@@ -765,7 +765,7 @@ class AudioEngine(_BaseAudioEngine):
         clsid = hw[5:]
         rate = self._pipeline_sample_rate or 44100
         _a.asio_close()
-        result = _a.asio_open(clsid, rate)
+        result = _a.asio_open(clsid, rate, self._asio_sample_type)
         if result is None:
             self.errorOccurred.emit(f"ASIO: failed to open at {rate}Hz")
             return False

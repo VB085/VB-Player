@@ -77,6 +77,7 @@ class _BaseAudioEngine(QObject):
         self._pipeline_output_format: str = ""
         self._source_is_dsd: bool = False
         self._dsd_decode_mode: str = "pcm"  # "pcm" | "native" | "dop"
+        self._asio_sample_type: str = "auto"  # "auto" | "float32" | "int32" | "int24" | "int16"
 
         # URL/stream playback state
         self._is_stream = False
@@ -623,6 +624,16 @@ class _BaseAudioEngine(QObject):
                 self._pipeline.set_state(Gst.State.PAUSED)
                 if pos > 0:
                     self.seek(pos)
+
+    @property
+    def asio_sample_type(self) -> str:
+        return self._asio_sample_type
+
+    @asio_sample_type.setter
+    def asio_sample_type(self, value: str):
+        if value not in ("auto", "float32", "int32", "int24", "int16"):
+            raise ValueError(f"Invalid ASIO sample type: {value}")
+        self._asio_sample_type = value
 
     @property
     def replaygain_enabled(self) -> bool:

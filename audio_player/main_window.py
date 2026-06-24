@@ -756,6 +756,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         lyrics_on = str(s.value("lyrics_enabled", "true") or "true").lower() == "true"
         self._lyrics_enabled = lyrics_on
 
+        # Restore ASIO sample format to engine
+        asio_fmt = str(s.value("asio_sample_type", "auto") or "auto")
+        self._engine.asio_sample_type = asio_fmt
+
         # Configure online lyrics fetcher
         online_enabled = str(s.value("online_lyrics_enabled", "false")).lower() == "true"
         lrclib_on = str(s.value("lyrics_source_lrclib", "true")).lower() == "true"
@@ -900,6 +904,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._log_message(_("log.exclusive_alsa") if v else _("log.exclusive_shared"))))
         np_.exclusiveDeviceChanged.connect(lambda v: setattr(self._engine, 'exclusive_device', v))
         np_.dsdModeChanged.connect(lambda v: setattr(self._engine, 'dsd_mode', v))
+        np_.asioFormatChanged.connect(lambda v: setattr(self._engine, 'asio_sample_type', v))
 
     def _connect_analyzer(self):
         self._analyzer.waveformReady.connect(self._waveform.set_waveform_data)
@@ -1073,6 +1078,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 np_ = self._network_page
                 np_.set_exclusive_state(self._engine.exclusive_mode, self._engine.exclusive_device)
                 np_.set_dsd_mode(self._engine.dsd_mode)
+                s = QSettings("VBPlayer", "VB Player")
+                asio_fmt = str(s.value("asio_sample_type", "auto") or "auto")
+                np_.set_asio_format(asio_fmt)
+                self._engine.asio_sample_type = asio_fmt
 
     def closeEvent(self, event):
         s = QSettings("VBPlayer", "VB Player")
