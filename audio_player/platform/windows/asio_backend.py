@@ -116,8 +116,8 @@ def asio_open(clsid_str: str, rate: int, sample_type_override: str = "auto"):
     import sys as _sys
     ole32.CoInitializeEx(None, 2)
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
-    iid = (ctypes.c_char * 16)(*IID_IASIO)
-    hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, iid, ctypes.byref(p))
+    # Use driver's own CLSID as IID (standard for FiiO, Realtek, etc.)
+    hr = ole32.CoCreateInstance(ctypes.byref(c), None, 1, ctypes.byref(c), ctypes.byref(p))
     if hr or not p:
         print(f"[asio] CoCreateInstance failed: hr={hr}, p={p}", file=_sys.stderr)
         return None
@@ -226,8 +226,7 @@ def asio_close():
 
 def asio_set_rate(clsid_str: str, rate: int):
     c = _mkclsid(clsid_str); p = ctypes.c_void_p()
-    iid = (ctypes.c_char * 16)(*IID_IASIO)
-    hr = ole32.CoCreateInstance(ctypes.byref(c),None,1,iid,ctypes.byref(p))
+    hr = ole32.CoCreateInstance(ctypes.byref(c),None,1,ctypes.byref(c),ctypes.byref(p))
     if hr or not p: return
     vt = ctypes.cast(p, ctypes.POINTER(ctypes.c_void_p))[0]
     V = lambda i,r,*a: ctypes.WINFUNCTYPE(r, ctypes.c_void_p, *a)(ctypes.cast(ctypes.cast(vt, ctypes.POINTER(ctypes.c_void_p))[i], ctypes.c_void_p).value)
