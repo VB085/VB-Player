@@ -22,6 +22,18 @@ def cb_bs(idx, dp):
     if n > 0 and _ring is not None:
         for ci in range(_ch):
             dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
+            end = r + n
+            if end <= RING_SAMPLES:
+                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, n * 4)
+            else:
+                sz = RING_SAMPLES - r
+                ctypes.memmove(dst, ctypes.addressof(_ring[ci]) + r * 4, sz * 4)
+                ctypes.memmove(
+                    ctypes.c_void_p(ctypes.cast(dst, ctypes.c_void_p).value + sz * 4),
+                    _ring[ci], (n - sz) * 4)
+    else:
+        for ci in range(_ch):
+            dst = ctypes.cast(_bi[ci].buf[idx], ctypes.POINTER(ctypes.c_float))
             ctypes.memset(ctypes.cast(dst, ctypes.c_void_p), 0, _bs * 4)
     _rpos = (r + n) % RING_SAMPLES
     return 0
