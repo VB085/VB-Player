@@ -121,7 +121,12 @@ class AudioEngine(_BaseAudioEngine):
     def pause(self):
         if not getattr(self, '_is_asio_gst', False) and self._pipeline is not None:
             if self._app_state == PlaybackState.Playing:
-                self._paused_position = self._position_ms
+                self._volume_elem.set_property("volume", 0.0)
+                self._poll_timer.stop()
+                self._app_state = PlaybackState.Paused
+                self.stateChanged.emit(PlaybackState.Paused)
+                self._was_muted = True
+            return
         super().pause()
 
     def stop(self):
@@ -155,25 +160,17 @@ class AudioEngine(_BaseAudioEngine):
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()
             return
-        # WASAPI resume: seek-flush to refill the audio buffer properly
-        if (not getattr(self, '_is_asio_gst', False)
-                and self._app_state == PlaybackState.Paused
-                and self._pipeline is not None):
-            # Set pipeline to PLAYING first
-            self._pipeline.set_state(Gst.State.PLAYING)
-            # Seek to current position to flush and refill buffers
-            if hasattr(self, '_paused_position'):
-                self._pipeline.seek_simple(
-                    Gst.Format.TIME,
-                    Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
-                    self._paused_position * 1000000)
+        # WASAPI resume from mute: just restore volume (no seek — smooth)
+        if getattr(self, '_was_muted', False):
+            self._was_muted = False
+            if self._volume_elem is not None:
+                self._volume_elem.set_property("volume", self._volume_level)
             self._app_state = PlaybackState.Playing
             self.stateChanged.emit(PlaybackState.Playing)
             if not self._poll_timer.isActive():
                 self._poll_timer.setInterval(50)
                 self._poll_timer.start()
             return
-        # Standard GStreamer path (including asiosink)
         super().play()
 
     def _teardown_pipeline(self):
@@ -206,6 +203,8 @@ class AudioEngine(_BaseAudioEngine):
                     self._duration_ms = dur_ns // 1000000
                     self.durationChanged.emit(self._duration_ms)
             return
+        if getattr(self, '_was_muted', False):
+            return  # position frozen during mute-pause
         super()._poll()
 
     def _cleanup_preloaded(self):
