@@ -15,6 +15,8 @@ _ptr, _ch, _bs = None, 0, 0
 _ring, _bi, _cbs = None, None, None
 _wpos, _rpos = 0, 0
 _running = False
+wpos_cell = [0]  # initialized in asio_open
+rpos_cell = [0]
 
 # CB types (used inside asio_open for closures)
 _CB_BS = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_long, ctypes.c_long)
@@ -55,8 +57,8 @@ def asio_open(clsid_str, rate):
     bi_ref = _bi
     bs_ref = _bs
     ch_ref = _ch
-    wpos_cell = [_wpos]  # mutable cell for closure to write
-    rpos_cell = [_rpos]
+    wpos_cell[0] = _wpos  # reuse module-level cells
+    rpos_cell[0] = _rpos
 
     @_CB_BS
     def _cb_bs(idx, dp):
