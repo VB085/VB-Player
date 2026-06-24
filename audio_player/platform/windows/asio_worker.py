@@ -65,6 +65,7 @@ def asio_open(clsid_str, rate):
         w = wpos_cell[0]
         r = rpos_cell[0]
         n = min((w - r) % RING_SAMPLES, bs_ref)
+        import sys; sys.stderr.write(f"[CB] n={n} idx={idx} w={w} r={r}\n"); sys.stderr.flush()
         if n > 0 and ring_ref is not None:
             for ci in range(ch_ref):
                 dst_ptr = ctypes.cast(bi_ref[ci].buf[idx], ctypes.c_void_p).value
@@ -75,20 +76,26 @@ def asio_open(clsid_str, rate):
                     sz = RING_SAMPLES - r
                     ctypes.memmove(dst_ptr, ctypes.addressof(ring_ref[ci]) + r * 4, sz * 4)
                     ctypes.memmove(dst_ptr + sz * 4, ring_ref[ci], (n - sz) * 4)
-            # DUMP: read back from ASIO output buffer AFTER memmove (first cb only)
-            if not getattr(_cb_bs, '_dumped_cb', False):
-                _cb_bs._dumped_cb = True
-                import array, os
-                out = array.array('f')
+            # Accumulate ASIO buffer data across first 3 callbacks, then dump
+            _dump_count = getattr(_cb_bs, '_dump_count', 0)
+            _dump_buf = getattr(_cb_bs, '_dump_buf', None)
+            if _dump_buf is None:
+                _cb_bs._dump_buf = []
+                _dump_buf = _cb_bs._dump_buf
+            if _dump_count < 10 and n > 0:
                 for i in range(n):
                     for cci in range(ch_ref):
                         src = ctypes.cast(bi_ref[cci].buf[idx], ctypes.c_void_p).value
                         val = ctypes.cast(src + i * 4, ctypes.POINTER(ctypes.c_float))[0]
-                        out.append(val)
-                s16 = array.array('h', (int(max(-1., min(1., v)) * 32767) for v in out))
-                desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
-                _write_wav(os.path.join(desktop, 'cb_ASIO.wav'), s16, 44100, ch_ref)
-                import sys; sys.stderr.write(f"[cb-dump] {n}frames memmove'd → cb_ASIO.wav\n")
+                        _dump_buf.append(val)
+                _dump_count += 1
+                _cb_bs._dump_count = _dump_count
+                if _dump_count >= 10:
+                    import os
+                    s16 = array.array('h', (int(max(-1., min(1., v)) * 32767) for v in _dump_buf))
+                    desktop = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
+                    _write_wav(os.path.join(desktop, 'cb_ASIO.wav'), s16, 44100, ch_ref)
+                    import sys; sys.stderr.write(f"[cb-dump] {len(_dump_buf)//ch_ref} frames → cb_ASIO.wav\n")
         else:
             for ci in range(ch_ref):
                 dst = ctypes.cast(bi_ref[ci].buf[idx], ctypes.c_void_p)
