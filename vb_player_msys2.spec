@@ -67,7 +67,7 @@ for _pat in ['libgst*.dll', 'libgobject-2.0-0.dll', 'libglib-2.0-0.dll',
              'libcairo-gobject-*.dll', 'libcairo-script-interpreter-*.dll',
              ]:
     for _f in _gst_bin.glob(_pat):
-        _gst_dlls.append((str(_f), '.'))
+        _gst_dlls.append((str(_f), '.', 'BINARY'))
 
 # Add our C extension
 _dwm = _PROJ / 'audio_player/platform/windows/dwm_ext.pyd'
