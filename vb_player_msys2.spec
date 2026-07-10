@@ -28,6 +28,7 @@ a = Analysis(
         'winsdk.windows.media.playback', 'winsdk.windows.storage.streams',
         'audio_player', 'audio_player.platform', 'audio_player.platform.windows',
         'audio_player.platform.windows.dwm_ext',
+        'audio_player.platform.windows.asio_ctypes',
         'ctypes', 'struct', 'json', 'hashlib', 'sqlite3', 'queue',
     ],
     hookspath=[],
