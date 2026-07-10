@@ -21,22 +21,20 @@ DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=.
 OutputBaseFilename=VB-Player-{#MyAppVersion}-setup
-SetupIconFile=assets\vb-player.png
+; SetupIconFile=assets\vb-player.png  ; need .ico, PNG not supported
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-; Language dialog
-ShowLanguageDialog=yes
+ShowLanguageDialog=no
 
 [Languages]
-Name: "chinese"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "dist\VB Player\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "out\VB Player\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
