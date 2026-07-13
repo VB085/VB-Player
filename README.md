@@ -6,8 +6,6 @@
 
 Linux HiFi 音乐播放器，基于 PyQt6 + GStreamer，为高解析度音频回放设计。
 
-> 代码库中保留 Windows 端（WASAPI/ASIO）和 macOS 端（CoreAudio）的实现——作为啃过 ASIO SDK、手写 COM 接口的证明。但后续版本仅维护 Linux 平台。
-
 <p align="center">
   <img src="https://github.com/VB085/VB-Player/raw/main/assets/screenshot.png" alt="screenshot" width="800"/>
 </p>
