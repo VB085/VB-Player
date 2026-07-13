@@ -45,6 +45,32 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
 _ = t  # shorthand
 
 
+def detect_system_lang() -> str:
+    """Detect system language, return supported language code or None."""
+    import locale
+    import sys
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            lcid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            lang_map = {
+                0x0804: "zh_CN", 0x0404: "zh_TW", 0x0c04: "zh_TW",
+                0x0409: "en",    0x0411: "ja",
+            }
+            return lang_map.get(lcid)
+        else:
+            loc = locale.getdefaultlocale()
+            if loc and loc[0]:
+                l = loc[0].lower()
+                if l.startswith("zh_cn") or l.startswith("zh_hans"): return "zh_CN"
+                if l.startswith("zh_tw") or l.startswith("zh_hant"): return "zh_TW"
+                if l.startswith("ja"): return "ja"
+                if l.startswith("en"): return "en"
+    except Exception:
+        pass
+    return None
+
+
 def current_lang() -> str:
     return _current_lang
 

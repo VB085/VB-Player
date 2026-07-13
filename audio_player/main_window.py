@@ -753,6 +753,14 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         s = QSettings("VBPlayer", "VB Player")
 
+        # Auto-detect system language on first launch
+        if not s.value("language"):
+            from audio_player.i18n import detect_system_lang, set_language
+            sys_lang = detect_system_lang()
+            if sys_lang:
+                s.setValue("language", sys_lang)
+                set_language(sys_lang)
+
         lyrics_on = str(s.value("lyrics_enabled", "true") or "true").lower() == "true"
         self._lyrics_enabled = lyrics_on
 
