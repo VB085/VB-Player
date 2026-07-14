@@ -48,11 +48,11 @@ for _bin_dir in _venv_bins:
     if _VENV_PYTHON:
         break
 
-# Detect if we're running from the project venv (compare prefix, not executable
-# path — venv symlinks may point to the same system python).
+# Only re-exec via project .venv if NOT already in any virtual environment
+_in_any_venv = sys.prefix != sys.base_prefix
 _in_venv = (str(Path(sys.prefix).resolve()) == str(_PROJECT_VENV.resolve()))
 
-if not _in_venv and _VENV_PYTHON:
+if not _in_any_venv and not _in_venv and _VENV_PYTHON:
     os.environ["VIRTUAL_ENV"] = str(_PROJECT_VENV)
     os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), __file__] + sys.argv[1:])
 
