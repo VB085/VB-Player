@@ -110,6 +110,7 @@ _LOCK_FD = os.open(str(_LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o644)
 if sys.platform == "win32":
     import msvcrt
     os.write(_LOCK_FD, b"0")
+    os.lseek(_LOCK_FD, 0, os.SEEK_SET)  # reset to start before locking
     try:
         msvcrt.locking(_LOCK_FD, msvcrt.LK_NBLCK, 1)
     except OSError:
@@ -135,11 +136,14 @@ if not getattr(sys, 'frozen', False):
 
 # PyInstaller: use system MSYS2 GStreamer (bundling all DLLs is not practical)
 if getattr(sys, 'frozen', False):
-    _msys2_bin = Path("C:/msys64/mingw64/bin")
-    if _msys2_bin.is_dir():
-        os.add_dll_directory(str(_msys2_bin))
-        os.environ["PATH"] = str(_msys2_bin) + os.pathsep + os.environ.get("PATH", "")
-        os.environ['GST_PLUGIN_PATH'] = str(_msys2_bin.parent / "lib" / "gstreamer-1.0")
+    for _msys2_root in (Path(os.environ.get("MSYSTEM_PREFIX", "")),
+                         Path("C:/msys64/mingw64")):
+        _msys2_bin = _msys2_root / "bin"
+        if _msys2_bin.is_dir():
+            os.add_dll_directory(str(_msys2_bin))
+            os.environ["PATH"] = str(_msys2_bin) + os.pathsep + os.environ.get("PATH", "")
+            os.environ['GST_PLUGIN_PATH'] = str(_msys2_root / "lib" / "gstreamer-1.0")
+            break
 
 # Install Qt message handler
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType

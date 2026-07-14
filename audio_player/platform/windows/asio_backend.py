@@ -67,12 +67,6 @@ def cb_bs(idx, dp):
                         val = _ring[ci][(r + i) % RING_SAMPLES]
                         int_val = int(max(-1.0, min(1.0, val)) * 32767)
                         ctypes.memmove(dst_ptr + i * 2, struct.pack('<h', int_val), 2)
-                elif _sample_type == ASIOSTInt32LSB:  # 18 = Int32LSB
-                    # FiiO-specific: try INT32LSB first (most common for hi-res DACs)
-                    for i in range(n):
-                        val = _ring[ci][(r + i) % RING_SAMPLES]
-                        int_val = int(max(-1.0, min(1.0, val)) * 2147483647)
-                        ctypes.memmove(dst_ptr + i * 4, struct.pack('<i', int_val), 4)
                 else:
                     # Unknown format — try Int32 (most common hi-res), then Float32 fallback
                     import sys
