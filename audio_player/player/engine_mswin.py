@@ -60,6 +60,7 @@ class MSAudioEngine(QObject):
         self._stop_event = threading.Event()
         self._ring = deque()
         self._ring_lock = threading.Lock()
+        self._ring_max = 200  # ~1.5s buffer at 44.1kHz stereo F32LE
         self._total_bytes_read = 0
         self._seek_offset_bytes = 0
 
@@ -182,38 +183,29 @@ class MSAudioEngine(QObject):
         return True
 
     def _read_ffmpeg_loop(self):
-        """Background thread: read ffmpeg stdout → ring buffer (WASAPI) or asio_write (ASIO)."""
-        chunk = 65536
-        while not self._stop_event.is_set() and self._ffmpeg_proc is not None:
+        """Background thread: read ffmpeg stdout → ring buffer (WASAPI).
+
+        Uses os.read() to minimize GIL holding time. The OS kernel buffers
+        the pipe; os.read() releases the GIL while waiting for data.
+        """
+        import os as _os
+        fd = self._ffmpeg_proc.stdout.fileno()
+        buf = bytearray(65536)
+        while not self._stop_event.is_set():
+            # Throttle when ring buffer is full
+            if len(self._ring) >= self._ring_max:
+                time.sleep(0.05)
+                continue
             try:
-                data = self._ffmpeg_proc.stdout.read(chunk)
+                n = _os.read(fd, 65536)
             except Exception:
                 break
-            if not data:
+            if not n:
                 break  # EOF
-
-            self._total_bytes_read += len(data)
-
-            if getattr(self, '_asio_worker', None) is not None:
-                try:
-                    self._asio_worker.stdin.write(data)
-                    self._asio_worker.stdin.flush()
-                except (BrokenPipeError, OSError):
-                    break
-            elif self._asio_dev is not None:
-                self._asio_dev.write(data)
-            else:
-                with self._ring_lock:
-                    self._ring.append(data)
-
-            # ASIO: track position from bytes written (wasapi uses callback)
-            if getattr(self, '_asio_worker', None) is not None or self._asio_dev is not None:
-                total_bytes = self._seek_offset_bytes + self._total_bytes_read
-                rate = self._pipeline_sample_rate or 44100
-                pos_ms = int(total_bytes / (rate * 2 * 4) * 1000)
-                if abs(pos_ms - self._position_ms) > 100:
-                    self._position_ms = pos_ms
-                    self.positionChanged.emit(pos_ms)
+            buf_view = memoryview(buf)[:n]
+            self._total_bytes_read += n
+            with self._ring_lock:
+                self._ring.append(bytes(buf_view))
         if not self._stop_event.is_set():
             self.trackFinished.emit()
 
