@@ -790,14 +790,15 @@ class AudioEngine(_BaseAudioEngine):
                 _a._rpos = _a.rpos()  # sync from callback cell (real-time rpos)
                 bs = getattr(_a, '_bs', 2048)
                 used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
-                if used >= _a.RING_SAMPLES - bs * 4:
-                    time.sleep(0.1)  # buffer full — sleep longer, reduce GIL wakeups
+                if used >= bs * 8:
+                    time.sleep(0.005)
                     continue
 
                 # Pull from appsink
                 sample = appsink.emit("pull-sample")
                 if sample is None:
-                    time.sleep(0.01)  # less aggressive when idle
+                    time.sleep(0.005)
+                    continue
                     continue
 
                 buf = sample.get_buffer()
