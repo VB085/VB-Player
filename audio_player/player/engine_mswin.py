@@ -190,22 +190,21 @@ class MSAudioEngine(QObject):
         """
         import os as _os
         fd = self._ffmpeg_proc.stdout.fileno()
-        buf = bytearray(65536)
         while not self._stop_event.is_set():
             # Throttle when ring buffer is full
             if len(self._ring) >= self._ring_max:
                 time.sleep(0.05)
                 continue
             try:
-                n = _os.read(fd, 65536)
+                data = _os.read(fd, 65536)
             except Exception:
                 break
-            if not n:
+            if not data:
                 break  # EOF
-            buf_view = memoryview(buf)[:n]
+            n = len(data)
             self._total_bytes_read += n
             with self._ring_lock:
-                self._ring.append(bytes(buf_view))
+                self._ring.append(data)
         if not self._stop_event.is_set():
             self.trackFinished.emit()
 
