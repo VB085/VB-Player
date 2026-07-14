@@ -94,8 +94,9 @@ class MSAudioEngine(QObject):
 
     @volume.setter
     def volume(self, v: float):
-        self._volume_level = max(0.0, min(1.0, v))
-        self.volumeChanged.emit(self._volume_level)
+        self._volume_level = float(max(0.0, min(1.0, v)))
+    def set_volume(self, v: float):
+        self._volume_level = float(max(0.0, min(1.0, v)))
 
     @property
     def position(self) -> int: return self._position_ms
@@ -233,6 +234,17 @@ class MSAudioEngine(QObject):
         self.stop()
         self._current_file = filepath
         self._position_ms = 0
+        # Read metadata for duration and sample rate
+        try:
+            from audio_player.player.metadata import read_metadata
+            meta = read_metadata(filepath)
+            self._pipeline_sample_rate = meta.sample_rate if meta.sample_rate > 0 else 44100
+            self._duration_ms = int(meta.duration_seconds * 1000) if meta.duration_seconds > 0 else 0
+            self._source_is_dsd = Path(filepath).suffix.lower() in ('.dsf', '.dff')
+            if self._duration_ms > 0:
+                self.durationChanged.emit(self._duration_ms)
+        except Exception:
+            self._pipeline_sample_rate = 44100; self._duration_ms = 0
         self.trackChanged.emit(filepath)
 
     def play(self):
@@ -251,18 +263,6 @@ class MSAudioEngine(QObject):
         if not is_asio:
             if not self._start_ffmpeg(self._current_file):
                 return
-        else:
-            # ASIO: read metadata for duration
-            from audio_player.player.metadata import read_metadata
-            try:
-                meta = read_metadata(self._current_file)
-                rate = meta.sample_rate if meta.sample_rate > 0 else 44100
-                self._duration_ms = int(meta.duration_seconds * 1000) if meta.duration_seconds > 0 else 0
-                self._pipeline_sample_rate = rate
-                if self._duration_ms > 0:
-                    self.durationChanged.emit(self._duration_ms)
-            except Exception:
-                self._pipeline_sample_rate = 44100
 
         # Clear ring buffer
         with self._ring_lock:
