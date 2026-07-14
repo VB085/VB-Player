@@ -715,7 +715,7 @@ class AudioEngine(_BaseAudioEngine):
             capsf.set_property("caps", Gst.Caps.from_string(caps_str))
             appsink.set_property("caps", Gst.Caps.from_string(caps_str))
             appsink.set_property("sync", False)
-            appsink.set_property("max-buffers", 4)
+            appsink.set_property("max-buffers", 8)  # deeper buffer for GIL contention
             appsink.set_property("drop", False)
 
             for e in [filesrc, decodebin, queue, conv, resample, volume, eq, capsf, appsink]:
@@ -790,14 +790,14 @@ class AudioEngine(_BaseAudioEngine):
                 _a._rpos = _a.rpos()  # sync from callback cell (real-time rpos)
                 bs = getattr(_a, '_bs', 2048)
                 used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
-                if used >= bs * 4:
-                    time.sleep(0.002)
+                if used >= bs * 12:  # ~550ms buffer — survives UI scroll GIL contention
+                    time.sleep(0.005)  # less aggressive polling
                     continue
 
                 # Pull from appsink
                 sample = appsink.emit("pull-sample")
                 if sample is None:
-                    time.sleep(0.005)
+                    time.sleep(0.01)  # less aggressive when idle
                     continue
 
                 buf = sample.get_buffer()
