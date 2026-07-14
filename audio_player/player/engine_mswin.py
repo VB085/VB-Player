@@ -37,6 +37,7 @@ class MSAudioEngine(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        import sys as _s; _s.stderr.write("[engine] MSVC ffmpeg+sounddevice engine loaded\n")
         self._current_file = ""
         self._app_state = PlaybackState.Stopped
         self._position_ms = 0

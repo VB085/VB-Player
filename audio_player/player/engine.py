@@ -6,6 +6,7 @@ from audio_player.player._types import PlaybackState  # noqa: F401
 # MSYS2/MinGW Python: use GStreamer engine
 _IS_MSVC = hasattr(sys, 'getwindowsversion') and 'MSC' in sys.version
 if sys.platform == 'win32' and _IS_MSVC:
+    import sys as _s; _s.stderr.write("[engine] using MSVC ffmpeg engine\n")
     from audio_player.player.engine_mswin import MSAudioEngine as AudioEngine  # noqa: F401
     def enumerate_hw_devices():
         return [{"card": 0, "device": 0, "hw": "", "name": "Default", "driver": "WASAPI"}]
