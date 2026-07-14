@@ -790,10 +790,8 @@ class AudioEngine(_BaseAudioEngine):
                 _a._rpos = _a.rpos()  # sync from callback cell (real-time rpos)
                 bs = getattr(_a, '_bs', 2048)
                 used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
-                # Fill most of the ring buffer at once — reduces GIL contention
-                # with UI thread. At 44.1kHz stereo, 250K frames ≈ 5.7 seconds.
                 if used >= _a.RING_SAMPLES - bs * 4:
-                    time.sleep(0.01)
+                    time.sleep(0.1)  # buffer full — sleep longer, reduce GIL wakeups
                     continue
 
                 # Pull from appsink
