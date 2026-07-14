@@ -237,8 +237,22 @@ class MSAudioEngine(QObject):
             return
 
         self.stop()
-        if not self._start_ffmpeg(self._current_file):
-            return
+        is_asio = self._exclusive_mode and self._exclusive_device.startswith("asio:")
+        if not is_asio:
+            if not self._start_ffmpeg(self._current_file):
+                return
+        else:
+            # ASIO: read metadata for duration
+            from audio_player.player.metadata import read_metadata
+            try:
+                meta = read_metadata(self._current_file)
+                rate = meta.sample_rate if meta.sample_rate > 0 else 44100
+                self._duration_ms = int(meta.duration_seconds * 1000) if meta.duration_seconds > 0 else 0
+                self._pipeline_sample_rate = rate
+                if self._duration_ms > 0:
+                    self.durationChanged.emit(self._duration_ms)
+            except Exception:
+                self._pipeline_sample_rate = 44100
 
         # Clear ring buffer
         with self._ring_lock:
@@ -247,14 +261,16 @@ class MSAudioEngine(QObject):
         # Start output
         self._stop_event.clear()
         if self._exclusive_mode and self._exclusive_device.startswith("asio:"):
-            self._start_asio()
+            self._start_asio(self._current_file)
         else:
             self._start_wasapi()
 
-        # Start feed thread
-        self._output_thread = threading.Thread(target=self._read_ffmpeg_loop, daemon=True)
-        self._output_thread.start()
+        # Start feed thread (WASAPI only — ASIO uses shell pipe)
+        if not (self._exclusive_mode and self._exclusive_device.startswith("asio:")):
+            self._output_thread = threading.Thread(target=self._read_ffmpeg_loop, daemon=True)
+            self._output_thread.start()
 
+        self._play_start_time = time.time()
         self._app_state = PlaybackState.Playing
         self.stateChanged.emit(PlaybackState.Playing)
         self._poll_timer.start()
@@ -275,6 +291,10 @@ class MSAudioEngine(QObject):
             try: self._sd_stream.stop(); self._sd_stream.close()
             except Exception: pass
             self._sd_stream = None
+        if getattr(self, '_asio_pipe', None) is not None:
+            try: self._asio_pipe.kill(); self._asio_pipe.wait(timeout=3)
+            except Exception: pass
+            self._asio_pipe = None
         if getattr(self, '_asio_worker', None) is not None:
             try:
                 self._asio_worker.stdin.close()
@@ -384,28 +404,33 @@ class MSAudioEngine(QObject):
         except Exception as e:
             self.errorOccurred.emit(f"WASAPI: {e}")
 
-    # ── ASIO output (via separate process — avoids GIL contention) ─────
+    # ── ASIO output (via shell pipe: ffmpeg | asio_worker) ─────────────
 
-    def _start_asio(self):
+    def _start_asio(self, filepath: str, seek_ms: int = 0):
         clsid = self._exclusive_device[5:]
         rate = self._pipeline_sample_rate or 44100
-        # Launch asio_worker.py as a separate process — own GIL, own CPU
+        ffmpeg = _find_ffmpeg()
+        if not ffmpeg:
+            self.errorOccurred.emit("ffmpeg not found")
+            return
         worker_path = Path(__file__).resolve().parent.parent / "platform/windows/asio_worker.py"
         if not worker_path.exists():
             self.errorOccurred.emit("asio_worker.py not found")
-            # Fallback: in-process ASIO
-            try:
-                self._asio_dev = asio_ctypes.ASIODevice(clsid, rate, self._asio_sample_type)
-            except Exception as e:
-                self.errorOccurred.emit(f"ASIO: {e}")
             return
 
+        # Build shell pipeline: ffmpeg | python asio_worker.py
+        # OS pipes handle all I/O — zero Python GIL involvement in data path
+        ffmpeg_cmd = f'"{ffmpeg}" -nostdin -i "{filepath}" -f f32le -ar {rate} -ac 2 -loglevel error pipe:1'
+        if seek_ms > 0:
+            ffmpeg_cmd = f'"{ffmpeg}" -nostdin -ss {seek_ms/1000:.3f} -i "{filepath}" -f f32le -ar {rate} -ac 2 -loglevel error pipe:1'
+        worker_cmd = f'"{sys.executable}" "{worker_path}" {clsid} {rate}'
+        shell_cmd = f'{ffmpeg_cmd} | {worker_cmd}'
+        import sys as _sys
         try:
-            self._asio_worker = subprocess.Popen(
-                [sys.executable, str(worker_path), clsid, str(rate)],
-                stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+            self._asio_pipe = subprocess.Popen(
+                shell_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except Exception as e:
-            self.errorOccurred.emit(f"ASIO worker: {e}")
+            self.errorOccurred.emit(f"ASIO pipe: {e}")
             return
 
     # ── Poll ─────────────────────────────────────────────────────────────
@@ -413,9 +438,21 @@ class MSAudioEngine(QObject):
     def _poll(self):
         if self._app_state != PlaybackState.Playing:
             return
-        rate = self._pipeline_sample_rate or 44100
-        total_bytes = self._seek_offset_bytes + self._total_bytes_read
-        pos_ms = int(total_bytes / (rate * 2 * 4) * 1000)
-        if abs(pos_ms - self._position_ms) > 100:
-            self._position_ms = pos_ms
-            self.positionChanged.emit(pos_ms)
+        if getattr(self, '_asio_pipe', None) is not None:
+            # ASIO shell pipe: estimate position from elapsed real time
+            if not hasattr(self, '_play_start_time'):
+                self._play_start_time = time.time()
+            elapsed_ms = int((time.time() - self._play_start_time) * 1000)
+            pos_ms = self._seek_offset_ms + elapsed_ms
+            if pos_ms > self._duration_ms > 0:
+                pos_ms = self._duration_ms
+            if abs(pos_ms - self._position_ms) > 100:
+                self._position_ms = pos_ms
+                self.positionChanged.emit(pos_ms)
+        else:
+            rate = self._pipeline_sample_rate or 44100
+            total_bytes = self._seek_offset_bytes + self._total_bytes_read
+            pos_ms = int(total_bytes / (rate * 2 * 4) * 1000)
+            if abs(pos_ms - self._position_ms) > 100:
+                self._position_ms = pos_ms
+                self.positionChanged.emit(pos_ms)
