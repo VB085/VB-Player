@@ -64,6 +64,7 @@ from audio_player.platform import platform_info
 
 
 _WIN32 = sys.platform == "win32"
+_MSYS2 = _WIN32 and "MSC" not in sys.version  # MSYS2 Python has QThread bugs
 
 class MainWindow(FramelessResizeMixin, QMainWindow):
     def __init__(self):
@@ -105,11 +106,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._playlist = PlaylistManager(self)
         self._equalizer_mgr = EqualizerManager(self)
         # MSYS2 Python 3.14: QThread access violations — disable on Windows
-        self._analyzer = AudioAnalyzer(self) if not _WIN32 else None
-        self._lyrics_fetcher = LyricsFetcher(self) if not _WIN32 else None
-        if _WIN32:
+        self._analyzer = AudioAnalyzer(self) if not _MSYS2 else None
+        self._lyrics_fetcher = LyricsFetcher(self) if not _MSYS2 else None
+        if _MSYS2:
             import sys as _sys
-            print("[init] AudioAnalyzer + LyricsFetcher disabled on Windows", file=_sys.stderr)
+            print("[init] AudioAnalyzer + LyricsFetcher disabled on MSYS2", file=_sys.stderr)
         self._album_view = AlbumGridView(self._playlist)
 
         self._library = LibraryManager(self)
@@ -119,7 +120,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Playback backend
         self._local_backend = LocalBackend(self._engine, self)
         self._http_server = EmbeddedHttpServer()
-        if not _WIN32:  # MSYS2 Python 3.14: threading access violations
+        if not _MSYS2:  # MSYS2 Python 3.14: threading access violations
             self._http_server.start()
         self._cast_ctrl = CastController(self._local_backend, self)
         self._cast_ctrl.set_http_server(self._http_server)
@@ -167,11 +168,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         languageChanged.connect(self._refresh_language)
 
         # Auto-scan watch folders on startup (MSYS2: skip — threading crashes)
-        if not _WIN32:
+        if not _MSYS2:
             self._auto_scan_library()
 
         # Start DLNA device discovery (MSYS2: skip — socket threading crashes)
-        if not _WIN32:
+        if not _MSYS2:
             self._device_registry.start()
 
         # System tray

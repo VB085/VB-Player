@@ -5,7 +5,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QIcon
 from pathlib import Path
 
-_MSYS2 = _sys.platform == "win32"  # QThread access violations on MSYS2 Python 3.14
+_MSYS2 = _sys.platform == "win32" and "MSC" not in _sys.version  # QThread bugs on MSYS2 only
 from urllib.parse import urlparse
 import random
 import json

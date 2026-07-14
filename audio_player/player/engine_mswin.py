@@ -110,6 +110,25 @@ class MSAudioEngine(QObject):
     def is_playing(self) -> bool: return self._app_state == PlaybackState.Playing
 
     @property
+    def gapless_enabled(self) -> bool: return self._gapless_enabled
+
+    @gapless_enabled.setter
+    def gapless_enabled(self, v: bool): self._gapless_enabled = v
+
+    @property
+    def replaygain_enabled(self) -> bool: return self._replaygain_enabled
+
+    @replaygain_enabled.setter
+    def replaygain_enabled(self, v: bool): self._replaygain_enabled = v
+
+    def set_volume(self, v: float):
+        self._volume_level = max(0.0, min(1.0, v))
+
+    def set_eq_gain(self, band: int, gain: float):
+        if 0 <= band < len(self._eq_gains):
+            self._eq_gains[band] = gain
+
+    @property
     def exclusive_mode(self) -> bool: return self._exclusive_mode
 
     @exclusive_mode.setter
