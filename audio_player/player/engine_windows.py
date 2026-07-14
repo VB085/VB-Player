@@ -808,10 +808,10 @@ class AudioEngine(_BaseAudioEngine):
             except Exception:
                 time.sleep(0.01)
 
-        # EOF: track finished when ring buffer drains
+        # EOS handled by _poll timer (GStreamer bus message), not here.
+        # Feed thread just waits for ASIO buffer to drain before closing.
         while _a._running and _a._wpos != _a._rpos:
             time.sleep(0.05)
-        self.trackFinished.emit()
 
     # ── Override _build_pipeline ───────────────────────────────────────
 
