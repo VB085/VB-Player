@@ -29,7 +29,7 @@ from audio_player.ui.widgets.playlist_view import PlaylistView
 from audio_player.ui.widgets.spectrum import SpectrumWidget
 from audio_player.ui.widgets.waveform import WaveformWidget
 from audio_player.ui.widgets.metadata_panel import MetadataPanel
-from audio_player.ui.widgets.hifi_now_playing import HiFiNowPlayingPage
+from audio_player.ui.widgets.hifi_qml_page import HiFiQmlPage
 from audio_player.ui.widgets.now_playing_bar import NowPlayingBar
 from audio_player.ui.widgets.floating_pill import FloatingPill
 from audio_player.ui.utils import format_duration as _format_duration, format_size as _format_size
@@ -361,7 +361,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._engine.volume = 1.0
 
         # ===== Overlay stack: body | hifi (also used as now-playing overlay) =====
-        self._hifi_page = HiFiNowPlayingPage()
+        self._hifi_page = HiFiQmlPage()
         self._hifi_page.hide()
         self._now_playing_page = self._hifi_page  # same widget, reused
         self._hifi_overlay = QStackedWidget()
@@ -1454,16 +1454,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         oh = self._hifi_overlay.height()
         self._hifi_page.show()
         self._hifi_overlay.setCurrentWidget(self._hifi_page)
-        from_rect = QRect(0, oh, ow, oh)
-        to_rect = QRect(0, 0, ow, oh)
-        self._hifi_page.setGeometry(from_rect)
-        anim = QPropertyAnimation(self._hifi_page, b"geometry")
-        anim.setDuration(350)
-        anim.setStartValue(from_rect)
-        anim.setEndValue(to_rect)
-        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        anim.start()
-        self._hifi_page._slide_anim = anim
 
     def _collapse_hifi(self):
         """Return from overlay to normal view."""
