@@ -25,7 +25,8 @@ def _qt_message_handler(mode, context, message):
         os._exit(0)  # clean exit, prevent Qt's abort() + core dump
     elif "QThread" in message:
         print(f"[Qt WARNING] {message}", file=sys.stderr)
-    else:
+    # Suppress noisy parse warnings triggered on every repaint
+    elif "Could not parse" not in message:
         print(f"[Qt:{mode}] {message}", file=sys.stderr)
 
 # If the project .venv exists but we're not running from it, re-exec with venv Python

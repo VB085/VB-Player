@@ -38,10 +38,14 @@ class _DecoderWorker(QThread):
         """Decode audio to F32LE mono 22.05kHz PCM.
 
         Tries gst-launch first, falls back to ffmpeg on failure.
+        On MSVC Python, skips gst-launch entirely (no GStreamer available).
         """
-        samples = self._decode_via_gst()
-        if samples is not None:
-            return samples
+        import sys
+        _MSVC = hasattr(sys, 'getwindowsversion') and 'MSC' in sys.version
+        if not _MSVC:
+            samples = self._decode_via_gst()
+            if samples is not None:
+                return samples
         return self._decode_via_ffmpeg()
 
     def _decode_via_gst(self) -> np.ndarray | None:
@@ -205,6 +209,8 @@ class _DecoderWorker(QThread):
                 spec = spec / max_val
             spec = np.log1p(spec * 3) / np.log1p(3)
             spectrum[i] = spec
+            if i % 50 == 0:  # yield GIL every 50 FFTs (~1.5s of audio)
+                self.msleep(1)
         return spectrum
 
     def _load_lyrics(self) -> list[LyricsLine]:
@@ -244,9 +250,12 @@ class _DecoderWorker(QThread):
                 return None
 
             tags = mf.tags
+            # Guard: some mutagen versions return tags as non-dict iterables
+            if not hasattr(tags, 'items'):
+                return None
+
             # Prioritised keys: USLT (ID3), ©lyr (MP4), LYRICS (Vorbis/FLAC)
-            for key in tags:
-                # GStreamer Python bindings may return tuple keys
+            for key in list(tags.keys()):
                 try:
                     key_s = str(key)
                 except Exception:
@@ -263,11 +272,16 @@ class _DecoderWorker(QThread):
                         t = val.text
                         if isinstance(t, list):
                             t = t[0] if t else None
+                        # ID3 USLT: val.text may be a tuple ('lang', 'text')
+                        if isinstance(t, tuple) and len(t) >= 2:
+                            t = t[1]
+                        if isinstance(t, str):
+                            return t
                         return str(t) if t else None
                     return str(val)
             return None
         except Exception as e:
-            import sys; print(f"[analyzer] 元数据读取失败: {e}", file=sys.stderr)
+            import sys; print(f"[analyzer] lyrics tag read skipped: {e}", file=sys.stderr)
             return None
 
     def _parse_lrc(self, text: str) -> list[LyricsLine]:

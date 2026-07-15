@@ -147,10 +147,10 @@ def read_metadata(filepath: str) -> TrackMetadata:
             if mf is not None:
                 _read_mutagen_meta(mf, meta, suffix)
         except ValueError as e:
-            # Python 3.14 incompatibility — mutagen uses APIs that changed
+            # mutagen can fail on some files (malformed tags, encoding issues, etc.)
             import sys
             if not getattr(read_metadata, '_warned_valueerror', False):
-                print(f"[metadata] mutagen ValueError (Python 3.14 compat issue), "
+                print(f"[metadata] mutagen ValueError, "
                       f"using extension-based fallback: {e}", file=sys.stderr)
                 read_metadata._warned_valueerror = True  # type: ignore
         except Exception as e:

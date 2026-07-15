@@ -1,4 +1,4 @@
-﻿"""HiFi Now Playing — immersive full-page playback dashboard."""
+"""HiFi Now Playing — immersive full-page playback dashboard."""
 
 import sys
 from PyQt6.QtWidgets import (
@@ -268,7 +268,10 @@ class HiFiNowPlayingPage(QWidget):
 
     def set_position(self, ms: int):
         self._position_ms = ms
-        self.update()
+        # Partial update: only the progress bar area (bottom ~180px)
+        w = self.width()
+        h = self.height()
+        self.update(QRectF(0, h - 180, w, 180).toRect())
 
     def set_duration(self, ms: int):
         self._duration_ms = ms
@@ -401,18 +404,12 @@ class HiFiNowPlayingPage(QWidget):
             self._hide_timer.start()
 
     def _animate_buttons(self, start: float, end: float, duration: int):
-        """Animate buttons opacity."""
-        if self._fade_anim and self._fade_anim.state() == QAbstractAnimation.State.Running:
-            self._fade_anim.stop()
-        self._opacity_helper.opacity = start
-        self._fade_anim = QPropertyAnimation(self._opacity_helper, b"opacity")
-        self._fade_anim.setDuration(duration)
-        self._fade_anim.setStartValue(start)
-        self._fade_anim.setEndValue(end)
-        self._fade_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self._fade_anim.valueChanged.connect(self._on_opacity_changed)
-        self._fade_anim.finished.connect(self._on_fade_finished)
-        self._fade_anim.start()
+        """Instantly set buttons opacity — no animation to avoid paintEvent spam."""
+        self._opacity_helper.opacity = end
+        self._buttons_opacity = end
+        self._buttons_visible = end > 0.5
+        btn_y = self.height() - 140
+        self.update(QRectF(0, btn_y - 20, self.width(), 160).toRect())
 
     def _on_opacity_changed(self):
         """Called during fade animation to update opacity and repaint."""
@@ -505,17 +502,11 @@ class HiFiNowPlayingPage(QWidget):
         self._topbar_hide_timer.start()
 
     def _animate_topbar(self, start: float, end: float, duration: int):
-        if self._topbar_fade_anim and self._topbar_fade_anim.state() == QAbstractAnimation.State.Running:
-            self._topbar_fade_anim.stop()
-        self._topbar_opacity_helper.opacity = start
-        self._topbar_fade_anim = QPropertyAnimation(self._topbar_opacity_helper, b"opacity")
-        self._topbar_fade_anim.setDuration(duration)
-        self._topbar_fade_anim.setStartValue(start)
-        self._topbar_fade_anim.setEndValue(end)
-        self._topbar_fade_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self._topbar_fade_anim.valueChanged.connect(self._on_topbar_opacity_changed)
-        self._topbar_fade_anim.finished.connect(self._on_topbar_fade_finished)
-        self._topbar_fade_anim.start()
+        """Instant topbar show/hide — no animation to avoid CPU waste."""
+        self._topbar_opacity_helper.opacity = end
+        self._topbar_opacity = end
+        self._topbar_visible = end > 0.1
+        self._on_topbar_opacity_changed()
 
     def _on_topbar_opacity_changed(self):
         self._topbar_opacity = self._topbar_opacity_helper.opacity
@@ -817,11 +808,15 @@ class HiFiNowPlayingPage(QWidget):
                                        cover_size, cover_size), 12, 12)
             p.setClipPath(clip)
 
-            scaled = self._cover_pixmap.scaled(
-                cover_size, cover_size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
+                        # Cache scaled cover - SmoothTransformation is expensive
+            _cache_key = (cover_size, id(self._cover_pixmap))
+            if getattr(self, '_cached_cover_key', None) != _cache_key:
+                self._cached_cover_key = _cache_key
+                self._cached_cover_scaled = self._cover_pixmap.scaled(
+                    cover_size, cover_size,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation)
+            scaled = self._cached_cover_scaled
             src_x = (scaled.width() - cover_size) / 2
             src_y = (scaled.height() - cover_size) / 2
             p.drawPixmap(int(cover_x), int(cover_y), scaled,
@@ -963,25 +958,27 @@ class HiFiNowPlayingPage(QWidget):
             p.setOpacity(progress_opacity)
             ratio = self._position_ms / self._duration_ms
 
-            # Groove background (#252540) — fully rounded ends
+            # Groove background — muted accent, very subtle
             groove_r = groove_h // 2
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#252540"))
+            muted_accent = QColor(self._accent)
+            muted_accent.setAlpha(40)
+            p.setBrush(muted_accent)
             p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, groove_h), groove_r, groove_r)
 
-            # Sub-page (accent color fill) — fully rounded ends
+            # Played portion — full accent color
             accent_color = QColor(self._accent)
             p.setBrush(accent_color)
             fill_w = bar_w * ratio
             if fill_w > 0:
                 p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, groove_h), groove_r, groove_r)
 
-            # Time labels — only in Artwork mode
+            # Time labels — muted accent, same as artist name
             if progress < 0.5:
                 time_font = QFont()
                 time_font.setPointSize(10)
                 p.setFont(time_font)
-                p.setPen(QColor("#94a3b8"))
+                p.setPen(self._accent.lighter(130))
                 time_y = bar_y + groove_h + 12
                 p.drawText(QRectF(bar_x, time_y, 48, 16),
                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,

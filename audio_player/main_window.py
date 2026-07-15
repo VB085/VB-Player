@@ -1419,14 +1419,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._waveform.set_position(ratio)
             self._spectrum.set_position_ratio(ratio)
             self._spectrum.lyrics_overlay.set_position(ms)
-            # Throttled taskbar update — every ~500ms is enough
             if not hasattr(self, '_last_tb_update') or abs(ms - self._last_tb_update) > 500:
                 self._last_tb_update = ms
                 if hasattr(self, '_taskbar') and self._taskbar is not None:
                     self._taskbar.set_progress(ms, dur)
         self._fullscreen_lyrics.set_position(ms)
-        self._hifi_page.set_position(ms)
-        self._hifi_page.set_lyrics_position(ms)
+        if not hasattr(self, '_last_hifi_pos') or abs(ms - self._last_hifi_pos) > 50:
+            self._last_hifi_pos = ms
+            self._hifi_page.set_position(ms)
+            self._hifi_page.set_lyrics_position(ms)
 
     def _on_duration_changed(self, ms):
         self._bar_update("set_duration", ms)

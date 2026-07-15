@@ -2,7 +2,7 @@
 
 Zero GStreamer dependency. Works on standard Windows Python 3.12+.
 """
-import subprocess, threading, time, os, sys, math, struct
+import subprocess, threading, time, os, sys, math, struct, ctypes
 from collections import deque
 from pathlib import Path
 
@@ -61,9 +61,11 @@ class MSAudioEngine(QObject):
         self._stop_event = threading.Event()
         self._ring = deque()
         self._ring_lock = threading.Lock()
-        self._ring_max = 200  # ~1.5s buffer at 44.1kHz stereo F32LE
+        self._ring_max = 10  # ~1.8s buffer, smaller = less GIL contention
         self._total_bytes_read = 0
         self._seek_offset_bytes = 0
+        self._seek_offset_ms = 0
+        self._play_start_time = 0
 
         # WASAPI
         self._sd_stream = None
@@ -130,6 +132,10 @@ class MSAudioEngine(QObject):
         if 0 <= band < len(self._eq_gains):
             self._eq_gains[band] = gain
 
+    def set_eq_band_gain(self, band_idx: int, db: float):
+        """Compatibility with GStreamer engine API."""
+        self.set_eq_gain(band_idx, db)
+
     @property
     def exclusive_mode(self) -> bool: return self._exclusive_mode
 
@@ -194,7 +200,7 @@ class MSAudioEngine(QObject):
 
         try:
             self._ffmpeg_proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except Exception as e:
             self.errorOccurred.emit(f"ffmpeg: {e}")
             return False
@@ -202,32 +208,6 @@ class MSAudioEngine(QObject):
         self._total_bytes_read = 0
         self._seek_offset_bytes = int(seek_ms * rate * 2 * 4 / 1000)
         return True
-
-    def _read_ffmpeg_loop(self):
-        """Background thread: read ffmpeg stdout → ring buffer (WASAPI).
-
-        Uses os.read() to minimize GIL holding time. The OS kernel buffers
-        the pipe; os.read() releases the GIL while waiting for data.
-        """
-        import os as _os
-        fd = self._ffmpeg_proc.stdout.fileno()
-        while not self._stop_event.is_set():
-            # Throttle when ring buffer is full
-            if len(self._ring) >= self._ring_max:
-                time.sleep(0.05)
-                continue
-            try:
-                data = _os.read(fd, 65536)
-            except Exception:
-                break
-            if not data:
-                break  # EOF
-            n = len(data)
-            self._total_bytes_read += n
-            with self._ring_lock:
-                self._ring.append(data)
-        if not self._stop_event.is_set():
-            self.trackFinished.emit()
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -254,12 +234,38 @@ class MSAudioEngine(QObject):
         if self._app_state == PlaybackState.Paused:
             self._app_state = PlaybackState.Playing
             self.stateChanged.emit(PlaybackState.Playing)
-            if self._asio_feed_timer:
-                self._asio_feed_timer.start()
+            resume_ms = getattr(self, '_pause_position_ms', 0)
+            if self._asio_dev is not None:
+                # ASIO resume: re-create pipeline at paused position
+                try: self._asio_dev.close()
+                except Exception: pass
+                self._asio_dev = None
+                self._seek_offset_ms = resume_ms
+                self._play_start_time = time.time()
+                self._asio_last_rpos = 0
+                self._asio_total_frames = resume_ms * (self._pipeline_sample_rate or 44100) // 1000
+                self._stop_event.clear()
+                self._start_asio(self._current_file, seek_ms=resume_ms)
+            elif self._current_file:
+                # WASAPI resume: re-create ffmpeg + feed at paused position
+                self._seek_offset_ms = resume_ms
+                self._seek_offset_bytes = int(resume_ms * (self._pipeline_sample_rate or 44100) * 2 * 4 / 1000)
+                self._total_bytes_read = 0
+                if self._start_ffmpeg(self._current_file, seek_ms=resume_ms):
+                    self._sd_stream = None
+                    self._stop_event.clear()
+                    self._start_wasapi()
+                    self._output_thread = threading.Thread(target=self._wasapi_loop, daemon=True)
+                    self._output_thread.start()
+            self._play_start_time = time.time()
             self._poll_timer.start()
             return
 
         self.stop()
+        self._seek_offset_ms = 0
+        self._play_start_time = time.time()
+        self._asio_last_rpos = 0
+        self._asio_total_frames = 0
         is_asio = self._exclusive_mode and self._exclusive_device.startswith("asio:")
         if not is_asio:
             if not self._start_ffmpeg(self._current_file):
@@ -276,9 +282,9 @@ class MSAudioEngine(QObject):
         else:
             self._start_wasapi()
 
-        # Start feed thread (WASAPI only — ASIO uses shell pipe)
+        # Start WASAPI feed/playback loop (single thread, blocking write)
         if not (self._exclusive_mode and self._exclusive_device.startswith("asio:")):
-            self._output_thread = threading.Thread(target=self._read_ffmpeg_loop, daemon=True)
+            self._output_thread = threading.Thread(target=self._wasapi_loop, daemon=True)
             self._output_thread.start()
 
         self._play_start_time = time.time()
@@ -289,39 +295,69 @@ class MSAudioEngine(QObject):
     def pause(self):
         if self._app_state != PlaybackState.Playing:
             return
+        # Signal stop FIRST so feed threads don't emit trackFinished
         self._stop_event.set()
+        # Stop WASAPI output immediately
+        if self._sd_stream is not None:
+            try: self._sd_stream.abort(); self._sd_stream.close()
+            except Exception: pass
+            self._sd_stream = None
+        # Then kill ffmpeg — pipes close, threads unblock from os.read()
+        if self._ffmpeg_proc is not None:
+            try: self._ffmpeg_proc.kill()
+            except Exception: pass
+            self._ffmpeg_proc = None
+        for evt in getattr(self, '_feed_stops', []):
+            evt.set()
+        self._feed_stops = []
+        self._pause_position_ms = self._position_ms
+        if self._asio_dev is not None:
+            try:
+                vt = ctypes.cast(self._asio_dev._ptr, ctypes.POINTER(ctypes.c_void_p))[0]
+                V = lambda i,r,*a: ctypes.WINFUNCTYPE(r, ctypes.c_void_p, *a)(
+                    ctypes.cast(ctypes.cast(vt, ctypes.POINTER(ctypes.c_void_p))[i], ctypes.c_void_p).value)
+                V(8, ctypes.c_long)(self._asio_dev._ptr)
+                self._asio_dev._running = False
+            except Exception:
+                pass
         self._app_state = PlaybackState.Paused
         self.stateChanged.emit(PlaybackState.Paused)
         self._poll_timer.stop()
-        if self._asio_feed_timer:
-            self._asio_feed_timer.stop()
 
     def stop(self):
         self._stop_event.set()
+        # Signal all per-feed stop events first — threads will exit
+        for evt in getattr(self, '_feed_stops', []):
+            evt.set()
+        self._feed_stops = []
+        # Kill ffmpeg first (stops data flow)
+        if self._ffmpeg_proc is not None:
+            try: self._ffmpeg_proc.kill()
+            except Exception: pass
+            self._ffmpeg_proc = None
         if self._sd_stream is not None:
             try: self._sd_stream.stop(); self._sd_stream.close()
             except Exception: pass
             self._sd_stream = None
-        if getattr(self, '_asio_pipe', None) is not None:
-            try: self._asio_pipe.kill(); self._asio_pipe.wait(timeout=3)
-            except Exception: pass
-            self._asio_pipe = None
-        if getattr(self, '_asio_worker', None) is not None:
-            try:
-                self._asio_worker.stdin.close()
-                self._asio_worker.wait(timeout=3)
-            except Exception: pass
-            self._asio_worker = None
+        # ASIO: close with brief timeout — callback may hold GIL
         if self._asio_dev is not None:
-            try: self._asio_dev.close()
-            except Exception: pass
-            self._asio_dev = None
-        if self._asio_feed_timer:
-            self._asio_feed_timer.stop(); self._asio_feed_timer = None
-        if self._ffmpeg_proc:
-            try: self._ffmpeg_proc.kill(); self._ffmpeg_proc.wait(timeout=3)
-            except Exception: pass
-            self._ffmpeg_proc = None
+            dev = self._asio_dev; self._asio_dev = None
+            try:
+                import threading as _th
+                closed = [False]
+                def _do_close():
+                    try: dev.close()
+                    except Exception: pass
+                    closed[0] = True
+                t = _th.Thread(target=_do_close, daemon=True)
+                t.start()
+                t.join(timeout=0.5)
+                if not closed[0]:
+                    import sys as _s
+                    _s.stderr.write("[engine] ASIO close timed out, forcing\n")
+                    _s.stderr.flush()
+            except Exception:
+                pass
         self._position_ms = 0
         self._app_state = PlaybackState.Stopped
         self.stateChanged.emit(PlaybackState.Stopped)
@@ -346,17 +382,31 @@ class MSAudioEngine(QObject):
             try: self._sd_stream.stop(); self._sd_stream.close()
             except Exception: pass
             self._sd_stream = None
-        if not self._start_ffmpeg(self._current_file, seek_ms=position_ms):
-            return
+        if getattr(self, '_asio_worker', None) is not None:
+            try: self._asio_worker.kill(); self._asio_worker.wait(timeout=3)
+            except Exception: pass
+            self._asio_worker = None
+        if getattr(self, '_ffmpeg_proc', None) is not None:
+            try: self._ffmpeg_proc.kill(); self._ffmpeg_proc.wait(timeout=3)
+            except Exception: pass
+            self._ffmpeg_proc = None
+
         with self._ring_lock:
             self._ring.clear()
         self._stop_event.clear()
-        if self._exclusive_device.startswith("asio:"):
-            self._start_asio()
+
+        is_asio = self._exclusive_device.startswith("asio:")
+        if is_asio:
+            self._seek_offset_ms = position_ms
+            self._play_start_time = time.time()
+            self._start_asio(self._current_file, seek_ms=position_ms)
         else:
+            if not self._start_ffmpeg(self._current_file, seek_ms=position_ms):
+                return
             self._start_wasapi()
-        self._output_thread = threading.Thread(target=self._read_ffmpeg_loop, daemon=True)
-        self._output_thread.start()
+            self._output_thread = threading.Thread(target=self._wasapi_loop, daemon=True)
+            self._output_thread.start()
+
         if was_playing:
             self._app_state = PlaybackState.Playing
             self._poll_timer.start()
@@ -364,49 +414,42 @@ class MSAudioEngine(QObject):
     def seek_ratio(self, ratio: float):
         self.seek(int(ratio * self._duration_ms))
 
-    # ── WASAPI output ───────────────────────────────────────────────────
+    # ── WASAPI output (blocking write — C-level wait, zero GIL) ───────
 
     def _start_wasapi(self):
         import sounddevice as sd
-        import numpy as np
-
         rate = self._pipeline_sample_rate or 44100
-        bs = 1024  # frames per callback
+        bs = 1024
         ring_lock = self._ring_lock
         ring = self._ring
-        volume_ref = self  # to read self._volume_level
-
-        _frames_played = [0]
-        _rate = rate
+        volume_ref = self
 
         def _callback(outdata, frames, _time, status):
             if status:
                 print(f"[wasapi] {status}", file=sys.stderr)
+            vol = volume_ref._volume_level
+            filled = 0
             with ring_lock:
-                needed = frames * 2
-                buf = np.empty(needed, dtype=np.float32)
-                filled = 0
-                while filled < needed and ring:
-                    chunk_data = ring.popleft()
-                    chunk_floats = np.frombuffer(chunk_data, dtype=np.float32)
-                    remaining = needed - filled
-                    take = min(len(chunk_floats), remaining)
-                    buf[filled:filled+take] = chunk_floats[:take]
+                while filled < frames and ring:
+                    chunk = ring.popleft()
+                    nf = len(chunk) // 2
+                    take = min(nf, frames - filled)
+                    ts = take * 2
+                    outdata[filled:filled+take, 0] = chunk[0:ts:2] * vol
+                    outdata[filled:filled+take, 1] = chunk[1:ts:2] * vol
                     filled += take
-                    if take < len(chunk_floats):
-                        ring.appendleft(chunk_floats[take:].tobytes())
-                if filled < needed:
-                    buf[filled:] = 0.0
-                outdata[:, 0] = buf[0::2] * volume_ref._volume_level
-                outdata[:, 1] = buf[1::2] * volume_ref._volume_level
-            _frames_played[0] += frames
-            # Update position every ~100ms
-            if _frames_played[0] % (_rate // 10) < frames:
-                pos_ms = int(_frames_played[0] / _rate * 1000)
-                if abs(pos_ms - volume_ref._position_ms) > 100:
-                    volume_ref._position_ms = pos_ms
-                    volume_ref.positionChanged.emit(pos_ms)
+                    if take < nf:
+                        ring.appendleft(chunk[ts:])
+            if filled < frames:
+                outdata[filled:, :] = 0.0
+            _cb_frames[0] += frames
+            pos_ms = int(_cb_frames[0] / _rate * 1000) + volume_ref._seek_offset_ms
+            if pos_ms != volume_ref._position_ms:
+                volume_ref._position_ms = pos_ms
+                volume_ref.positionChanged.emit(pos_ms)
 
+        _cb_frames = [0]
+        _rate = rate
         try:
             self._sd_stream = sd.OutputStream(
                 samplerate=rate, channels=2, callback=_callback,
@@ -415,7 +458,43 @@ class MSAudioEngine(QObject):
         except Exception as e:
             self.errorOccurred.emit(f"WASAPI: {e}")
 
-    # ── ASIO output (via shell pipe: ffmpeg | asio_worker) ─────────────
+    def _wasapi_loop(self):
+        """Feed thread: read ffmpeg → ring. Callback handles output."""
+        import os as _os, numpy as _np
+        fd = self._ffmpeg_proc.stdout.fileno()
+        ring = self._ring
+        ring_lock = self._ring_lock
+        pending = b''
+        data = b'x'
+
+        _frames_written = 0
+        rate = self._pipeline_sample_rate or 44100
+
+        while not self._stop_event.is_set():
+            if len(ring) < self._ring_max:
+                try:
+                    data = _os.read(fd, 65536)
+                except Exception:
+                    break
+                if data:
+                    pending += data
+            frame_bytes = 8
+            complete = (len(pending) // frame_bytes) * frame_bytes
+            if complete > 0:
+                arr = _np.frombuffer(pending[:complete], dtype=_np.float32).copy()
+                pending = pending[complete:]
+                with ring_lock:
+                    ring.append(arr)
+                time.sleep(0)  # yield after each append
+            else:
+                time.sleep(0.05)  # ring full — long sleep, free GIL for Qt
+            if not data and len(pending) == 0 and not ring:
+                break
+
+        if not self._stop_event.is_set():
+            self.trackFinished.emit()
+
+    # ── ASIO output (asio_ctypes directly) ────────────────────────────
 
     def _start_asio(self, filepath: str, seek_ms: int = 0):
         clsid = self._exclusive_device[5:]
@@ -424,46 +503,121 @@ class MSAudioEngine(QObject):
         if not ffmpeg:
             self.errorOccurred.emit("ffmpeg not found")
             return
-        worker_path = Path(__file__).resolve().parent.parent / "platform/windows/asio_worker.py"
-        if not worker_path.exists():
-            self.errorOccurred.emit("asio_worker.py not found")
+
+        try:
+            self._asio_dev = asio_ctypes.ASIODevice(clsid, rate)
+        except Exception as e:
+            self.errorOccurred.emit(f"ASIO open: {e}")
             return
 
-        # Build shell pipeline: ffmpeg | python asio_worker.py
-        # OS pipes handle all I/O — zero Python GIL involvement in data path
-        ffmpeg_cmd = f'"{ffmpeg}" -nostdin -i "{filepath}" -f f32le -ar {rate} -ac 2 -loglevel error pipe:1'
+        ffmpeg_args = [ffmpeg, "-nostdin", "-i", filepath,
+                       "-f", "f32le", "-ar", str(rate), "-ac", "2",
+                       "-loglevel", "error", "pipe:1"]
         if seek_ms > 0:
-            ffmpeg_cmd = f'"{ffmpeg}" -nostdin -ss {seek_ms/1000:.3f} -i "{filepath}" -f f32le -ar {rate} -ac 2 -loglevel error pipe:1'
-        worker_cmd = f'"{sys.executable}" "{worker_path}" {clsid} {rate}'
-        shell_cmd = f'{ffmpeg_cmd} | {worker_cmd}'
-        import sys as _sys
+            ffmpeg_args = [ffmpeg, "-nostdin", "-ss", f"{seek_ms/1000:.3f}",
+                           "-i", filepath,
+                           "-f", "f32le", "-ar", str(rate), "-ac", "2",
+                           "-loglevel", "error", "pipe:1"]
+
         try:
-            self._asio_pipe = subprocess.Popen(
-                shell_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self._ffmpeg_proc = subprocess.Popen(
+                ffmpeg_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except Exception as e:
-            self.errorOccurred.emit(f"ASIO pipe: {e}")
+            self._asio_dev.close(); self._asio_dev = None
+            self.errorOccurred.emit(f"ffmpeg: {e}")
             return
+
+        dev = self._asio_dev
+        proc = self._ffmpeg_proc
+        _rate = rate
+        # Per-feed stop signal — prevents old feeds reviving after stop_event clear
+        feed_stop = threading.Event()
+        if hasattr(self, '_feed_stops'):
+            self._feed_stops.append(feed_stop)
+        else:
+            self._feed_stops = [feed_stop]
+
+        def _feed():
+            import os as _os
+            fd2 = proc.stdout.fileno()
+            fed = 0
+            # Pre-buffer ~0.3s async in feed thread (doesn't block UI)
+            prefill_target = dev._buffer_size * 25
+            while fed < prefill_target * 8 and not feed_stop.is_set():
+                try:
+                    d = _os.read(fd2, 65536)
+                except Exception:
+                    break
+                if not d:
+                    break
+                dev.write(d)
+                fed += len(d)
+            RING = 262144
+            BS = dev._buffer_size
+            rpos = dev._rpos_cell
+            while not feed_stop.is_set():
+                used = (dev._wpos - rpos[0]) % RING
+                free = RING - used
+                # Wait if ring too full or write would wrap past end
+                if free < BS * 8:
+                    time.sleep(0.05)
+                    continue
+                # Don't let write wrap — only write contiguous space at tail
+                tail_space = RING - dev._wpos
+                max_ns = min(free - BS * 4, tail_space)
+                if max_ns <= 0:
+                    time.sleep(0.05)
+                    continue
+                try:
+                    data = _os.read(fd2, min(max_ns * 8, 65536))
+                except Exception:
+                    break
+                if not data:
+                    break  # ffmpeg EOF
+                # Process only complete stereo frames
+                frame_bytes = 8
+                complete = (len(data) // frame_bytes) * frame_bytes
+                if complete == 0:
+                    continue
+                dev.write(data[:complete])
+                fed += complete
+                time.sleep(0.002)  # yield GIL to Qt UI thread
+            # Wait for ring to drain before emitting trackFinished
+            while not feed_stop.is_set() and dev._wpos != rpos[0]:
+                time.sleep(0.05)
+            if not feed_stop.is_set() and fed > 0:
+                self.trackFinished.emit()
+            elif not feed_stop.is_set():
+                self.errorOccurred.emit("ASIO: ffmpeg failed to decode")
+
+        self._output_thread = threading.Thread(target=_feed, daemon=True)
+        self._output_thread.start()
 
     # ── Poll ─────────────────────────────────────────────────────────────
 
     def _poll(self):
         if self._app_state != PlaybackState.Playing:
             return
-        if getattr(self, '_asio_pipe', None) is not None:
-            # ASIO shell pipe: estimate position from elapsed real time
-            if not hasattr(self, '_play_start_time'):
-                self._play_start_time = time.time()
-            elapsed_ms = int((time.time() - self._play_start_time) * 1000)
-            pos_ms = self._seek_offset_ms + elapsed_ms
+        if getattr(self, '_asio_dev', None) is not None and self._asio_dev._running:
+            # ASIO: track total consumed frames via rpos wrap detection
+            rpos = self._asio_dev._rpos_cell[0]
+            if not hasattr(self, '_asio_last_rpos'):
+                self._asio_last_rpos = rpos
+                self._asio_total_frames = 0
+            # Detect wrap: rpos jumped backwards
+            RING = 262144
+            prev = self._asio_last_rpos
+            if rpos < prev:
+                self._asio_total_frames += (RING - prev) + rpos
+            else:
+                self._asio_total_frames += rpos - prev
+            self._asio_last_rpos = rpos
+            rate = self._pipeline_sample_rate or 44100
+            pos_ms = int(self._asio_total_frames / rate * 1000)
             if pos_ms > self._duration_ms > 0:
                 pos_ms = self._duration_ms
-            if abs(pos_ms - self._position_ms) > 100:
+            if abs(pos_ms - self._position_ms) > 30:
                 self._position_ms = pos_ms
                 self.positionChanged.emit(pos_ms)
-        else:
-            rate = self._pipeline_sample_rate or 44100
-            total_bytes = self._seek_offset_bytes + self._total_bytes_read
-            pos_ms = int(total_bytes / (rate * 2 * 4) * 1000)
-            if abs(pos_ms - self._position_ms) > 100:
-                self._position_ms = pos_ms
-                self.positionChanged.emit(pos_ms)
+        elif self._sd_stream is not None:
+            pass  # WASAPI position emitted by callback (actual playback pos)

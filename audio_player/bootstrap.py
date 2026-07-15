@@ -21,6 +21,8 @@ _FAIL_CACHE_TTL = 86400  # 24 hours
 # {module_name: (pip_package, description)}
 _PLATFORM_DEPS: dict[str, tuple[str, str]] = {}
 
+_IS_MSVC = hasattr(sys, 'getwindowsversion') and 'MSC' in sys.version
+
 if sys.platform == "linux":
     # PyGObject is system-managed; just warn if missing
     _PLATFORM_DEPS["gi"] = ("", "PyGObject (apt install python3-gi)")
@@ -29,7 +31,8 @@ elif sys.platform == "darwin":
         "pyobjc-framework-MediaPlayer>=10.0",
         "macOS Now Playing (pyobjc)",
     )
-elif sys.platform == "win32":
+elif sys.platform == "win32" and not _IS_MSVC:
+    # winsdk is MSYS2-only; on MSVC Python SMTC is disabled
     _PLATFORM_DEPS["winsdk.windows.media"] = (
         "winsdk>=1.0.0b9",
         "Windows SMTC (winsdk)",
