@@ -513,6 +513,8 @@ class MSAudioEngine(QObject):
                         self._cb_frames_ref[0] = 0
             if gen != self._output_gen or self._stop_event.is_set():
                 return
+            if self._ffmpeg_proc is None:
+                return  # source torn down (stop/seek raced us) — nothing to feed
             self._output_thread = threading.Thread(
                 target=self._wasapi_loop, daemon=True)
             self._output_thread.start()
@@ -541,7 +543,13 @@ class MSAudioEngine(QObject):
     def _wasapi_loop(self):
         """Feed thread: read ffmpeg → ring. Callback handles output."""
         import os as _os, numpy as _np
-        fd = self._ffmpeg_proc.stdout.fileno()
+        # Snapshot the process reference — a seek/stop racing us may have
+        # already killed ffmpeg; exit quietly instead of crashing the feed
+        # thread (a dead feed thread meant endless silence+underflow).
+        proc = self._ffmpeg_proc
+        if proc is None or proc.stdout is None:
+            return
+        fd = proc.stdout.fileno()
         ring = self._ring
         ring_lock = self._ring_lock
         pending = b''
