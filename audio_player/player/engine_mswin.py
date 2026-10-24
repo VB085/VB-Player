@@ -69,6 +69,16 @@ class MSAudioEngine(QObject):
 
         # WASAPI
         self._sd_stream = None
+        self._sd_rate = 0          # sample rate the persistent stream runs at
+        self._cb_frames_ref = None # callback's frame counter (for seek reset)
+        # The output stream is PERSISTENT: opened once, kept for the whole
+        # session; play/seek/stop only swap the ffmpeg source. PortAudio's
+        # WASAPI hostapi crashes/hangs under rapid open/abort/close cycles
+        # (access violation inside the audio callback, Pa_StopStream drain
+        # deadlock on underrun) — so those calls happen as rarely as
+        # possible, serialized by this lock, off the GUI thread.
+        self._output_lock = threading.Lock()
+        self._output_gen = 0
 
         # ASIO
         self._asio_dev = None
@@ -252,11 +262,8 @@ class MSAudioEngine(QObject):
                 self._seek_offset_bytes = int(resume_ms * (self._pipeline_sample_rate or 44100) * 2 * 4 / 1000)
                 self._total_bytes_read = 0
                 if self._start_ffmpeg(self._current_file, seek_ms=resume_ms):
-                    self._sd_stream = None
                     self._stop_event.clear()
-                    self._start_wasapi()
-                    self._output_thread = threading.Thread(target=self._wasapi_loop, daemon=True)
-                    self._output_thread.start()
+                    self._start_output_async()
             self._play_start_time = time.time()
             self._poll_timer.start()
             return
@@ -280,12 +287,7 @@ class MSAudioEngine(QObject):
         if self._exclusive_mode and self._exclusive_device.startswith("asio:"):
             self._start_asio(self._current_file)
         else:
-            self._start_wasapi()
-
-        # Start WASAPI feed/playback loop (single thread, blocking write)
-        if not (self._exclusive_mode and self._exclusive_device.startswith("asio:")):
-            self._output_thread = threading.Thread(target=self._wasapi_loop, daemon=True)
-            self._output_thread.start()
+            self._start_output_async()
 
         self._play_start_time = time.time()
         self._app_state = PlaybackState.Playing
@@ -297,16 +299,14 @@ class MSAudioEngine(QObject):
             return
         # Signal stop FIRST so feed threads don't emit trackFinished
         self._stop_event.set()
-        # Stop WASAPI output immediately
-        if self._sd_stream is not None:
-            try: self._sd_stream.abort(); self._sd_stream.close()
-            except Exception: pass
-            self._sd_stream = None
-        # Then kill ffmpeg — pipes close, threads unblock from os.read()
+        # Stop data flow immediately: kill ffmpeg, drop buffered audio.
+        # The persistent stream keeps running and outputs silence.
         if self._ffmpeg_proc is not None:
             try: self._ffmpeg_proc.kill()
             except Exception: pass
             self._ffmpeg_proc = None
+        with self._ring_lock:
+            self._ring.clear()
         for evt in getattr(self, '_feed_stops', []):
             evt.set()
         self._feed_stops = []
@@ -330,15 +330,14 @@ class MSAudioEngine(QObject):
         for evt in getattr(self, '_feed_stops', []):
             evt.set()
         self._feed_stops = []
-        # Kill ffmpeg first (stops data flow)
+        # Kill ffmpeg first (stops data flow). The persistent output stream
+        # keeps running (silence) — no PortAudio calls here, ever.
         if self._ffmpeg_proc is not None:
             try: self._ffmpeg_proc.kill()
             except Exception: pass
             self._ffmpeg_proc = None
-        if self._sd_stream is not None:
-            try: self._sd_stream.stop(); self._sd_stream.close()
-            except Exception: pass
-            self._sd_stream = None
+        with self._ring_lock:
+            self._ring.clear()
         # ASIO: close with brief timeout — callback may hold GIL
         if self._asio_dev is not None:
             dev = self._asio_dev; self._asio_dev = None
@@ -378,10 +377,6 @@ class MSAudioEngine(QObject):
             try: self._ffmpeg_proc.kill(); self._ffmpeg_proc.wait(timeout=2)
             except Exception: pass
             self._ffmpeg_proc = None
-        if self._sd_stream:
-            try: self._sd_stream.stop(); self._sd_stream.close()
-            except Exception: pass
-            self._sd_stream = None
         if getattr(self, '_asio_worker', None) is not None:
             try: self._asio_worker.kill(); self._asio_worker.wait(timeout=3)
             except Exception: pass
@@ -401,11 +396,10 @@ class MSAudioEngine(QObject):
             self._play_start_time = time.time()
             self._start_asio(self._current_file, seek_ms=position_ms)
         else:
+            self._seek_offset_ms = position_ms  # callback adds this to its counter
             if not self._start_ffmpeg(self._current_file, seek_ms=position_ms):
                 return
-            self._start_wasapi()
-            self._output_thread = threading.Thread(target=self._wasapi_loop, daemon=True)
-            self._output_thread.start()
+            self._start_output_async()
 
         if was_playing:
             self._app_state = PlaybackState.Playing
@@ -416,10 +410,18 @@ class MSAudioEngine(QObject):
 
     # ── WASAPI output (blocking write — C-level wait, zero GIL) ───────
 
-    def _start_wasapi(self):
+    def _start_wasapi(self, rate: int | None = None):
+        """Open the output stream. Must be called with self._output_lock held
+        (from _reopen_stream_locked / _start_output_async background threads)
+        — Pa_OpenStream blocks until the device's previous stream is fully
+        released on some drivers."""
         import sounddevice as sd
         rate = self._pipeline_sample_rate or 44100
-        bs = 1024
+        # 4096 frames ≈ 93 ms @44.1k: callback fires ~11 Hz instead of ~43 Hz,
+        # so the PortAudio thread needs the GIL 4× less often. List scrolling
+        # holds the GIL for long paint bursts — at 1024 frames the Python
+        # callback starved and audio underran. Latency cost is ~70 ms.
+        bs = 4096
         ring_lock = self._ring_lock
         ring = self._ring
         volume_ref = self
@@ -442,21 +444,99 @@ class MSAudioEngine(QObject):
                         ring.appendleft(chunk[ts:])
             if filled < frames:
                 outdata[filled:, :] = 0.0
-            _cb_frames[0] += frames
-            pos_ms = int(_cb_frames[0] / _rate * 1000) + volume_ref._seek_offset_ms
-            if pos_ms != volume_ref._position_ms:
-                volume_ref._position_ms = pos_ms
-                volume_ref.positionChanged.emit(pos_ms)
+            # The stream is persistent — while paused/stopped the callback
+            # keeps running (outputting silence); only advance the position
+            # counter while actually playing.
+            if volume_ref._app_state == PlaybackState.Playing:
+                _cb_frames[0] += frames
+                pos_ms = int(_cb_frames[0] / _rate * 1000) + volume_ref._seek_offset_ms
+                if pos_ms != volume_ref._position_ms:
+                    volume_ref._position_ms = pos_ms
+                    volume_ref.positionChanged.emit(pos_ms)
 
         _cb_frames = [0]
         _rate = rate
         try:
-            self._sd_stream = sd.OutputStream(
+            stream = sd.OutputStream(
                 samplerate=rate, channels=2, callback=_callback,
                 blocksize=bs, dtype='float32')
-            self._sd_stream.start()
+            stream.start()
+            self._sd_stream = stream
+            self._sd_rate = rate
+            self._cb_frames_ref = _cb_frames
+            return True
         except Exception as e:
             self.errorOccurred.emit(f"WASAPI: {e}")
+            return False
+
+    def _reopen_stream_locked(self, rate: int) -> bool:
+        """Tear down and reopen the persistent stream at *rate*.
+        Caller must hold _output_lock and must NOT be the GUI thread:
+        abort→quiet period→close, then open. The quiet period lets the
+        PortAudio audio thread exit our callback before close() frees it
+        (closing mid-callback = native access violation)."""
+        st = self._sd_stream
+        self._sd_stream = None
+        self._sd_rate = 0
+        if st is not None:
+            try: st.abort()
+            except Exception: pass
+            time.sleep(0.3)
+            try: st.close()
+            except Exception: pass
+        ok = self._start_wasapi(rate)
+        if not ok:
+            self._sd_stream = None
+            self._sd_rate = 0
+        return ok
+
+    def _start_output_async(self):
+        """Ensure the persistent output stream is running (opening it at the
+        current sample rate if needed) and start the ffmpeg feed thread —
+        entirely OFF the GUI thread. A generation counter makes the latest
+        request win when track/seek changes overlap."""
+        self._output_gen += 1
+        gen = self._output_gen
+        rate = self._pipeline_sample_rate or 44100
+
+        def _run():
+            with self._output_lock:
+                if gen != self._output_gen or self._stop_event.is_set():
+                    return  # superseded or stopped before we got the lock
+                if self._sd_stream is None or self._sd_rate != rate:
+                    if not self._reopen_stream_locked(rate):
+                        return
+                else:
+                    # Stream persists across tracks/seeks — reset its
+                    # position counter so playback restarts from the offset
+                    if self._cb_frames_ref is not None:
+                        self._cb_frames_ref[0] = 0
+            if gen != self._output_gen or self._stop_event.is_set():
+                return
+            self._output_thread = threading.Thread(
+                target=self._wasapi_loop, daemon=True)
+            self._output_thread.start()
+
+        threading.Thread(target=_run, daemon=True,
+                         name=f"wasapi-start-{gen}").start()
+
+    def shutdown(self):
+        """Final teardown of the persistent stream — call once on app quit,
+        from a background thread context is fine (takes _output_lock)."""
+        def _fini():
+            with self._output_lock:
+                st = self._sd_stream
+                self._sd_stream = None
+                self._sd_rate = 0
+                if st is not None:
+                    try: st.abort()
+                    except Exception: pass
+                    time.sleep(0.3)
+                    try: st.close()
+                    except Exception: pass
+        t = threading.Thread(target=_fini, daemon=True)
+        t.start()
+        t.join(timeout=3)
 
     def _wasapi_loop(self):
         """Feed thread: read ffmpeg → ring. Callback handles output."""

@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QFileDialog, QMessageBox, QMenu,
@@ -1104,6 +1105,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._device_registry.stop()
         self._http_server.stop()
         self._engine.stop()
+        if hasattr(self._engine, "shutdown"):
+            self._engine.shutdown()  # close persistent audio stream (background)
+        if self._analyzer is not None:
+            self._analyzer.shutdown()  # join decode QThread — prevents abort on destroy
         if self._lyrics_fetcher is not None:
             self._lyrics_fetcher.cleanup()
         if self._system_media:
@@ -1412,6 +1417,18 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._metadata_panel.show_metadata(meta, filepath)
 
     def _on_position_changed(self, ms):
+        # Throttle to ~15 Hz — the engine can emit positionChanged at 40+ Hz
+        # (WASAPI callback + 50 ms poll). Large jumps (seeks, track changes)
+        # pass straight through so interaction never feels delayed.
+        last_ms = getattr(self, "_pos_throttle_ms", None)
+        if last_ms is not None:
+            if ms == last_ms:
+                return
+            if abs(ms - last_ms) <= 400 and \
+                    time.monotonic() - getattr(self, "_pos_throttle_t", 0.0) < 0.066:
+                return
+        self._pos_throttle_ms = ms
+        self._pos_throttle_t = time.monotonic()
         self._bar_update("set_position", ms)
         dur = self._engine.duration
         if dur > 0:
