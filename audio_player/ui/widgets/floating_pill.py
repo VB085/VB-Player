@@ -17,6 +17,40 @@ PILL_W = 580
 PILL_H = 72
 COVER_SIZE = 40
 
+_IDLE_COLOR = "#999"
+_BRIGHT_COLOR = "#f0f0f0"
+
+
+class _FadeIconButton(QPushButton):
+    """Secondary pill button: icon brightens on hover (enter/leave driven
+    icon-swap — cheap, no per-frame animation)."""
+
+    def __init__(self, icon_name: str, size: int = 36, parent=None):
+        super().__init__(parent)
+        self._icon_name = icon_name
+        self._bright = False
+        self.setObjectName("pillBtn")
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setIcon(_icon(icon_name, color=_IDLE_COLOR))
+
+    def _refresh_icon(self):
+        self.setIcon(_icon(self._icon_name, color=_BRIGHT_COLOR if self._bright else _IDLE_COLOR))
+
+    def enterEvent(self, event):
+        self._bright = True
+        self._refresh_icon()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._bright = False
+        self._refresh_icon()
+        super().leaveEvent(event)
+
+    def refresh_accent(self):
+        """Re-render icon after theme change."""
+        self._refresh_icon()
+
 
 class FloatingPill(QWidget):
     """Centered floating playback capsule — glass background, cover, progress bar."""
@@ -68,12 +102,8 @@ class FloatingPill(QWidget):
         layout.addLayout(info, 1)
 
         # Prev — hidden until hover (Apple Music style secondary control):
-        # keeps its layout slot so nothing shifts, fades+slides in on hover
-        self._prev_btn = QPushButton()
-        self._prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#ccc"))
-        self._prev_btn.setObjectName("pillBtn")
-        self._prev_btn.setFixedSize(36, 36)
-        self._prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # keeps its layout slot so nothing shifts, fades in on hover
+        self._prev_btn = _FadeIconButton(TRANSPORT_PREV)
         self._prev_btn.setToolTip(_("pill.prev_hover_hint"))
         self._prev_btn.clicked.connect(self.prevClicked.emit)
         layout.addWidget(self._prev_btn)
@@ -88,13 +118,9 @@ class FloatingPill(QWidget):
         layout.addWidget(self._play_btn)
 
         # Next
-        next_btn = QPushButton()
-        next_btn.setIcon(_icon(TRANSPORT_NEXT, color="#999"))
-        next_btn.setObjectName("pillBtn")
-        next_btn.setFixedSize(36, 36)
-        next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        next_btn.clicked.connect(self.nextClicked.emit)
-        layout.addWidget(next_btn)
+        self._next_btn = _FadeIconButton(TRANSPORT_NEXT)
+        self._next_btn.clicked.connect(self.nextClicked.emit)
+        layout.addWidget(self._next_btn)
 
         # Cache progress style — avoid QSettings read on every paint frame
         self._pill_progress_style = "line"
