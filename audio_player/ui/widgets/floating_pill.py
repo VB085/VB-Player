@@ -527,10 +527,8 @@ class FloatingPill(QWidget):
         p.drawRoundedRect(rx, ry, rww, rhh, rrad, rrad)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent):
-        """Double-click empty/cover/info areas to expand — single clicks do
-        nothing (a stray click expanding to fullscreen was too aggressive).
-        The progress band is exempt: rapid scrub clicks there must never
-        expand the pill mid-adjustment."""
+        """Double-click on cover/empty areas expands. The progress band is
+        exempt: rapid scrub clicks must never expand the pill."""
         pos = e.position()
         if self._in_progress_band(pos.y()):
             e.accept()
@@ -565,6 +563,15 @@ class FloatingPill(QWidget):
 
     def mousePressEvent(self, e: QMouseEvent):
         pos = e.position()
+        # single-click on the cover art expands — small target, explicit
+        # intent, and tolerant of shaky hands (double-click distance limits
+        # made dblclick-only expansion unreliable on a real mouse)
+        if (e.button() == Qt.MouseButton.LeftButton and not self._scrubbing
+                and not self._in_progress_band(pos.y())
+                and self.childAt(pos) is self._cover_label):
+            self.expandRequested.emit()
+            e.accept()
+            return
         if e.button() == Qt.MouseButton.LeftButton and self._in_progress_band(pos.y()):
             self._scrubbing = True
             self._scrub_preview_ratio = self._ratio_to_x(pos.x())

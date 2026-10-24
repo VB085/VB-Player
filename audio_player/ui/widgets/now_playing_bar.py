@@ -260,9 +260,21 @@ class NowPlayingBar(QWidget):
     def refresh_theme(self): self._apply_style(); self.update()
     def refresh_accent(self): self._apply_style(); self.update()
 
+    def mousePressEvent(self, e: QMouseEvent):
+        # single-click on the cover zone (top-left 76x76 quadrant) expands —
+        # rect test instead of childAt identity: layout containers wrap the
+        # label, and identity fails for wrapper hits
+        if (e.button() == Qt.MouseButton.LeftButton
+                and e.position().x() < 80 and e.position().y() < 80
+                and self.childAt(e.pos()) is not None
+                and not isinstance(self.childAt(e.pos()), QPushButton)):
+            self.expandRequested.emit()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
     def mouseDoubleClickEvent(self, e: QMouseEvent):
-        """Double-click empty/cover/info areas to expand — single clicks do
-        nothing (a stray click expanding to fullscreen was too aggressive)."""
+        """Double-click empty/info areas also expands."""
         child = self.childAt(e.pos())
         if child is None or not isinstance(child, QPushButton):
             self.expandRequested.emit()
