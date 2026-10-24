@@ -296,5 +296,9 @@
   "menu.view": "表示",
   "menu.window": "ウインドウ",
   "menu.fullscreen": "フルスクリーン",
-  "menu.minimize": "最小化"
+  "menu.minimize": "最小化",
+  "window.minimize": "最小化",
+  "window.maximize": "最大化",
+  "window.restore": "元に戻す",
+  "window.close": "閉じる"
 }

@@ -296,5 +296,9 @@
   "menu.view": "檢視",
   "menu.window": "視窗",
   "menu.fullscreen": "全螢幕",
-  "menu.minimize": "最小化"
+  "menu.minimize": "最小化",
+  "window.minimize": "最小化",
+  "window.maximize": "最大化",
+  "window.restore": "還原",
+  "window.close": "關閉"
 }

@@ -364,5 +364,9 @@
   "menu.view": "视图",
   "menu.window": "窗口",
   "menu.fullscreen": "全屏",
-  "menu.minimize": "最小化"
+  "menu.minimize": "最小化",
+  "window.minimize": "最小化",
+  "window.maximize": "最大化",
+  "window.restore": "还原",
+  "window.close": "关闭"
 }

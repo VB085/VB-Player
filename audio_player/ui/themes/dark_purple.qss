@@ -3,19 +3,11 @@
    ============================================================ */
 
 /* Base palette: GNOME Adwaita-dark inspired */
-QWidget#centerPanel { background: #242424; }
+/* (centralWidget has no rule here: MainWindow.paintEvent fills the window) */
 QWidget#sidePanel { background: #1e1e1e; border-right: 1px solid #303030; }
-QWidget#rightPanel { background: #1e1e1e; border-left: 1px solid #303030; }
 QWidget#titleBar { background: transparent; }
 QWidget#playlistsPage QWidget, QWidget#networkPage QWidget, QWidget#albumPage QWidget { background: transparent; }
 QWidget#titleLabel { color: #999999; font-size: 12px; }
-
-QPushButton#minBtn, QPushButton#maxBtn, QPushButton#closeBtn {
-    background: transparent; border: none; border-radius: 0;
-    color: #999; font-size: 14px; padding: 0;
-}
-QPushButton#minBtn:hover, QPushButton#maxBtn:hover { background: #363636; color: #fff; }
-QPushButton#closeBtn:hover { background: #c01c28; color: #ffffff; }
 
 QStatusBar { background: #242424; color: #777; border-top: 1px solid #303030; font-size: 10px; padding: 1px 8px; }
 

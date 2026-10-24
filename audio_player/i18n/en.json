@@ -343,5 +343,9 @@
   "menu.view": "View",
   "menu.window": "Window",
   "menu.fullscreen": "Fullscreen",
-  "menu.minimize": "Minimize"
+  "menu.minimize": "Minimize",
+  "window.minimize": "Minimize",
+  "window.maximize": "Maximize",
+  "window.restore": "Restore",
+  "window.close": "Close"
 }

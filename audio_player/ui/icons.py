@@ -42,9 +42,11 @@ MODE_SHUFFLE    = "fa6s.shuffle"
 MODE_MORE       = "fa6s.ellipsis"
 
 # ── Volume ──────────────────────────────────────────────────────────
+# FA6 Free has no medium-volume glyph (only volume-high / volume-low),
+# so medium shares volume-high; muted→low→high still reads as 3 states.
 VOLUME_MUTED    = "fa6s.volume-xmark"
 VOLUME_LOW      = "fa6s.volume-low"
-VOLUME_MEDIUM   = "fa6s.volume-low"
+VOLUME_MEDIUM   = "fa6s.volume-high"
 VOLUME_HIGH     = "fa6s.volume-high"
 
 # ── Panel toggle ────────────────────────────────────────────────────
