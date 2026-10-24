@@ -468,7 +468,8 @@ class FloatingPill(QWidget):
         accent = current_accent()
         hover = self._prog_hover_t > 0.0
         thick = 4 + 4 * self._prog_hover_t          # 4px → 8px (eased)
-        groove_a = 30 + int(30 * self._prog_hover_t)  # groove darkens on hover
+        # hover darkens only slightly — 60 was read as a heavy black bar
+        groove_a = 30 + int(10 * self._prog_hover_t)
         # line stays anchored to the pill's top edge (y=0, as before the
         # scrub interaction); thickening grows downward into the capsule
         radius = thick / 2
@@ -477,20 +478,17 @@ class FloatingPill(QWidget):
 
         p.setPen(Qt.PenStyle.NoPen)
         groove = QRectF(8, 0, w - 16, thick)
-        p.setBrush(QColor(0, 0, 0, groove_a) if not is_light else QColor(0, 0, 0, 10 + int(20 * self._prog_hover_t)))
+        p.setBrush(QColor(0, 0, 0, groove_a) if not is_light else QColor(0, 0, 0, 10 + int(8 * self._prog_hover_t)))
         p.drawRoundedRect(groove, radius, radius)
         if shown_ratio > 0:
             fill = QRectF(8, 0, (w - 16) * min(shown_ratio, 1.0), thick)
             p.setBrush(accent)
             p.drawRoundedRect(fill, radius, radius)
 
-        # Time bubble below the line head (top edge is the window border
-        # side — the bubble would clip outside), scrub position feedback
-        if hover and self._prog_hover_t > 0.5:
-            p.setOpacity(min(1.0, (self._prog_hover_t - 0.5) * 2))
+        # Time bubble — only while actively scrubbing (position feedback)
+        if self._scrubbing:
             head_x = 8 + (w - 16) * min(shown_ratio, 1.0)
-            bubble = format_duration(self._scrub_preview_ms if self._scrubbing
-                                     else self._position_ms)
+            bubble = format_duration(self._scrub_preview_ms)
             bf = QFont(self.font()); bf.setPointSize(8)
             p.setFont(bf)
             bw = p.fontMetrics().horizontalAdvance(bubble) + 14
@@ -503,7 +501,6 @@ class FloatingPill(QWidget):
             p.setPen(QColor("#fff") if not is_light else QColor("#333"))
             p.drawText(bubble_rect, Qt.AlignmentFlag.AlignCenter, bubble)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setOpacity(1.0)
 
     def _draw_ring_progress(self, p, w, h):
         from PyQt6.QtGui import QPen
@@ -570,6 +567,9 @@ class FloatingPill(QWidget):
             self._scrubbing = True
             self._scrub_preview_ratio = self._ratio_to_x(pos.x())
             self._scrub_preview_ms = int(self._scrub_preview_ratio * self._duration_ms)
+            # real-mouse drags leave the widget bounds — grab so move/release
+            # keep arriving (QTest/offscreen never exposes this)
+            self.grabMouse()
             e.accept()
             self.update()
             return
@@ -579,6 +579,8 @@ class FloatingPill(QWidget):
         if self._scrubbing and e.button() == Qt.MouseButton.LeftButton:
             ratio = self._ratio_to_x(e.position().x())
             self._scrubbing = False
+            if self.mouseGrabber() is self:
+                self.releaseMouse()
             self.seekRequested.emit(int(ratio * self._duration_ms))
             e.accept()
             self.update()
