@@ -469,21 +469,23 @@ class FloatingPill(QWidget):
         hover = self._prog_hover_t > 0.0
         thick = 4 + 4 * self._prog_hover_t          # 4px → 8px (eased)
         groove_a = 30 + int(30 * self._prog_hover_t)  # groove darkens on hover
-        y_center = self._PROG_H // 2
+        # line stays anchored to the pill's top edge (y=0, as before the
+        # scrub interaction); thickening grows downward into the capsule
         radius = thick / 2
         # while scrubbing the preview drives the line, not the engine echo
         shown_ratio = self._scrub_preview_ratio if self._scrubbing else self._ratio
 
         p.setPen(Qt.PenStyle.NoPen)
-        groove = QRectF(8, y_center - thick / 2, w - 16, thick)
+        groove = QRectF(8, 0, w - 16, thick)
         p.setBrush(QColor(0, 0, 0, groove_a) if not is_light else QColor(0, 0, 0, 10 + int(20 * self._prog_hover_t)))
         p.drawRoundedRect(groove, radius, radius)
         if shown_ratio > 0:
-            fill = QRectF(8, y_center - thick / 2, (w - 16) * min(shown_ratio, 1.0), thick)
+            fill = QRectF(8, 0, (w - 16) * min(shown_ratio, 1.0), thick)
             p.setBrush(accent)
             p.drawRoundedRect(fill, radius, radius)
 
-        # Time bubble above the fill head (scrub position feedback)
+        # Time bubble below the line head (top edge is the window border
+        # side — the bubble would clip outside), scrub position feedback
         if hover and self._prog_hover_t > 0.5:
             p.setOpacity(min(1.0, (self._prog_hover_t - 0.5) * 2))
             head_x = 8 + (w - 16) * min(shown_ratio, 1.0)
@@ -494,7 +496,7 @@ class FloatingPill(QWidget):
             bw = p.fontMetrics().horizontalAdvance(bubble) + 14
             bh = 18
             bx = max(4, min(w - bw - 4, head_x - bw / 2))
-            by = y_center - thick - bh - 4
+            by = thick + 6
             bubble_rect = QRectF(bx, by, bw, bh)
             p.setBrush(QColor(20, 20, 20, 220) if not is_light else QColor(250, 250, 250, 235))
             p.drawRoundedRect(bubble_rect, 4, 4)
