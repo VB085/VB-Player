@@ -95,6 +95,7 @@ class MetadataPanel(QWidget):
 
         self._genre_label = QLabel("")
         self._genre_label.setObjectName("infoLabel")
+        self._genre_label.setWordWrap(True)
         add_info_row("GENRE", self._genre_label)
 
         layout.addStretch()

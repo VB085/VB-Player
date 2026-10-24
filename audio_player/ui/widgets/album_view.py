@@ -569,6 +569,7 @@ class AlbumDetailPage(QWidget):
 
         self._artist_label = QLabel()
         self._artist_label.setObjectName("detailArtist")
+        self._artist_label.setWordWrap(True)
         info_wrap.addWidget(self._artist_label)
 
         info_wrap.addSpacing(8)
