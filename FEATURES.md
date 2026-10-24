@@ -38,7 +38,7 @@
 | 功能 | 详情 |
 |---|---|
 | 完整底栏 | 84px 高，左封面 56×56 + 曲名/艺人 12pt/10pt，中控键（⏮48 ⏯56 ⏭48），右音量按钮+滑杆+时间 11pt mono。左右 min-width=220 对称。 |
-| 悬浮胶囊 | Apple Music 风格。72px 高，max 580px 宽，居中浮于内容区上方。玻璃背景 rgba 16px 圆角。左封面 40px，中曲名·艺人，右 ⏯40 ⏭36。顶部 4px 进度线。点空白 → HiFi。`QSettings: playback_bar_style`（默认 pill） |
+| 悬浮胶囊 | Apple Music 风格。72px 高，max 580px 宽，居中浮于内容区上方。玻璃背景 rgba 16px 圆角。左封面 40px，中曲名·艺人，右 ⏮36 ⏯40 ⏭36。顶部 4px 进度线。滚轮调音量。点空白 → HiFi。`QSettings: playback_bar_style`（默认 pill） |
 | 胶囊进度样式 | 顶边细线 / 绕边框一圈 dash。`QSettings: pill_progress_style` |
 | 胶囊定位 | `_body` 内绝对定位，resizeEvent + showEvent 自动追踪。HiFi 覆盖时自动隐藏。 |
 | HiFi 展开 | 底栏→全屏沉浸页，350ms slide-up 动画 (OutCubic)。收起 slide-down。 |
