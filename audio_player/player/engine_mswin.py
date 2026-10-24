@@ -109,8 +109,10 @@ class MSAudioEngine(QObject):
     @volume.setter
     def volume(self, v: float):
         self._volume_level = float(max(0.0, min(1.0, v)))
+        self.volumeChanged.emit(self._volume_level)
+
     def set_volume(self, v: float):
-        self._volume_level = float(max(0.0, min(1.0, v)))
+        self.volume = v
 
     @property
     def position(self) -> int: return self._position_ms
@@ -135,9 +137,6 @@ class MSAudioEngine(QObject):
 
     @replaygain_enabled.setter
     def replaygain_enabled(self, v: bool): self._replaygain_enabled = v
-
-    def set_volume(self, v: float):
-        self._volume_level = max(0.0, min(1.0, v))
 
     def set_eq_gain(self, band: int, gain: float):
         if 0 <= band < len(self._eq_gains):
@@ -233,6 +232,7 @@ class MSAudioEngine(QObject):
         self.stop()
         self._current_file = filepath
         self._position_ms = 0
+        self._pause_position_ms = 0  # no stale resume position from the last track
         # Read metadata for duration and sample rate
         try:
             from audio_player.player.metadata import read_metadata
