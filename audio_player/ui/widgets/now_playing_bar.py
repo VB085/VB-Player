@@ -16,6 +16,19 @@ from audio_player.ui.icons import (
 LEFT_RIGHT_MIN_W = 220  # ensures left/right sections balance each other
 
 
+class _VolumeSlider(QSlider):
+    """Volume slider with ±5% wheel steps — matches the bars' wheel gesture
+    (QSlider's default wheel behavior jumps by single-step and feels alien)."""
+
+    def wheelEvent(self, event):
+        dy = event.angleDelta().y()
+        if dy:
+            self.setValue(self.value() + (5 if dy > 0 else -5))
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
 class NowPlayingBar(QWidget):
     """Bottom bar with true-centered controls and symmetric left/right sections."""
 
@@ -70,6 +83,7 @@ class NowPlayingBar(QWidget):
         prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#999"))
         prev_btn.setObjectName("npBtn")
         prev_btn.setFixedSize(48, 48)
+        prev_btn.setToolTip(_("transport.prev"))
         prev_btn.clicked.connect(self.prevClicked.emit)
         layout.addWidget(prev_btn)
 
@@ -79,6 +93,7 @@ class NowPlayingBar(QWidget):
         self._play_btn.setIcon(_icon(TRANSPORT_PLAY, color="#fff"))
         self._play_btn.setObjectName("npPlayBtn")
         self._play_btn.setFixedSize(56, 56)
+        self._play_btn.setToolTip(_("transport.play_pause"))
         self._play_btn.clicked.connect(self.playPauseClicked.emit)
         layout.addWidget(self._play_btn)
 
@@ -88,6 +103,7 @@ class NowPlayingBar(QWidget):
         next_btn.setIcon(_icon(TRANSPORT_NEXT, color="#999"))
         next_btn.setObjectName("npBtn")
         next_btn.setFixedSize(48, 48)
+        next_btn.setToolTip(_("transport.next"))
         next_btn.clicked.connect(self.nextClicked.emit)
         layout.addWidget(next_btn)
 
@@ -105,16 +121,16 @@ class NowPlayingBar(QWidget):
         self._vol_btn.setObjectName("npBtn")
         self._vol_btn.setIcon(_icon(VOLUME_HIGH, color="#999"))
         self._vol_btn.setFixedSize(36, 36)
-        self._vol_btn.setToolTip(_("volume.title"))
+        self._vol_btn.setToolTip(_("volume.mute_hint"))
         self._vol_btn.clicked.connect(self.muteToggled.emit)
         right.addWidget(self._vol_btn)
 
-        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vol_slider = _VolumeSlider(Qt.Orientation.Horizontal)
         self._vol_slider.setObjectName("volSlider")
         self._vol_slider.setRange(0, 100)
         self._vol_slider.setValue(100)
         self._vol_slider.setFixedWidth(96)
-        self._vol_slider.setToolTip(_("volume.title"))
+        self._vol_slider.setToolTip(_("volume.wheel_hint"))
         self._vol_slider.valueChanged.connect(
             lambda v: self.volumeChanged.emit(v / 100.0))
         right.addWidget(self._vol_slider)
@@ -201,6 +217,9 @@ class NowPlayingBar(QWidget):
         if album and album != artist:
             parts.append(album)
         self._artist_label.setText(" — ".join(parts) if parts else "")
+        # ellided labels reveal full text on hover
+        self._title_label.setToolTip(title or "")
+        self._artist_label.setToolTip(self._artist_label.text())
 
     def set_playing(self, playing: bool):
         icon = TRANSPORT_PAUSE if playing else TRANSPORT_PLAY
@@ -228,6 +247,8 @@ class NowPlayingBar(QWidget):
             icon_name = VOLUME_HIGH
         is_light = current_theme_mode() == "light"
         self._vol_btn.setIcon(_icon(icon_name, color="#333" if is_light else "#999"))
+        # the mute button's tooltip mirrors its current action
+        self._vol_btn.setToolTip(_("volume.unmute_hint") if muted else _("volume.mute_hint"))
 
     def wheelEvent(self, event):
         """Scroll anywhere on the bar = volume ±5% (Apple Music behavior)."""
@@ -241,9 +262,10 @@ class NowPlayingBar(QWidget):
     def refresh_theme(self): self._apply_style(); self.update()
     def refresh_accent(self): self._apply_style(); self.update()
 
-    def mouseReleaseEvent(self, e: QMouseEvent):
+    def mouseDoubleClickEvent(self, e: QMouseEvent):
+        """Double-click empty/cover/info areas to expand — single clicks do
+        nothing (a stray click expanding to fullscreen was too aggressive)."""
         child = self.childAt(e.pos())
-        from PyQt6.QtWidgets import QPushButton
         if child is None or not isinstance(child, QPushButton):
             self.expandRequested.emit()
-        super().mouseReleaseEvent(e)
+        super().mouseDoubleClickEvent(e)

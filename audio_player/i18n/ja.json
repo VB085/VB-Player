@@ -303,5 +303,12 @@
   "window.close": "閉じる",
   "settings.material_mica": "マイカ (Mica)",
   "volume.title": "音量",
-  "pill.prev_hover_hint": "前の曲（スクロールで音量調整）"
+  "pill.prev_hover_hint": "前の曲（スクロールで音量調整）",
+  "pill.wheel_hint": "スクロールで音量調整 · ダブルクリックで展開",
+  "volume.wheel_hint": "音量（スクロール ±5%）",
+  "volume.mute_hint": "ミュート",
+  "volume.unmute_hint": "ミュート解除",
+  "transport.prev": "前の曲",
+  "transport.next": "次の曲",
+  "transport.play_pause": "再生 / 一時停止"
 }

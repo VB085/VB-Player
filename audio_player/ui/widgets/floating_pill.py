@@ -82,6 +82,7 @@ class FloatingPill(QWidget):
         self.setFixedHeight(PILL_H)
         self.setMaximumWidth(PILL_W)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(_("pill.wheel_hint"))
         self._ratio = 0.0
         self._duration_ms = 1
         self._position_ms = 0
@@ -129,11 +130,13 @@ class FloatingPill(QWidget):
         self._play_btn.setObjectName("pillPlayBtn")
         self._play_btn.setFixedSize(40, 40)
         self._play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._play_btn.setToolTip(_("transport.play_pause"))
         self._play_btn.clicked.connect(self.playPauseClicked.emit)
         layout.addWidget(self._play_btn)
 
         # Next
         self._next_btn = _FadeIconButton(TRANSPORT_NEXT)
+        self._next_btn.setToolTip(_("transport.next"))
         self._next_btn.clicked.connect(self.nextClicked.emit)
         layout.addWidget(self._next_btn)
 
@@ -383,8 +386,10 @@ class FloatingPill(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(rx, ry, rww, rhh, rrad, rrad)
 
-    def mouseReleaseEvent(self, e: QMouseEvent):
+    def mouseDoubleClickEvent(self, e: QMouseEvent):
+        """Double-click empty/cover/info areas to expand — single clicks do
+        nothing (a stray click expanding to fullscreen was too aggressive)."""
         child = self.childAt(e.pos())
         if child is None or not isinstance(child, QPushButton):
             self.expandRequested.emit()
-        super().mouseReleaseEvent(e)
+        super().mouseDoubleClickEvent(e)

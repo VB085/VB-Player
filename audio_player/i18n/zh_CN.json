@@ -371,5 +371,12 @@
   "window.close": "关闭",
   "settings.material_mica": "云母 (Mica)",
   "volume.title": "音量",
-  "pill.prev_hover_hint": "上一首（滚轮调节音量）"
+  "pill.prev_hover_hint": "上一首（滚轮调节音量）",
+  "pill.wheel_hint": "滚轮调节音量 · 双击展开",
+  "volume.wheel_hint": "音量（滚轮 ±5%）",
+  "volume.mute_hint": "静音",
+  "volume.unmute_hint": "取消静音",
+  "transport.prev": "上一首",
+  "transport.next": "下一首",
+  "transport.play_pause": "播放 / 暂停"
 }

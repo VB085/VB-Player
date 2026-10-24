@@ -350,5 +350,12 @@
   "window.close": "Close",
   "settings.material_mica": "Mica",
   "volume.title": "Volume",
-  "pill.prev_hover_hint": "Previous (scroll to adjust volume)"
+  "pill.prev_hover_hint": "Previous (scroll to adjust volume)",
+  "pill.wheel_hint": "Scroll to adjust volume · double-click to expand",
+  "volume.wheel_hint": "Volume (scroll ±5%)",
+  "volume.mute_hint": "Mute",
+  "volume.unmute_hint": "Unmute",
+  "transport.prev": "Previous",
+  "transport.next": "Next",
+  "transport.play_pause": "Play / Pause"
 }
