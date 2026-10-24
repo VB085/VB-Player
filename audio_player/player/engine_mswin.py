@@ -393,6 +393,19 @@ class MSAudioEngine(QObject):
             self._ring.clear()
         self._stop_event.clear()
 
+        # Paused seek: don't restart the source (that would start playing) —
+        # just rebase the position and echo it so the UI jumps to the target.
+        # Playback resumes from the new spot on the next play().
+        if not was_playing:
+            self._seek_offset_ms = position_ms
+            self._position_ms = position_ms
+            self._pause_position_ms = position_ms  # play() resumes from here
+            with self._ring_lock:
+                self._ring.clear()
+            self._stop_event.clear()
+            self.positionChanged.emit(position_ms)
+            return
+
         is_asio = self._exclusive_device.startswith("asio:")
         if is_asio:
             self._seek_offset_ms = position_ms
@@ -402,9 +415,8 @@ class MSAudioEngine(QObject):
             self._seek_offset_ms = position_ms  # callback adds this to its counter
             self._start_output_async(self._current_file, seek_ms=position_ms)
 
-        if was_playing:
-            self._app_state = PlaybackState.Playing
-            self._poll_timer.start()
+        self._app_state = PlaybackState.Playing
+        self._poll_timer.start()
 
     def seek_ratio(self, ratio: float):
         self.seek(int(ratio * self._duration_ms))
