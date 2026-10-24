@@ -302,6 +302,12 @@ class SettingsPage(QWidget):
             self._settings.setValue("album_cover_radius", v),
             self.albumCoverRadiusToggled.emit(v)))
         cover_layout.addWidget(self._cover_cb)
+        self._tooltips_cb = QCheckBox(_("settings.show_tooltips"))
+        self._tooltips_cb.setChecked(
+            str(self._settings.value("show_tooltips", "false")).lower() == "true")
+        self._tooltips_cb.toggled.connect(
+            lambda v: self._settings.setValue("show_tooltips", v))
+        cover_layout.addWidget(self._tooltips_cb)
         layout.addWidget(self._cover_group)
 
         self._dynamic_group = self._make_group("settings.dynamic_accent")

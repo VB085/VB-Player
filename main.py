@@ -224,6 +224,9 @@ def main():
     sys.excepthook = _excepthook
 
     app = create_app()
+    # tooltips: off by default, 1.2s hover delay when on (settings → show_tooltips)
+    from audio_player.ui.tooltip_gate import install_tooltip_gate
+    install_tooltip_gate(app)
     window = MainWindow()
 
     # --- Hang watchdog: Windows reports this app as AppHangB1 (main thread
