@@ -1781,6 +1781,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         try:
             hwnd = int(self.winId())
             _win_materials.enable_dwm_frame(hwnd, force=True)
+            # Maximized: strip WS_CAPTION/THICKFRAME or DWM draws a caption
+            # overlay after fullscreen round-trips (the "Win7 bar")
+            _win_materials.set_window_frame(hwnd, caption=not self.isMaximized())
             if current_theme_mode() == "light":
                 _win_materials.apply_light_titlebar(hwnd)
             else:

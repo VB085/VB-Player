@@ -188,6 +188,47 @@ def apply_rounded_corners(hwnd: int, pref: str = "round") -> bool:
     return _set_dwm_dword(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, p)
 
 
+_DWMNCRP_DISABLED = 2  # DWMWA_NCRENDERING_POLICY value: never draw the NC frame
+
+_GWL_STYLE = -16
+_WS_CAPTION = 0x00C00000
+_WS_THICKFRAME = 0x00040000
+_SWP_FRAMECHANGED = 0x0020
+
+
+def set_window_frame(hwnd: int, caption: bool) -> bool:
+    """Add/remove WS_CAPTION|WS_THICKFRAME from a frameless window.
+
+    After a fullscreen round-trip returning to MAXIMIZED, DWM composites a
+    caption-bar overlay (~45px light band) over windows that still carry
+    WS_CAPTION — even with a WM_NCCALCSIZE subclass eating the frame
+    (geometry stays inset-0, so rect probes can't see it). Maximized
+    windows don't need caption/thickframe at all, so strip them there.
+    """
+    h = wintypes.HWND(hwnd)
+    style = _user32.GetWindowLongPtrW(h, _GWL_STYLE)
+    mask = _WS_CAPTION | _WS_THICKFRAME
+    new_style = (style | mask) if caption else (style & ~mask)
+    if new_style == style:
+        return True
+    _user32.SetWindowLongPtrW(h, _GWL_STYLE, new_style)
+    # NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED
+    _user32.SetWindowPos(h, None, 0, 0, 0, 0, _SWP_FRAMECHANGED | 0x1 | 0x2 | 0x4 | 0x10)
+    return True
+
+
+def disable_nc_rendering(hwnd: int) -> bool:
+    """Stop DWM from compositing the native frame OVER the client area.
+
+    With WS_OVERLAPPEDWINDOW + a WM_NCCALCSIZE subclass returning 0, the
+    client covers the whole window geometrically — but after fullscreen
+    round-trips DWM can still draw the caption bar as a compositor overlay
+    (invisible to GetWindowRect/GetClientRect, ~45px at the top). We paint
+    everything ourselves, so NC rendering must stay off.
+    """
+    return _set_dwm_dword(hwnd, DWMWA_NCRENDERING_POLICY, _DWMNCRP_DISABLED)
+
+
 def apply_border_color(hwnd: int, r: int, g: int, b: int) -> bool:
     """Set the window border color (Windows 11). *r*, *g*, *b* in 0-255."""
     color = (b << 16) | (g << 8) | r  # COLORREF: 0xBBGGRR (no alpha)
@@ -276,7 +317,12 @@ def enable_dwm_frame(hwnd: int, force: bool = False) -> bool:
         # 3. Subclass WM_NCCALCSIZE to remove native borders
         _comctl32.SetWindowSubclass(h, _nccalcsize_subclass, 1, 0)
 
-        # 4. Extend DWM frame into entire client area
+        # 4. Kill DWM's own NC frame drawing — after fullscreen round-trips
+        # it draws the caption bar as an overlay over the client area
+        # (geometry-invisible; seen as a "Win7 title bar")
+        _set_dwm_dword(h, DWMWA_NCRENDERING_POLICY, _DWMNCRP_DISABLED)
+
+        # 5. Extend DWM frame into entire client area
         class MARGINS(ctypes.Structure):
             _fields_ = [('left', wintypes.INT), ('right', wintypes.INT),
                        ('top', wintypes.INT), ('bottom', wintypes.INT)]
@@ -285,7 +331,7 @@ def enable_dwm_frame(hwnd: int, force: bool = False) -> bool:
         _dwm.DwmExtendFrameIntoClientArea.restype = HRESULT
         _dwm.DwmExtendFrameIntoClientArea(h, ctypes.byref(margins))
 
-        # 5. Force frame recalculation
+        # 6. Force frame recalculation
         SWP_FLAGS = 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010
         _user32.SetWindowPos(h, None, 0, 0, 0, 0, SWP_FLAGS)
 
