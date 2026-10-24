@@ -10,7 +10,8 @@ from urllib.parse import urlparse
 import random
 import json
 from enum import IntEnum
-from queue import Queue
+from queue import PriorityQueue
+from itertools import count
 
 from .metadata import read_metadata, TrackMetadata
 
@@ -28,25 +29,42 @@ class RepeatMode(IntEnum):
 
 
 class _MetaLoader(QThread):
-    """Single persistent thread for metadata loading. Queue-based, no repeated create/destroy."""
+    """Single persistent thread for metadata loading. Queue-based, no repeated create/destroy.
+
+    Two priority classes: priority 0 (visible-region rows, jumped to the
+    front) and priority 1 (background bulk load). Without this, scrolling to
+    row 800 of a large playlist waited for every earlier row to load first —
+    covers took tens of seconds to appear.
+    """
     loaded = pyqtSignal(int, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._queue: Queue = Queue()
+        self._queue: PriorityQueue = PriorityQueue()
+        self._pending: set[int] = set()   # rows currently queued (dedupe)
         self._running = True
+        self._seq = count()               # C-atomic — keeps FIFO within a class
 
-    def enqueue(self, row: int, filepath: str):
-        self._queue.put((row, filepath))
+    def enqueue(self, row: int, filepath: str, priority: int = 1):
+        if not self._running or row in self._pending:
+            return
+        self._pending.add(row)
+        self._queue.put((priority, next(self._seq), row, filepath))
         if not self.isRunning():
             self.start()
+
+    def enqueue_priority(self, rows_paths: list):
+        """Put (row, path) pairs at the front — the visible region after scroll."""
+        for row, filepath in rows_paths:
+            self.enqueue(row, filepath, priority=0)
 
     def run(self):
         while self._running:
             try:
-                row, filepath = self._queue.get(timeout=1)
+                _prio, _seq, row, filepath = self._queue.get(timeout=1)
             except Exception:
                 continue
+            self._pending.discard(row)
             if not self._running:
                 break
             try:
@@ -58,7 +76,7 @@ class _MetaLoader(QThread):
 
     def stop(self):
         self._running = False
-        self._queue.put((-1, ""))  # unblock get()
+        self._queue.put((0, next(self._seq), -1, ""))  # unblock get()
         self.wait(3000)
 
 
@@ -106,6 +124,17 @@ class PlaylistManager(QAbstractListModel):
             idx = self.index(row, 0)
             self.dataChanged.emit(idx, idx, [])
             self.metadataLoaded.emit(row, meta)
+
+    def prioritize_rows(self, rows):
+        """Jump *rows* to the front of the metadata queue (visible region)."""
+        if self._loader is None or not rows:
+            return
+        pairs = []
+        for r in rows:
+            if 0 <= r < len(self._tracks) and not self._tracks[r].get("has_metadata"):
+                pairs.append((r, self._tracks[r]["path"]))
+        if pairs:
+            self._loader.enqueue_priority(pairs)
 
     def refresh_metadata_for(self, filepath: str):
         """Re-read metadata for a single file and update the model."""

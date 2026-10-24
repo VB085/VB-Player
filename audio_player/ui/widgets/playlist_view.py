@@ -1,15 +1,38 @@
+import os
 from typing import Callable
 from PyQt6.QtWidgets import (QListView, QStyledItemDelegate, QStyle,
                              QAbstractItemView, QMenu)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QRectF, QModelIndex, QSortFilterProxyModel, QSettings, QTimer
+from PyQt6.QtCore import (Qt, pyqtSignal, QSize, QRect, QRectF, QModelIndex,
+                          QSortFilterProxyModel, QSettings, QTimer, QPoint)
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QAction, QPixmap, QPainterPath
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
 
-# Per-delegate thumbnail cache: filepath → (cover_data_hash, QPixmap)
-_cover_cache: dict[str, tuple[int, QPixmap]] = {}
+# Per-delegate thumbnail cache: filepath → QPixmap
+_cover_cache: dict[str, QPixmap] = {}
+_COVER_CACHE_MAX = 3000  # 40×40 ARGB ≈ 6.5 KB each — 3000 ≈ 20 MB, fine
 _current_file: str = ""  # globally tracked for playing indicator
 _highlight_mode: str = "glow"  # cached QSettings value — avoid I/O in paint()
+
+# File-existence cache: os.path.exists() is a filesystem syscall — doing it
+# per row per paint frame (a scrolling screenful = hundreds of stats per
+# second) was a major scroll-jank source. Existence is session-stable for
+# playback purposes; the ✕ indicator refreshes on next metadata reload.
+_exists_cache: dict[str, bool] = {}
+_EXISTS_CACHE_MAX = 8000
+
+
+def _file_exists(filepath: str) -> bool:
+    try:
+        hit = _exists_cache.get(filepath)
+    except TypeError:  # unhashable — shouldn't happen for paths
+        return os.path.exists(filepath)
+    if hit is None:
+        if len(_exists_cache) > _EXISTS_CACHE_MAX:
+            for k in list(_exists_cache.keys())[:1000]:
+                del _exists_cache[k]
+        hit = _exists_cache[filepath] = os.path.exists(filepath)
+    return hit
 
 THUMB_SIZE = 40
 THUMB_RADIUS = 6
@@ -40,7 +63,7 @@ def _source_row(model, proxy_index):
 
 
 def _thumbnail(src, index: QModelIndex, filepath: str) -> QPixmap | None:
-    """Return cached 28×28 rounded cover thumbnail, or generate and cache."""
+    """Return cached 40×40 rounded cover thumbnail, or generate and cache."""
     cover_data = index.data(src.CoverDataRole) if src else None
     if not cover_data:
         return None
@@ -65,8 +88,8 @@ def _thumbnail(src, index: QModelIndex, filepath: str) -> QPixmap | None:
                   (THUMB_SIZE - scaled.height()) // 2, scaled)
     pp.end()
     _cover_cache[filepath] = rounded
-    if len(_cover_cache) > 1000:
-        for k in list(_cover_cache.keys())[:100]:
+    if len(_cover_cache) > _COVER_CACHE_MAX:
+        for k in list(_cover_cache.keys())[:500]:
             del _cover_cache[k]
     return rounded
 
@@ -178,9 +201,8 @@ class _PlaylistDelegate(QStyledItemDelegate):
         painter.drawText(text_x, rect.y() + 28, text_w, 22,
                          Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, sub_text)
 
-        # Missing file indicator
-        import os
-        if filepath and not os.path.exists(filepath):
+        # Missing file indicator (existence cached — see _file_exists)
+        if filepath and not _file_exists(filepath):
             painter.setPen(QColor("#ef4444"))
             painter.drawText(rect.adjusted(0, 0, -8, 0),
                              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -229,9 +251,110 @@ class PlaylistView(QListView):
         self.setDropIndicatorShown(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setUniformItemSizes(True)  # fixed row height — lets QListView cache item geometry
         self.setMouseTracking(True)
         self.setSpacing(0)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+        # Cover thumbnail prewarm: generate thumbnails during idle time so
+        # paint() is always a cache hit. Without this, fast-scrolling into a
+        # fresh region decoded a screenful of covers synchronously in paint().
+        self._prewarm_pos = 0
+        self._prewarm_dc_model = None
+        self._prewarm_timer = QTimer(self)
+        self._prewarm_timer.setSingleShot(True)
+        self._prewarm_timer.setInterval(0)
+        self._prewarm_timer.timeout.connect(self._prewarm_step)
+
+        # Visible-region metadata priority: when scrolling stops, the rows on
+        # screen jump to the front of the loader queue so covers appear in
+        # ~0.5 s instead of waiting behind the whole playlist's bulk load.
+        self._prio_timer = QTimer(self)
+        self._prio_timer.setSingleShot(True)
+        self._prio_timer.setInterval(150)
+        self._prio_timer.timeout.connect(self._prioritize_visible)
+        self.verticalScrollBar().valueChanged.connect(self._prio_timer.start)
+
+    def setModel(self, model):
+        super().setModel(model)
+        self._restart_prewarm(model)
+        self._prio_timer.start()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._prio_timer.start()
+
+    def _prioritize_visible(self):
+        model = self.model()
+        if model is None:
+            return
+        src = _source_model(model)
+        if not hasattr(src, "prioritize_rows"):
+            return
+        vh = self.viewport().height()
+        top = self.indexAt(QPoint(10, 0))
+        if not top.isValid():
+            return
+        bottom = self.indexAt(QPoint(10, max(0, vh - 1)))
+        end = bottom.row() if bottom.isValid() else model.rowCount() - 1
+        rows = []
+        for pr in range(top.row(), min(end + 1, model.rowCount())):
+            idx = model.index(pr, 0)
+            if idx.isValid():
+                rows.append(_source_row(model, idx))
+        if rows:
+            src.prioritize_rows(rows)
+
+    def _restart_prewarm(self, model):
+        self._prewarm_pos = 0
+        old = getattr(self, "_prewarm_dc_model", None)
+        if old is not None:
+            try:
+                old.dataChanged.disconnect(self._on_prewarm_data_changed)
+            except (TypeError, RuntimeError):
+                pass
+        self._prewarm_dc_model = model
+        if model is not None:
+            try:
+                model.dataChanged.connect(self._on_prewarm_data_changed)
+            except Exception:
+                pass
+            self._prewarm_timer.start()
+
+    def _on_prewarm_data_changed(self, *_args):
+        """Metadata arrives asynchronously — re-arm an idle prewarm pass.
+
+        timer.start() on an active timer just restarts it, so bursts of
+        dataChanged collapse into one pass.
+        """
+        self._prewarm_timer.start()
+
+    def _prewarm_step(self):
+        model = _source_model(self.model())
+        if model is None or not hasattr(model, "CoverDataRole"):
+            return
+        count = model.rowCount()
+        if count <= 0:
+            return
+        budget = 2          # thumbnails per idle tick — keeps each tick a few ms
+        generated = 0
+        scanned = 0
+        while budget > 0 and scanned < count:
+            row = self._prewarm_pos
+            self._prewarm_pos = (self._prewarm_pos + 1) % count
+            scanned += 1
+            idx = model.index(row, 0)
+            path = idx.data(model.FilePathRole)
+            if not path or path in _cover_cache:
+                continue
+            if not idx.data(model.CoverDataRole):
+                continue
+            _thumbnail(model, idx, path)
+            generated += 1
+            budget -= 1
+        if generated or scanned < count:
+            self._prewarm_timer.start()  # more work or lap not yet complete
+        # full lap with nothing to generate → stop; dataChanged re-arms later
 
         self.clicked.connect(self._on_click)
         self.doubleClicked.connect(self._on_double_click)
