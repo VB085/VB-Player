@@ -32,7 +32,7 @@ from audio_player.ui.widgets.waveform import WaveformWidget
 from audio_player.ui.widgets.metadata_panel import MetadataPanel
 from audio_player.ui.widgets.hifi_qml_page import HiFiQmlPage
 from audio_player.ui.widgets.now_playing_bar import NowPlayingBar
-from audio_player.ui.widgets.floating_pill import FloatingPill
+from audio_player.ui.widgets.floating_pill import FloatingPill, MarqueeLabel
 from audio_player.ui.utils import format_duration as _format_duration, format_size as _format_size
 from audio_player.ui.widgets.sidebar import Sidebar
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget

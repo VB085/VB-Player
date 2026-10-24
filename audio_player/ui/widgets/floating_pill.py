@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
                              QPushButton, QGraphicsOpacityEffect)
 from PyQt6.QtCore import (Qt, pyqtSignal, QPropertyAnimation, QEasingCurve,
                           QPoint, QTimer, pyqtProperty)
-from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QFont, QPixmap, QPainterPath, QIcon
+from PyQt6.QtGui import (QMouseEvent, QPainter, QColor, QFont, QPixmap,
+                         QPainterPath, QIcon)
 
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
@@ -19,6 +20,104 @@ COVER_SIZE = 40
 
 _IDLE_COLOR = "#999"
 _BRIGHT_COLOR = "#f0f0f0"
+
+
+class MarqueeLabel(QLabel):
+    """Label that scrolls overflowing text back and forth (marquee).
+
+    Text that fits renders statically (zero timers). Overflowing text
+    scrolls with a pause at each end; hovering pauses the scroll so the
+    text can be read. The widget's tooltip always shows the full text.
+    """
+
+    _PAD = 24          # gap between the two passes
+    _SCROLL_MS = 40    # ~25 fps
+    _SPEED_PX = 0.6    # px per tick
+    _EDGE_PAUSE_MS = 1200
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._offset = 0.0
+        self._dir = -1
+        self._overflow = False
+        self._hover_paused = False
+        self._edge_pause = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._SCROLL_MS)
+        self._timer.timeout.connect(self._tick)
+
+    def setText(self, text: str):  # noqa: N802 (Qt naming)
+        super().setText(text)
+        self.setToolTip(text)
+        self._offset = 0.0
+        self._dir = -1
+        self._measure()
+
+    def _measure(self):
+        fm = self.fontMetrics()
+        self._text_w = fm.horizontalAdvance(self.text())
+        self._overflow = self._text_w > self.width() and self.width() > 0
+        if self._overflow:
+            if not self._timer.isActive() and not self._hover_paused:
+                self._timer.start()
+        else:
+            self._timer.stop()
+            self._offset = 0.0
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._measure()
+
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._measure()
+
+    def enterEvent(self, event):
+        self._hover_paused = True
+        self._timer.stop()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_paused = False
+        if self._overflow:
+            self._timer.start()
+        super().leaveEvent(event)
+
+    def _tick(self):
+        if self._edge_pause > 0:
+            self._edge_pause -= 1
+            return
+        lo, hi = 0, self._text_w - self.width() + self._PAD
+        self._offset += self._dir * self._SPEED_PX
+        if self._offset <= -hi:
+            self._offset = -hi
+            self._dir = 1
+            self._edge_pause = self._EDGE_PAUSE_MS // self._SCROLL_MS
+        elif self._offset >= 0:
+            self._offset = 0
+            self._dir = -1
+            self._edge_pause = self._EDGE_PAUSE_MS // self._SCROLL_MS
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._overflow:
+            super().paintEvent(event)
+            return
+        p = QPainter(self)
+        p.setFont(self.font())
+        p.setPen(self.palette().color(self.foregroundRole()))
+        y = (self.height() + fm_ascent(self)) // 2 - 2
+        p.drawText(QPoint(int(self._offset), y), self.text())
+        p.end()
+
+
+def fm_ascent(label: QLabel) -> int:
+    return label.fontMetrics().ascent()
 
 
 class _FadeIconButton(QPushButton):
@@ -107,11 +206,11 @@ class FloatingPill(QWidget):
         # Track info
         info = QVBoxLayout()
         info.setSpacing(1)
-        self._title_label = QLabel("VB Player")
+        self._title_label = MarqueeLabel("VB Player")
         self._title_label.setObjectName("pillTitle")
         f = QFont(); f.setPointSize(11); f.setBold(True); self._title_label.setFont(f)
         info.addWidget(self._title_label)
-        self._artist_label = QLabel("")
+        self._artist_label = MarqueeLabel("")
         self._artist_label.setObjectName("pillArtist")
         f2 = QFont(); f2.setPointSize(9); self._artist_label.setFont(f2)
         info.addWidget(self._artist_label)

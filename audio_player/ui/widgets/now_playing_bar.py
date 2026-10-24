@@ -12,6 +12,7 @@ from audio_player.ui.icons import (
     TRANSPORT_PREV, TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT,
     VOLUME_MUTED, VOLUME_LOW, VOLUME_HIGH, _icon,
 )
+from audio_player.ui.widgets.floating_pill import MarqueeLabel
 
 LEFT_RIGHT_MIN_W = 220  # ensures left/right sections balance each other
 
@@ -65,11 +66,11 @@ class NowPlayingBar(QWidget):
 
         info = QVBoxLayout()
         info.setSpacing(3)
-        self._title_label = QLabel("VB Player")
+        self._title_label = MarqueeLabel("VB Player")
         self._title_label.setObjectName("npTitle")
         f = QFont(); f.setPointSize(12); f.setBold(True); self._title_label.setFont(f)
         info.addWidget(self._title_label)
-        self._artist_label = QLabel("")
+        self._artist_label = MarqueeLabel("")
         self._artist_label.setObjectName("npArtist")
         f2 = QFont(); f2.setPointSize(10); self._artist_label.setFont(f2)
         info.addWidget(self._artist_label)
@@ -217,9 +218,6 @@ class NowPlayingBar(QWidget):
         if album and album != artist:
             parts.append(album)
         self._artist_label.setText(" — ".join(parts) if parts else "")
-        # ellided labels reveal full text on hover
-        self._title_label.setToolTip(title or "")
-        self._artist_label.setToolTip(self._artist_label.text())
 
     def set_playing(self, playing: bool):
         icon = TRANSPORT_PAUSE if playing else TRANSPORT_PLAY
