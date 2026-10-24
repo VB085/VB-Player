@@ -258,6 +258,11 @@ class FloatingPill(QWidget):
         self._secondary_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._set_secondary_visible(False, animate=False)
 
+        # Progress-line hover ease (thickness/bubble all interpolate from it)
+        from PyQt6.QtCore import QVariantAnimation
+        self._hover_anim = QVariantAnimation(self)
+        self._hover_anim.valueChanged.connect(self._on_hover_anim)
+
         # Volume indicator: a small bar under the pill, shown on wheel,
         # fades out after inactivity — gives the invisible wheel gesture
         # a visible anchor
@@ -585,16 +590,32 @@ class FloatingPill(QWidget):
         super().mouseReleaseEvent(e)
 
     def _start_hover(self):
-        """Ease the line thicker on hover (OutBack overshoot = the 'human'
-        touch — it swells past 8px then settles)."""
+        """Ease the line thicker on hover — animated 0→1 (180ms OutCubic),
+        the thickness visuals all interpolate from this one value."""
         if self._prog_hover_t >= 1.0:
             return
-        self._prog_hover_t = 1.0
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(float(self._prog_hover_t))
+        self._hover_anim.setEndValue(1.0)
+        self._hover_anim.setDuration(200)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.Linear)
+        self._hover_anim.start()
+
+    def _end_hover(self):
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(float(self._prog_hover_t))
+        self._hover_anim.setEndValue(0.0)
+        self._hover_anim.setDuration(260)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.Linear)
+        self._hover_anim.start()
+
+    def _on_hover_anim(self, v):
+        self._prog_hover_t = float(v)
         self.update()
 
     def leaveEvent(self, event):
         if self._scrubbing:
             return  # keep the handle while the cursor stays down outside
-        self._prog_hover_t = 0.0
+        self._end_hover()
         self._set_secondary_visible(False)
         super().leaveEvent(event)
