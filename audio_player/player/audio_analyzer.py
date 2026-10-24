@@ -1,4 +1,5 @@
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
+import threading
 import numpy as np
 from dataclasses import dataclass
 
@@ -18,6 +19,11 @@ class _DecoderWorker(QThread):
         self._filepath = filepath
         self._bins = bins
         self._snapshots_per_sec = snapshots_per_sec
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        """Ask the decode loop to stop ASAP (checked between chunks/phases)."""
+        self._cancelled.set()
 
     def run(self):
         waveform = None
@@ -25,6 +31,9 @@ class _DecoderWorker(QThread):
         lyrics = []
         try:
             samples = self._decode_to_pcm()
+            if self._cancelled.is_set():
+                self.finished.emit(None, None, [])
+                return
             if samples is not None and len(samples) > 0:
                 waveform = self._compute_waveform(samples)
                 spectrum = self._compute_spectrum(samples, self._bins, self._snapshots_per_sec)
@@ -150,24 +159,40 @@ class _DecoderWorker(QThread):
         if not ffmpeg:
             return None
 
+        proc = None
         try:
-            result = subprocess.run(
+            # Stream instead of subprocess.run so cancel() can kill a decode
+            # in progress — a track switch used to leave the old full-file
+            # decode running to completion (up to the 120 s timeout).
+            proc = subprocess.Popen(
                 [ffmpeg, "-i", self._filepath,
                  "-f", "f32le", "-ac", "1", "-ar", "22050",
                  "-loglevel", "quiet", "pipe:1"],
-                capture_output=True, timeout=120,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-            if result.returncode != 0 or len(result.stdout) == 0:
-                if result.stderr:
+            chunks = []
+            while True:
+                d = proc.stdout.read(1 << 20)
+                if not d:
+                    break
+                chunks.append(d)
+                if self._cancelled.is_set():
+                    proc.kill()
+                    return None
+            if proc.wait(timeout=120) != 0 or not chunks:
+                err = proc.stderr.read() if proc.stderr else b""
+                if err:
                     import sys
-                    err = result.stderr.decode(errors='ignore')[:500]
-                    sys.stderr.write(f"[ffmpeg] {err}\n")
+                    sys.stderr.write(f"[ffmpeg] {err[:500].decode(errors='ignore')}\n")
                     sys.stderr.flush()
                 return None
-            return np.frombuffer(result.stdout, dtype=np.float32).copy()
+            return np.frombuffer(b"".join(chunks), dtype=np.float32).copy()
         except Exception:
             import sys, traceback
             traceback.print_exc(file=sys.stderr)
+            if proc is not None:
+                try: proc.kill()
+                except Exception: pass
             return None
 
     def _compute_waveform(self, samples: np.ndarray, num_bars: int = 2000) -> np.ndarray:
@@ -305,9 +330,25 @@ class AudioAnalyzer(QObject):
         if filepath.startswith(("http://", "https://", "smb://")):
             return
         req_id = self._request_id
+        # Stop and join the previous worker — without this, rapid track
+        # changes piled up concurrent full-file decodes, and destroying a
+        # still-running QThread (window close) aborted the whole process.
+        old = self._worker
+        if old is not None and old.isRunning():
+            old.cancel()
+            old.wait(1000)
         self._worker = _DecoderWorker(filepath, parent=self)
         self._worker.finished.connect(lambda *args: self._on_finished(req_id, *args))
         self._worker.start()
+
+    def shutdown(self):
+        """Cancel and join the decode thread. Call before teardown — a
+        QThread destroyed while running triggers a hard Qt abort."""
+        w = self._worker
+        if w is not None and w.isRunning():
+            w.cancel()
+            w.wait(3000)
+        self._worker = None
 
     def _cancel(self):
         """Mark current worker as stale — its results will be ignored."""
