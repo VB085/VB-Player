@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
                              QPushButton, QGraphicsOpacityEffect)
 from PyQt6.QtCore import (Qt, pyqtSignal, QPropertyAnimation, QEasingCurve,
-                          QPoint)
+                          QPoint, QTimer, pyqtProperty)
 from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QFont, QPixmap, QPainterPath
 
 from audio_player.app import current_accent, current_theme_mode
@@ -134,6 +134,41 @@ class FloatingPill(QWidget):
         self._secondary_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._set_secondary_visible(False, animate=False)
 
+        # Volume indicator: a small bar under the pill, shown on wheel,
+        # fades out after inactivity — gives the invisible wheel gesture
+        # a visible anchor
+        self._volume_hint_opacity = 0.0
+        self._volume_hint_timer = QTimer(self)
+        self._volume_hint_timer.setSingleShot(True)
+        self._volume_hint_timer.timeout.connect(self._fade_volume_hint)
+        self._volume_fade_anim = QPropertyAnimation(self, b"volumeHintOpacity")
+        self._volume_fade_anim.setDuration(300)
+        self._volume_fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    # volumeHintOpacity — custom painted property for the hint bar
+    def _get_volume_hint_opacity(self) -> float:
+        return self._volume_hint_opacity
+
+    def _set_volume_hint_opacity(self, v: float):
+        self._volume_hint_opacity = v
+        self.update()
+
+    volumeHintOpacity = pyqtProperty(float, _get_volume_hint_opacity,
+                                     _set_volume_hint_opacity)
+
+    def _show_volume_hint(self):
+        """Pop the volume bar (wheel activity) and arm the auto-fade."""
+        self._volume_fade_anim.stop()
+        self._volume_hint_opacity = 1.0
+        self.update()
+        self._volume_hint_timer.start(1200)
+
+    def _fade_volume_hint(self):
+        self._volume_fade_anim.stop()
+        self._volume_fade_anim.setStartValue(self._volume_hint_opacity)
+        self._volume_fade_anim.setEndValue(0.0)
+        self._volume_fade_anim.start()
+
     def _set_secondary_visible(self, visible: bool, animate: bool = True):
         """Fade the prev button in/out. Opacity-only: layout never shifts."""
         target = 1.0 if visible else 0.0
@@ -237,7 +272,11 @@ class FloatingPill(QWidget):
         dy = event.angleDelta().y()
         if dy:
             step = 0.05 if dy > 0 else -0.05
-            self.volumeChanged.emit(max(0.0, min(1.0, self._volume + step)))
+            new_vol = max(0.0, min(1.0, self._volume + step))
+            self.volumeChanged.emit(new_vol)
+            # show the NEW value immediately — engine echo may lag a frame
+            self._volume = new_vol
+            self._show_volume_hint()
         super().wheelEvent(event)
 
     def refresh_theme(self):
@@ -280,6 +319,18 @@ class FloatingPill(QWidget):
             self._draw_ring_progress(p, w, h)
         else:
             self._draw_line_progress(p, w, h, is_light)
+
+        # Volume hint bar (wheel activity) — centered above the bottom edge
+        if self._volume_hint_opacity > 0.0:
+            p.setOpacity(self._volume_hint_opacity)
+            bar_w, bar_h = 64, 4
+            bx, by = (w - bar_w) // 2, h - 10
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 45) if not is_light else QColor(0, 0, 0, 25))
+            p.drawRoundedRect(bx, by, bar_w, bar_h, 2, 2)
+            p.setBrush(current_accent())
+            p.drawRoundedRect(bx, by, int(bar_w * self._volume), bar_h, 2, 2)
+            p.setOpacity(1.0)
 
         p.end()
 
