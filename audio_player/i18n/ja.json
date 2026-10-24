@@ -251,7 +251,7 @@
   "engine.wasapi_driver": "WASAPI (低レイテンシ)",
   "engine.low_latency": "低レイテンシモード",
   "engine.mixer_control": "システムミキサー制御",
-  "engine.default_device": "デフォルトデバイス (WASAPI Shared)",
+  "engine.default_device": "既定のデバイス",
   "engine.bus_usb": "USB",
   "engine.bus_bluetooth": "Bluetooth",
   "engine.bus_builtin": "内蔵",

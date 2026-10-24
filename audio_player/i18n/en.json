@@ -281,7 +281,7 @@
   "engine.wasapi_driver": "WASAPI (Low-Latency)",
   "engine.low_latency": "Low-Latency Mode",
   "engine.mixer_control": "System Mixer Control",
-  "engine.default_device": "Default Device (WASAPI Shared)",
+  "engine.default_device": "Default Device",
   "engine.bus_usb": "USB",
   "engine.bus_bluetooth": "Bluetooth",
   "engine.bus_builtin": "Built-in",

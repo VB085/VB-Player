@@ -302,7 +302,7 @@
   "engine.wasapi_driver": "WASAPI (低延迟模式)",
   "engine.low_latency": "低延迟模式 (Low-Latency)",
   "engine.mixer_control": "系统混音器控制",
-  "engine.default_device": "默认设备 (WASAPI Shared)",
+  "engine.default_device": "默认设备",
   "engine.bus_usb": "USB",
   "engine.bus_bluetooth": "蓝牙",
   "engine.bus_builtin": "内置",

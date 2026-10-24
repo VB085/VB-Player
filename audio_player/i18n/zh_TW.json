@@ -251,7 +251,7 @@
   "engine.wasapi_driver": "WASAPI (低延遲模式)",
   "engine.low_latency": "低延遲模式 (Low-Latency)",
   "engine.mixer_control": "系統混音器控制",
-  "engine.default_device": "預設裝置 (WASAPI Shared)",
+  "engine.default_device": "預設裝置",
   "engine.bus_usb": "USB",
   "engine.bus_bluetooth": "藍牙",
   "engine.bus_builtin": "內建",
