@@ -79,6 +79,7 @@ class MSAudioEngine(QObject):
         # possible, serialized by this lock, off the GUI thread.
         self._output_lock = threading.Lock()
         self._output_gen = 0
+        self._feed_gen = 0
 
         # ASIO
         self._asio_dev = None
@@ -186,6 +187,13 @@ class MSAudioEngine(QObject):
         if not ffmpeg:
             self.errorOccurred.emit("ffmpeg not found")
             return False
+        # Kill any orphaned source from a superseded start (runs under
+        # _output_lock so Popen bookkeeping is serialized)
+        old = self._ffmpeg_proc
+        if old is not None:
+            try: old.kill()
+            except Exception: pass
+            self._ffmpeg_proc = None
 
         from audio_player.player.metadata import read_metadata
         try:
@@ -261,9 +269,8 @@ class MSAudioEngine(QObject):
                 self._seek_offset_ms = resume_ms
                 self._seek_offset_bytes = int(resume_ms * (self._pipeline_sample_rate or 44100) * 2 * 4 / 1000)
                 self._total_bytes_read = 0
-                if self._start_ffmpeg(self._current_file, seek_ms=resume_ms):
-                    self._stop_event.clear()
-                    self._start_output_async()
+                self._stop_event.clear()
+                self._start_output_async(self._current_file, seek_ms=resume_ms)
             self._play_start_time = time.time()
             self._poll_timer.start()
             return
@@ -273,21 +280,17 @@ class MSAudioEngine(QObject):
         self._play_start_time = time.time()
         self._asio_last_rpos = 0
         self._asio_total_frames = 0
-        is_asio = self._exclusive_mode and self._exclusive_device.startswith("asio:")
-        if not is_asio:
-            if not self._start_ffmpeg(self._current_file):
-                return
 
         # Clear ring buffer
         with self._ring_lock:
             self._ring.clear()
 
-        # Start output
+        # Start output (ffmpeg source setup runs inside, off the GUI thread)
         self._stop_event.clear()
         if self._exclusive_mode and self._exclusive_device.startswith("asio:"):
             self._start_asio(self._current_file)
         else:
-            self._start_output_async()
+            self._start_output_async(self._current_file)
 
         self._play_start_time = time.time()
         self._app_state = PlaybackState.Playing
@@ -397,9 +400,7 @@ class MSAudioEngine(QObject):
             self._start_asio(self._current_file, seek_ms=position_ms)
         else:
             self._seek_offset_ms = position_ms  # callback adds this to its counter
-            if not self._start_ffmpeg(self._current_file, seek_ms=position_ms):
-                return
-            self._start_output_async()
+            self._start_output_async(self._current_file, seek_ms=position_ms)
 
         if was_playing:
             self._app_state = PlaybackState.Playing
@@ -490,19 +491,23 @@ class MSAudioEngine(QObject):
             self._sd_rate = 0
         return ok
 
-    def _start_output_async(self):
-        """Ensure the persistent output stream is running (opening it at the
-        current sample rate if needed) and start the ffmpeg feed thread —
-        entirely OFF the GUI thread. A generation counter makes the latest
-        request win when track/seek changes overlap."""
+    def _start_output_async(self, filepath: str, seek_ms: int = 0):
+        """Start playback source + output stream + feed thread — entirely OFF
+        the GUI thread. Everything slow lives here: read_metadata (file I/O),
+        CreateProcess for ffmpeg (Windows Defender rescans each launch,
+        100 ms–5 s cold — this was hanging the GUI thread on double-click),
+        and all PortAudio calls. Generation counters make the latest request
+        win when track/seek changes overlap."""
         self._output_gen += 1
         gen = self._output_gen
-        rate = self._pipeline_sample_rate or 44100
 
         def _run():
             with self._output_lock:
                 if gen != self._output_gen or self._stop_event.is_set():
                     return  # superseded or stopped before we got the lock
+                if not self._start_ffmpeg(filepath, seek_ms=seek_ms):
+                    return
+                rate = self._pipeline_sample_rate or 44100
                 if self._sd_stream is None or self._sd_rate != rate:
                     if not self._reopen_stream_locked(rate):
                         return
@@ -513,10 +518,10 @@ class MSAudioEngine(QObject):
                         self._cb_frames_ref[0] = 0
             if gen != self._output_gen or self._stop_event.is_set():
                 return
-            if self._ffmpeg_proc is None:
-                return  # source torn down (stop/seek raced us) — nothing to feed
+            self._feed_gen += 1
+            feed_gen = self._feed_gen
             self._output_thread = threading.Thread(
-                target=self._wasapi_loop, daemon=True)
+                target=self._wasapi_loop, args=(feed_gen,), daemon=True)
             self._output_thread.start()
 
         threading.Thread(target=_run, daemon=True,
@@ -540,8 +545,9 @@ class MSAudioEngine(QObject):
         t.start()
         t.join(timeout=3)
 
-    def _wasapi_loop(self):
-        """Feed thread: read ffmpeg → ring. Callback handles output."""
+    def _wasapi_loop(self, feed_gen: int):
+        """Feed thread: read ffmpeg → ring. Callback handles output.
+        Exits when superseded by a newer feed generation or on stop_event."""
         import os as _os, numpy as _np
         # Snapshot the process reference — a seek/stop racing us may have
         # already killed ffmpeg; exit quietly instead of crashing the feed
@@ -558,7 +564,7 @@ class MSAudioEngine(QObject):
         _frames_written = 0
         rate = self._pipeline_sample_rate or 44100
 
-        while not self._stop_event.is_set():
+        while feed_gen == self._feed_gen and not self._stop_event.is_set():
             if len(ring) < self._ring_max:
                 try:
                     data = _os.read(fd, 65536)
@@ -579,7 +585,7 @@ class MSAudioEngine(QObject):
             if not data and len(pending) == 0 and not ring:
                 break
 
-        if not self._stop_event.is_set():
+        if feed_gen == self._feed_gen and not self._stop_event.is_set():
             self.trackFinished.emit()
 
     # ── ASIO output (asio_ctypes directly) ────────────────────────────
