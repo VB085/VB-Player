@@ -1,4 +1,5 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv_msvc/Scripts/python.exe",
-  "python.analysis.exclude": ["**/asio_backend.py", "**/asio_ext.c", "**/dwm_ext.c", "**/native_events.py", "**/windows_shell.py"]
+  "python.analysis.exclude": ["**/asio_backend.py", "**/asio_ext.c", "**/dwm_ext.c", "**/native_events.py", "**/windows_shell.py"],
+  "python.analysis.stubPath": "${workspaceFolder}/typings"
 }
