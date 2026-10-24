@@ -96,10 +96,7 @@ Rectangle {
             width: root.durationMs>0 ? parent.width*(root.positionMs/root.durationMs) : 0 }
         Text { anchors.left:parent.left; y:24; text:formatTime(root.positionMs); font.pointSize:10; color:Qt.lighter(root.accentColor,1.3) }
         Text { anchors.right:parent.right; y:24; text:formatTime(root.durationMs); font.pointSize:10; color:Qt.lighter(root.accentColor,1.3) }
-        // seeking is a playback action — only while playing
-        MouseArea { anchors.fill:parent; anchors.margins:-10
-            cursorShape: root.isPlaying ? Qt.PointingHandCursor : Qt.ArrowCursor
-            enabled: root.isPlaying && root.durationMs > 0
+        MouseArea { anchors.fill:parent; anchors.margins:-10; cursorShape:Qt.PointingHandCursor
             onPositionChanged:(mouse)=>{ if(mouse.buttons&Qt.LeftButton)root.seekRequested(mouse.x/parent.width*root.durationMs) }
             onClicked:(mouse)=>root.seekRequested(mouse.x/parent.width*root.durationMs) } }
 
