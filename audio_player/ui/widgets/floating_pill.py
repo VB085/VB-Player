@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
                              QPushButton, QGraphicsOpacityEffect)
 from PyQt6.QtCore import (Qt, pyqtSignal, QPropertyAnimation, QEasingCurve,
                           QPoint, QTimer, pyqtProperty)
-from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QFont, QPixmap, QPainterPath
+from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QFont, QPixmap, QPainterPath, QIcon
 
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
@@ -46,6 +46,21 @@ class _FadeIconButton(QPushButton):
         self._bright = False
         self._refresh_icon()
         super().leaveEvent(event)
+
+    def force_idle(self):
+        """Reset to the idle icon and drop any hover state — used when the
+        button fades out, so the disabled-icon regeneration never flashes
+        a different tint mid-fade."""
+        self._bright = False
+        icon = _icon(self._icon_name, color=_IDLE_COLOR)
+        # pre-cache the Disabled-mode pixmap (qtawesome engines can't be
+        # mutated in place; build a fresh QIcon carrying both modes)
+        fixed = QIcon()
+        for size in (16, 24, 32, 64):
+            pm = icon.pixmap(size, size)
+            fixed.addPixmap(pm, QIcon.Mode.Normal)
+            fixed.addPixmap(pm, QIcon.Mode.Disabled)
+        self.setIcon(fixed)
 
     def refresh_accent(self):
         """Re-render icon after theme change."""
@@ -172,6 +187,10 @@ class FloatingPill(QWidget):
     def _set_secondary_visible(self, visible: bool, animate: bool = True):
         """Fade the prev button in/out. Opacity-only: layout never shifts."""
         target = 1.0 if visible else 0.0
+        if not visible:
+            # drop hover tint BEFORE disabling — the disabled-icon
+            # regeneration would otherwise flash a different tint mid-fade
+            self._prev_btn.force_idle()
         self._prev_btn.setEnabled(visible)
         if not animate:
             self._secondary_anim.stop()
