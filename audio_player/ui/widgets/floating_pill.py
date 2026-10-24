@@ -189,6 +189,7 @@ class FloatingPill(QWidget):
         self._volume = 1.0
         self._title = ""
         self._artist = ""
+        self._is_playing = False
         # progress scrub state
         self._prog_hover_t = 0.0     # 0..1 eased hover thickness
         self._scrubbing = False
@@ -385,6 +386,7 @@ class FloatingPill(QWidget):
         self._artist_label.setText(" · ".join(parts) if parts else "")
 
     def set_playing(self, playing: bool):
+        self._is_playing = bool(playing)
         icon = TRANSPORT_PAUSE if playing else TRANSPORT_PLAY
         self._play_btn.setIcon(_icon(icon, color="#fff"))
 
@@ -572,7 +574,9 @@ class FloatingPill(QWidget):
             self.expandRequested.emit()
             e.accept()
             return
-        if e.button() == Qt.MouseButton.LeftButton and self._in_progress_band(pos.y()):
+        # seeking is a playback action — only while playing
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self._in_progress_band(pos.y()) and self._is_playing):
             self._scrubbing = True
             self._scrub_preview_ratio = self._ratio_to_x(pos.x())
             self._scrub_preview_ms = int(self._scrub_preview_ratio * self._duration_ms)
