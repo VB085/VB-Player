@@ -320,7 +320,7 @@ def enable_dwm_frame(hwnd: int, force: bool = False) -> bool:
         # 4. Kill DWM's own NC frame drawing — after fullscreen round-trips
         # it draws the caption bar as an overlay over the client area
         # (geometry-invisible; seen as a "Win7 title bar")
-        _set_dwm_dword(h, DWMWA_NCRENDERING_POLICY, _DWMNCRP_DISABLED)
+        _set_dwm_dword(hwnd, DWMWA_NCRENDERING_POLICY, _DWMNCRP_DISABLED)
 
         # 5. Extend DWM frame into entire client area
         class MARGINS(ctypes.Structure):
