@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
                              QPushButton, QGraphicsOpacityEffect)
 from PyQt6.QtCore import (Qt, pyqtSignal, QPropertyAnimation, QEasingCurve,
-                          QPoint, QTimer, pyqtProperty)
+                          QPoint, QPointF, QTimer, pyqtProperty, QRectF)
 from PyQt6.QtGui import (QMouseEvent, QPainter, QColor, QFont, QPixmap,
                          QPainterPath, QIcon)
 
@@ -174,6 +174,7 @@ class FloatingPill(QWidget):
     prevClicked = pyqtSignal()
     expandRequested = pyqtSignal()
     volumeChanged = pyqtSignal(float)   # 0.0 - 1.0, user-initiated (wheel)
+    seekRequested = pyqtSignal(int)     # ms, user-initiated (top-line scrub)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -188,6 +189,12 @@ class FloatingPill(QWidget):
         self._volume = 1.0
         self._title = ""
         self._artist = ""
+        # progress scrub state
+        self._prog_hover_t = 0.0     # 0..1 eased hover thickness
+        self._scrubbing = False
+        self._scrub_preview_ratio = 0.0
+        self._scrub_preview_ms = 0
+        self.setMouseTracking(True)  # hover without buttons held
 
         self.setup_ui()
         self._apply_style()
@@ -377,9 +384,11 @@ class FloatingPill(QWidget):
         self._play_btn.setIcon(_icon(icon, color="#fff"))
 
     def set_position(self, ms: int):
-        self._position_ms = ms
-        self._ratio = ms / self._duration_ms if self._duration_ms > 0 else 0
-        self.update()
+        # while scrubbing the preview drives the visuals, not the engine echo
+        if not self._scrubbing:
+            self._position_ms = ms
+            self._ratio = ms / self._duration_ms if self._duration_ms > 0 else 0
+            self.update()
 
     def set_duration(self, ms: int):
         self._duration_ms = ms if ms > 0 else 1
@@ -456,12 +465,52 @@ class FloatingPill(QWidget):
         p.end()
 
     def _draw_line_progress(self, p, w, h, is_light):
+        accent = current_accent()
+        hover = self._prog_hover_t > 0.0
+        thick = 4 + 4 * self._prog_hover_t          # 4px → 8px (eased)
+        groove_a = 30 + int(30 * self._prog_hover_t)  # groove darkens on hover
+        y_center = self._PROG_H // 2
+        radius = thick / 2
+        # while scrubbing the preview drives the line, not the engine echo
+        shown_ratio = self._scrub_preview_ratio if self._scrubbing else self._ratio
+
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(0, 0, 0, 30) if not is_light else QColor(0, 0, 0, 10))
-        p.drawRoundedRect(8, 0, w - 16, 4, 2, 2)
-        if self._ratio > 0:
-            p.setBrush(current_accent())
-            p.drawRoundedRect(8, 0, int((w - 16) * self._ratio), 4, 2, 2)
+        groove = QRectF(8, y_center - thick / 2, w - 16, thick)
+        p.setBrush(QColor(0, 0, 0, groove_a) if not is_light else QColor(0, 0, 0, 10 + int(20 * self._prog_hover_t)))
+        p.drawRoundedRect(groove, radius, radius)
+        if shown_ratio > 0:
+            fill = QRectF(8, y_center - thick / 2, (w - 16) * min(shown_ratio, 1.0), thick)
+            p.setBrush(accent)
+            p.drawRoundedRect(fill, radius, radius)
+
+        # Handle: grows with hover, grows more while scrubbing
+        if hover:
+            handle_d = 10 + 2 * self._prog_hover_t + (4 if self._scrubbing else 0)
+            hx = 8 + (w - 16) * min(shown_ratio, 1.0) - handle_d / 2
+            hy = y_center - handle_d / 2
+            # soft shadow under the handle (depth cue)
+            p.setBrush(QColor(0, 0, 0, 60))
+            p.drawEllipse(QPointF(hx + 1, hy + 2), handle_d / 2, handle_d / 2)
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(QPointF(hx, hy), handle_d / 2, handle_d / 2)
+            # time bubble above the handle
+            if self._prog_hover_t > 0.5:
+                p.setOpacity(min(1.0, (self._prog_hover_t - 0.5) * 2))
+                bubble = format_duration(self._scrub_preview_ms if self._scrubbing
+                                         else self._position_ms)
+                bf = QFont(self.font()); bf.setPointSize(8)
+                p.setFont(bf)
+                bw = p.fontMetrics().horizontalAdvance(bubble) + 14
+                bh = 18
+                bx = max(4, min(w - bw - 4, hx + handle_d / 2 - bw / 2))
+                by = y_center - thick - bh - 4
+                bubble_rect = QRectF(bx, by, bw, bh)
+                p.setBrush(QColor(20, 20, 20, 220) if not is_light else QColor(250, 250, 250, 235))
+                p.drawRoundedRect(bubble_rect, 4, 4)
+                p.setPen(QColor("#fff") if not is_light else QColor("#333"))
+                p.drawText(bubble_rect, Qt.AlignmentFlag.AlignCenter, bubble)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setOpacity(1.0)
 
     def _draw_ring_progress(self, p, w, h):
         from PyQt6.QtGui import QPen
@@ -492,3 +541,62 @@ class FloatingPill(QWidget):
         if child is None or not isinstance(child, QPushButton):
             self.expandRequested.emit()
         super().mouseDoubleClickEvent(e)
+
+    # ── Progress scrubbing (top line) ──
+
+    _PROG_H = 16          # hover hit-band height around the top line
+    _SCRUB_MS = 16        # hover ease tick
+
+    def _ratio_to_x(self, x: float) -> float:
+        w = self.width()
+        inner = max(1.0, w - 16)
+        return max(0.0, min(1.0, (x - 8) / inner))
+
+    def _in_progress_band(self, y: float) -> bool:
+        return y <= self._PROG_H
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        pos = e.position()
+        if self._scrubbing:
+            self._scrub_preview_ratio = self._ratio_to_x(pos.x())
+            self._scrub_preview_ms = int(self._scrub_preview_ratio * self._duration_ms)
+            self.update()
+        elif self._in_progress_band(pos.y()):
+            self._start_hover()
+        super().mouseMoveEvent(e)
+
+    def mousePressEvent(self, e: QMouseEvent):
+        pos = e.position()
+        if e.button() == Qt.MouseButton.LeftButton and self._in_progress_band(pos.y()):
+            self._scrubbing = True
+            self._scrub_preview_ratio = self._ratio_to_x(pos.x())
+            self._scrub_preview_ms = int(self._scrub_preview_ratio * self._duration_ms)
+            e.accept()
+            self.update()
+            return
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        if self._scrubbing and e.button() == Qt.MouseButton.LeftButton:
+            ratio = self._ratio_to_x(e.position().x())
+            self._scrubbing = False
+            self.seekRequested.emit(int(ratio * self._duration_ms))
+            e.accept()
+            self.update()
+            return
+        super().mouseReleaseEvent(e)
+
+    def _start_hover(self):
+        """Ease the line thicker on hover (OutBack overshoot = the 'human'
+        touch — it swells past 8px then settles)."""
+        if self._prog_hover_t >= 1.0:
+            return
+        self._prog_hover_t = 1.0
+        self.update()
+
+    def leaveEvent(self, event):
+        if self._scrubbing:
+            return  # keep the handle while the cursor stays down outside
+        self._prog_hover_t = 0.0
+        self._set_secondary_visible(False)
+        super().leaveEvent(event)

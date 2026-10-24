@@ -933,6 +933,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._hifi_page.nextClicked.connect(self._playback_ctrl.next_track)
         self._hifi_page.prevClicked.connect(self._playback_ctrl.prev_track)
         self._hifi_page.seekRequested.connect(self._engine.seek)
+        self._pill.seekRequested.connect(self._engine.seek)
 
         # Settings controller
         self._settings_ctrl.themeChanged.connect(self._on_theme_changed_ui)
