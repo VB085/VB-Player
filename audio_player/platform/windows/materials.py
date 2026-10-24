@@ -60,6 +60,48 @@ def _is_win11_22h2() -> bool:
     return v.major >= 10 and v.build >= 22621
 
 
+def system_backdrop_available() -> bool:
+    """Win11 22H2+ can composite Mica/Acrylic behind a transparent client area
+    via DWMWA_SYSTEMBACKDROP_TYPE. Earlier builds cannot."""
+    return sys.platform == "win32" and _is_win11_22h2()
+
+
+def native_rounded_corners() -> bool:
+    """Win11 rounds window corners in DWM — no client-side mask needed."""
+    return sys.platform == "win32" and _is_win11()
+
+
+def frame_inset(hwnd: int) -> tuple:
+    """Return (dx, dy) between the window rect and the client rect.
+
+    (0, 0) means the client area covers the whole window (frameless /
+    NCCALCSIZE-subclass working). Non-zero means the native frame is
+    showing — the Win7-border failure symptom.
+    """
+    class _RECT(ctypes.Structure):
+        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                    ("r", ctypes.c_long), ("b", ctypes.c_long)]
+    user32 = ctypes.windll.user32
+    user32.GetWindowLongPtrW.restype = ctypes.c_int64
+    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    wr, cr = _RECT(), _RECT()
+    h = wintypes.HWND(hwnd)
+    if not user32.GetWindowRect(h, ctypes.byref(wr)):
+        return (0, 0)
+    if not user32.GetClientRect(h, ctypes.byref(cr)):
+        return (0, 0)
+    return ((wr.r - wr.l) - (cr.r - cr.l), (wr.b - wr.t) - (cr.b - cr.t))
+
+
+def dark_mode_flag(hwnd: int):
+    """Read DWMWA_USE_IMMERSIVE_DARK_MODE; None if unreadable."""
+    val = wintypes.DWORD(0)
+    hr = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+        wintypes.HWND(hwnd), DWMWA_USE_IMMERSIVE_DARK_MODE,
+        ctypes.byref(val), ctypes.sizeof(val))
+    return val.value if hr == 0 else None
+
+
 def _set_dwm_bool(hwnd: int, attr: int, value: bool) -> bool:
     """Set a DWM boolean attribute. Returns True on success."""
     val = wintypes.BOOL(value)
@@ -137,9 +179,13 @@ def clear_backdrop(hwnd: int) -> bool:
     return _set_dwm_bool(hwnd, DWMWA_MICA, False)
 
 
-def apply_rounded_corners(hwnd: int) -> bool:
-    """Apply Windows 11 rounded corner preference."""
-    return _set_dwm_dword(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, _DWMCP_ROUND)
+def apply_rounded_corners(hwnd: int, pref: str = "round") -> bool:
+    """Apply Windows 11 rounded corner preference.
+
+    *pref*: "round" (8px), "small" (4px) or "none" (square).
+    """
+    p = {"none": _DWMCP_DONOTROUND, "small": _DWMCP_ROUNDSMALL}.get(pref, _DWMCP_ROUND)
+    return _set_dwm_dword(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, p)
 
 
 def apply_border_color(hwnd: int, r: int, g: int, b: int) -> bool:
@@ -196,14 +242,16 @@ def _nccalcsize_subclass(hwnd, msg, wp, lp, uid, ref):
 _FRAME_DONE = set()  # track HWNDs that already have frame enabled
 
 
-def enable_dwm_frame(hwnd: int) -> bool:
+def enable_dwm_frame(hwnd: int, force: bool = False) -> bool:
     """Enable DWM system animations for a frameless window.
 
     Adds WS_OVERLAPPEDWINDOW style, enables DWM transitions, and installs
     a WM_NCCALCSIZE subclass to suppress the native title bar. Call once
-    after the window HWND is valid (e.g. in showEvent).
+    after the window HWND is valid (e.g. in showEvent). Pass *force* to
+    re-apply after Qt rewrote the window style (fullscreen round-trips
+    silently wipe the style bits and DWM attributes).
     """
-    if hwnd in _FRAME_DONE:
+    if hwnd in _FRAME_DONE and not force:
         return True
 
     try:

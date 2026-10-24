@@ -347,5 +347,7 @@
   "window.minimize": "Minimize",
   "window.maximize": "Maximize",
   "window.restore": "Restore",
-  "window.close": "Close"
+  "window.close": "Close",
+  "settings.material_mica": "Mica",
+  "volume.title": "Volume"
 }

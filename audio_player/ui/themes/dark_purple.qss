@@ -4,7 +4,7 @@
 
 /* Base palette: GNOME Adwaita-dark inspired */
 /* (centralWidget has no rule here: MainWindow.paintEvent fills the window) */
-QWidget#sidePanel { background: #1e1e1e; border-right: 1px solid #303030; }
+QWidget#sidePanel { background: @SURFACE_SIDE@; border-right: 1px solid #303030; }
 QWidget#titleBar { background: transparent; }
 QWidget#playlistsPage QWidget, QWidget#networkPage QWidget, QWidget#albumPage QWidget { background: transparent; }
 QWidget#titleLabel { color: #999999; font-size: 12px; }

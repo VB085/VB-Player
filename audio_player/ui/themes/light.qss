@@ -3,8 +3,8 @@
    Placeholder @ACCENT@ / @ACCENT_LIGHT@ / @ACCENT_DARK@ replaced at runtime
    ============================================================ */
 
-QWidget#centralWidget { background: #ffffff; }
-QWidget#sidePanel { background: #f5f5f5; border-right: 1px solid #e0e0e0; }
+QWidget#centralWidget { background: @SURFACE_CENTRAL@; }
+QWidget#sidePanel { background: @SURFACE_SIDE@; border-right: 1px solid #e0e0e0; }
 QWidget#titleBar { background: transparent; }
 QWidget#playlistsPage QWidget, QWidget#networkPage QWidget, QWidget#albumPage QWidget { background: transparent; }
 QWidget#titleLabel { color: #888888; font-size: 12px; }

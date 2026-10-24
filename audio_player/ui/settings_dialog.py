@@ -652,6 +652,8 @@ class SettingsDialog(*_SettingsBase):
         mat_layout = QVBoxLayout(self._material_group)
         self._material_combo = _NoWheelComboBox()
         self._material_combo.addItem(_("settings.material_auto"), "auto")
+        if platform_info.capabilities.supports_mica:
+            self._material_combo.addItem(_("settings.material_mica"), "mica")
         self._material_combo.addItem(_("settings.material_acrylic"), "acrylic")
         self._material_combo.addItem(_("settings.material_glass"), "glass")
         self._material_combo.addItem(_("settings.material_none"), "none")
@@ -1245,7 +1247,7 @@ class SettingsDialog(*_SettingsBase):
         self._texture_label.setText(_("settings.material_texture_value", pct=tex))
 
         # Playback bar style
-        barstyle = str(self._settings.value("playback_bar_style", "full") or "full")
+        barstyle = str(self._settings.value("playback_bar_style", "pill") or "pill")
         idx = self._barstyle_combo.findData(barstyle)
         if idx >= 0:
             self._barstyle_combo.setCurrentIndex(idx)

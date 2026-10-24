@@ -76,10 +76,62 @@ def apply_theme(app: QApplication, mode: str = "dark", accent_name: str = "purpl
         app.setPalette(_build_light_palette(accent))
     else:
         app.setPalette(_build_dark_palette(accent))
+    _notify_palette_applied()  # Qt resets the DWM dark flag on any palette
+    #                       change — correctors run before the event loop
     key, qss = _composed_qss(mode, accent)
     if key != _applied_qss_key:
         app.setStyleSheet(qss)
         _applied_qss_key = key
+
+# Surface colors: opaque normally; translucent tints when a DWM backdrop
+# (Win11 Mica/Acrylic) shows through the window.
+_surface_translucent = False
+
+_SURFACE_TOKENS = {
+    ("dark", False):  {"@SURFACE_SIDE@": "#1e1e1e"},
+    ("dark", True):   {"@SURFACE_SIDE@": "rgba(30,30,30,170)"},
+    ("light", False): {"@SURFACE_SIDE@": "#f5f5f5",
+                       "@SURFACE_CENTRAL@": "#ffffff"},
+    ("light", True):  {"@SURFACE_SIDE@": "rgba(250,250,250,205)",
+                       "@SURFACE_CENTRAL@": "rgba(255,255,255,140)"},
+}
+
+
+# Called synchronously after EVERY app.setPalette() below. Qt's Windows
+# platform plugin resets DWMWA_USE_IMMERSIVE_DARK_MODE on any effective
+# palette change (regardless of colors — verified empirically), which
+# flips Mica to its white variant. Correctors registered here re-assert
+# the flag in the same event-loop iteration, before DWM ever composes a
+# wrong frame.
+_after_palette_applied: list = []
+
+
+def on_palette_applied(callback):
+    """Register callback() to run right after every palette application."""
+    _after_palette_applied.append(callback)
+
+
+def _notify_palette_applied():
+    for cb in list(_after_palette_applied):
+        cb()
+
+
+def surface_translucent() -> bool:
+    """True when big surfaces should be translucent over a DWM backdrop."""
+    return _surface_translucent
+
+
+def set_surface_translucent(enabled: bool) -> None:
+    """Toggle translucent surface colors for DWM-backdrop mode; recomposes QSS."""
+    global _surface_translucent
+    enabled = bool(enabled)
+    if enabled == _surface_translucent:
+        return
+    _surface_translucent = enabled
+    app = QApplication.instance()
+    if app is not None:
+        apply_theme(app, _theme_mode, _accent_name)
+
 
 _qss_cache: dict[str, str] = {}
 
@@ -96,7 +148,7 @@ _qss_composed_cache: dict[tuple, str] = {}
 _applied_qss_key: tuple | None = None
 
 def _composed_qss(mode: str, accent: QColor) -> tuple[tuple, str]:
-    key = (mode, accent.name())
+    key = (mode, accent.name(), _surface_translucent)
     qss = _qss_composed_cache.get(key)
     if qss is None:
         if len(_qss_composed_cache) > 64:
@@ -106,6 +158,8 @@ def _composed_qss(mode: str, accent: QColor) -> tuple[tuple, str]:
         qss = qss.replace("@ACCENT_DARK@", accent.darker(120).name())
         qss = qss.replace("@ACCENT_LIGHT@", accent.lighter(130).name())
         qss = qss.replace("@ACCENT@", accent.name())
+        for tok, val in _SURFACE_TOKENS.get((mode, _surface_translucent), {}).items():
+            qss = qss.replace(tok, val)
         _qss_composed_cache[key] = qss
     return key, qss
 
@@ -165,10 +219,9 @@ def _commit_accent():
     ACCENTS["dynamic"] = QColor(from_color)
     app = QApplication.instance()
     c = QColor(from_color)
-    p = app.palette()
-    p.setColor(QPalette.ColorRole.Highlight, c)
-    p.setColor(QPalette.ColorRole.Link, c.lighter(130) if _theme_mode != "light" else c.darker(110))
-    app.setPalette(p)
+    # No palette write here: subscribers repaint via _on_anim_tick, and any
+    # effective app.setPalette() makes Qt reset DWMWA_USE_IMMERSIVE_DARK_MODE
+    # (Mica flashes white). The palette lands once in apply_theme at anim end.
     # Only re-apply the stylesheet when the accent actually changed in QSS
     # terms (e.g. static → dynamic). During consecutive dynamic transitions
     # the applied QSS already matches the from-color, so skip the re-parse.
@@ -201,14 +254,10 @@ def _anim_tick():
     ACCENTS["dynamic"] = color
     app = QApplication.instance()
     if app is None: return
-    # Palette only — cheap, no QSS re-parse. The palette change itself
-    # invalidates the widgets that follow Highlight/Link; subscribers repaint
-    # themselves via _on_anim_tick. No explicit full-window update() here:
-    # it forced a whole-window software repaint every animation frame.
-    p = app.palette()
-    p.setColor(QPalette.ColorRole.Highlight, color)
-    p.setColor(QPalette.ColorRole.Link, color.lighter(130) if _theme_mode != "light" else color.darker(110))
-    app.setPalette(p)
+    # No per-frame palette write: any effective app.setPalette() makes Qt
+    # reset DWMWA_USE_IMMERSIVE_DARK_MODE (Mica flashes white mid-animation).
+    # Subscribers repaint themselves via _on_anim_tick; the palette lands
+    # once in apply_theme at the final tick.
     for cb in _on_anim_tick:
         cb(color)
     if _anim_step >= _ANIM_STEPS:

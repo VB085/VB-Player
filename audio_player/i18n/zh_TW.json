@@ -300,5 +300,7 @@
   "window.minimize": "最小化",
   "window.maximize": "最大化",
   "window.restore": "還原",
-  "window.close": "關閉"
+  "window.close": "關閉",
+  "settings.material_mica": "雲母 (Mica)",
+  "volume.title": "音量"
 }

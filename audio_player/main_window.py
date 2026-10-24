@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget
 )
 from PyQt6.QtCore import (Qt, QSize, QTimer, QPoint, QRect, QSettings, QEvent, QRectF,
-                          QPropertyAnimation, QEasingCurve)
+                          QPropertyAnimation, QEasingCurve, QObject)
 from PyQt6.QtGui import (QKeySequence, QShortcut, QFont,
                          QDragEnterEvent, QDropEvent, QMouseEvent, QColor,
                          QRegion, QPixmap,
@@ -67,6 +67,35 @@ from audio_player.platform import platform_info
 _WIN32 = sys.platform == "win32"
 _MSYS2 = _WIN32 and "MSC" not in sys.version  # MSYS2 Python has QThread bugs
 
+class _PaletteDarkGuard(QObject):
+    """Re-asserts the DWM dark-mode flag after app palette churn.
+
+    Qt's Windows platform plugin re-evaluates the window's
+    DWMWA_USE_IMMERSIVE_DARK_MODE whenever the application palette changes,
+    judging light/dark from palette brightness. The dynamic-accent animation
+    sets bright Highlight/Link colors, so Qt misjudges "light theme" and
+    flips the flag — Mica then renders its WHITE variant. Our filter runs
+    after Qt's internal update, so re-asserting here wins.
+    """
+
+    def __init__(self, win):
+        super().__init__(win)
+        self._win = win
+        self._last_sync = 0.0
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.ApplicationPaletteChange,
+                            QEvent.Type.StyleChange):
+            import time as _time
+            now = _time.monotonic()
+            if now - self._last_sync > 0.02:
+                self._last_sync = now
+                self._win._sync_dark_flag()
+                # short backstop in case Qt's reset lands after our sync
+                QTimer.singleShot(400, self._win._sync_dark_flag)
+        return False
+
+
 class MainWindow(FramelessResizeMixin, QMainWindow):
     def __init__(self):
         super().__init__()
@@ -90,16 +119,16 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         self._border_radius = 12
         self._bar_style = "full"
-        self._material = platform_info.policy.material  # "acrylic" | "glass" | "vibrancy" | etc
+        self._material = platform_info.policy.material  # "mica" | "acrylic" | "glass" | "vibrancy" | ...
         self._blur_enabler = None
         self._noise_pixmap = None
-
-        self._use_translucent = self._material in ("glass", "acrylic")
-        if self._use_translucent:
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._dwm_material = False          # DWM composites the backdrop (Win11 22H2+)
+        self._effective_material = self._material
+        self._use_translucent = False
+        self._resolve_material()
 
         # KDE KWin true blur (X11 only)
-        if self._material == "acrylic":
+        if self._effective_material == "acrylic":
             self._init_blur()
         self._ui_radius = 12
         self._mask_dirty = True
@@ -164,6 +193,21 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         # Clear playlist selection when clicking away
         self._body.installEventFilter(self)
+
+        # Keep the DWM dark flag ours through dynamic-accent palette churn.
+        # The palette-applied hook is the primary (synchronous) corrector;
+        # the event guard catches async palette/style churn.
+        self._palette_guard = _PaletteDarkGuard(self)
+        QApplication.instance().installEventFilter(self._palette_guard)
+        from audio_player.app import on_palette_applied
+        on_palette_applied(self._sync_dark_flag)
+
+        # Chrome watchdog: self-heal frameless chrome broken by unknown paths
+        if sys.platform == "win32":
+            self._chrome_watchdog = QTimer(self)
+            self._chrome_watchdog.setInterval(2000)
+            self._chrome_watchdog.timeout.connect(self._verify_native_chrome)
+            self._chrome_watchdog.start()
 
         # React to language changes
         languageChanged.connect(self._refresh_language)
@@ -351,6 +395,16 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             bar.prevClicked.connect(self._playback_ctrl.prev_track)
             bar.expandRequested.connect(self._show_np_page)
 
+        # Volume: bar → engine (control), engine → bar (display)
+        self._muted = False
+        self._pre_mute_vol = 0.8
+        self._now_playing_bar.volumeChanged.connect(self._on_bar_volume)
+        self._now_playing_bar.muteToggled.connect(self._toggle_mute)
+        _dv = int(QSettings("VBPlayer", "VB Player").value("default_volume", 100) or 100)
+        self._engine.volume = max(0.0, min(1.0, _dv / 100.0))
+        self._pre_mute_vol = self._engine.volume
+        self._now_playing_bar.set_volume(self._engine.volume)
+
         # Pill wrapper — centers the pill horizontally
         pill_wrapper = QWidget()
         pill_layout = QHBoxLayout(pill_wrapper)
@@ -358,8 +412,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         pill_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
         pill_layout.addWidget(self._pill)
         self._pill_wrapper = pill_wrapper
-
-        self._engine.volume = 1.0
 
         # ===== Overlay stack: body | hifi (also used as now-playing overlay) =====
         self._hifi_page = HiFiQmlPage()
@@ -789,7 +841,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self.update()
 
         # Playback bar style
-        style = str(s.value("playback_bar_style", "full") or "full")
+        style = str(s.value("playback_bar_style", "pill") or "pill")
         self._apply_bar_style(style)
 
         if self._ui_radius != 12:
@@ -815,6 +867,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Position/duration — keep direct for seek slider/waveform/spectrum
         self._engine.positionChanged.connect(self._on_position_changed)
         self._engine.durationChanged.connect(self._on_duration_changed)
+        # Volume display follows engine (e.g. keyboard shortcuts)
+        self._engine.volumeChanged.connect(
+            lambda v: self._now_playing_bar.set_volume(v, self._muted))
 
 
         # Engine exclusive mode log
@@ -972,6 +1027,24 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._taskbar.set_progress(pos, dur)
         if playing is not None:
             self._taskbar.set_playing(playing)
+
+    def _on_bar_volume(self, vol: float):
+        """User moved the volume slider / scrolled the bar."""
+        self._engine.volume = max(0.0, min(1.0, float(vol)))
+        if vol > 0:
+            self._muted = False
+            self._pre_mute_vol = max(0.05, vol)
+        self._now_playing_bar.set_volume(self._engine.volume, self._muted)
+
+    def _toggle_mute(self):
+        if self._muted:
+            self._muted = False
+            self._engine.volume = self._pre_mute_vol if self._pre_mute_vol > 0 else 1.0
+        else:
+            self._pre_mute_vol = self._engine.volume if self._engine.volume > 0 else self._pre_mute_vol
+            self._muted = True
+            self._engine.volume = 0.0
+        self._now_playing_bar.set_volume(self._engine.volume, self._muted)
 
     def _refresh_covers(self):
         """Re-render album covers after radius setting change."""
@@ -1377,6 +1450,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         """Called when playback controller loads a new track — update UI."""
         import audio_player.ui.widgets.playlist_view as _pv
         _pv._current_file = filepath or ""
+        # Cover-driven accent/QSS churn has been observed to leave the DWM
+        # backdrop in the light variant — re-assert dark chrome per track
+        self._reassert_native_chrome()
         # Use already-loaded metadata from playlist model
         meta = self._playlist.track_metadata(self._playlist.current_index)
         if meta is None:
@@ -1495,11 +1571,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _toggle_fullscreen(self):
         """Toggle fullscreen mode."""
         if self.isFullScreen():
-            self.showNormal()
             if self._use_frameless:
                 self._title_bar.show()
+            # restore radius BEFORE showNormal — changeEvent's chrome
+            # re-assert reads it to pick the corner preference
             self._border_radius = 12
             self._mask_dirty = True
+            self.showNormal()
             self.update()
         else:
             if self._use_frameless:
@@ -1657,6 +1735,62 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _open_settings(self):
         self._settings_ctrl.open_settings(self)
 
+    def _sync_dark_flag(self):
+        """Set only the DWM immersive-dark flag to match the app theme
+        (cheap — called after every palette churn by _PaletteDarkGuard)."""
+        if sys.platform != "win32" or not getattr(self, '_win_done', False):
+            return
+        try:
+            hwnd = int(self.winId())
+            if current_theme_mode() == "light":
+                _win_materials.apply_light_titlebar(hwnd)
+            else:
+                _win_materials.apply_dark_titlebar(hwnd)
+        except Exception:
+            pass
+
+    def _verify_native_chrome(self):
+        """Low-frequency watchdog (2s): any unknown path that breaks the
+        frameless chrome (native frame inset, lost dark flag) self-heals."""
+        if sys.platform != "win32" or not getattr(self, '_win_done', False):
+            return
+        if self.isFullScreen() or not self.isVisible():
+            return
+        try:
+            hwnd = int(self.winId())
+            inset = _win_materials.frame_inset(hwnd)
+            dark = _win_materials.dark_mode_flag(hwnd)
+            want_dark = 0 if current_theme_mode() == "light" else 1
+            if inset != (0, 0) or dark != want_dark:
+                print(f"[win] chrome drift detected inset={inset} dark={dark} — reasserting",
+                      file=sys.stderr)
+                self._reassert_native_chrome()
+                self._sync_dark_flag()
+        except Exception:
+            pass
+
+    def _reassert_native_chrome(self):
+        """Re-apply the full DWM treatment (frame subclass, dark mode,
+        backdrop, corners). Idempotent and cheap — a few DWM attribute
+        calls. Needed after Qt rewrites window styles (fullscreen
+        round-trips) or recreates the native window."""
+        if sys.platform != "win32" or not getattr(self, '_win_done', False):
+            return
+        if self.isFullScreen():
+            return  # fullscreen: no frame; restored on exit via changeEvent
+        try:
+            hwnd = int(self.winId())
+            _win_materials.enable_dwm_frame(hwnd, force=True)
+            if current_theme_mode() == "light":
+                _win_materials.apply_light_titlebar(hwnd)
+            else:
+                _win_materials.enable_dark_mode_for_window(hwnd)
+            self._apply_dwm_backdrop(hwnd)
+            self._apply_native_corners(hwnd)
+            self._win_hwnd = hwnd
+        except Exception as e:
+            print(f"[win] chrome reassert failed: {e}", file=sys.stderr)
+
     def _on_theme_changed_ui(self, mode: str, accent_name: str):
         """Update UI widgets after theme has been applied by SettingsController."""
         is_light = mode == "light"
@@ -1684,6 +1818,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 _win_materials.apply_light_titlebar(hwnd)
             else:
                 _win_materials.enable_dark_mode_for_window(hwnd)
+            # Mica/Acrylic render differently in dark/light — re-assert the
+            # backdrop after the immersive-dark-mode flip
+            self._apply_dwm_backdrop(hwnd)
 
     def _init_blur(self):
         """Set up KWin blur if on KDE X11."""
@@ -1691,26 +1828,63 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._blur_enabler = KWinBlurEnabler(self)
         self._blur_enabler.enable()
 
+    def _resolve_material(self):
+        """Resolve the raw material choice into effective mode + translucency.
+
+        Win11 22H2+: "mica"/"acrylic" use the DWM system backdrop — the client
+        area goes near-transparent with a light readability tint so the
+        backdrop shows through. Earlier Windows: "mica" degrades to the
+        fake-glass translucency (no DWM backdrop exists there).
+        """
+        m = self._material
+        self._dwm_material = (
+            sys.platform == "win32"
+            and m in ("mica", "acrylic")
+            and _win_materials.system_backdrop_available()
+        )
+        if (sys.platform == "win32" and m == "mica"
+                and not _win_materials.system_backdrop_available()):
+            m = "glass"  # no system backdrop pre-22H2 — fake translucency fallback
+        self._effective_material = m
+        want = m in ("glass", "acrylic") or self._dwm_material
+        if want != self._use_translucent:
+            self._use_translucent = want
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, want)
+        # Surfaces over a DWM backdrop go translucent (recomposes QSS)
+        from audio_player.app import set_surface_translucent
+        set_surface_translucent(self._dwm_material)
+        self._mask_dirty = True
+        self.update()
+
+    def _apply_native_corners(self, hwnd: int):
+        """Win11: let DWM round the corners (radius maps to a preference)."""
+        if sys.platform == "win32" and _win_materials.native_rounded_corners():
+            pref = "none" if self._border_radius <= 0 else "round"
+            _win_materials.apply_rounded_corners(hwnd, pref)
+
+    def _apply_dwm_backdrop(self, hwnd: int):
+        """Apply/clear the DWM system backdrop for the effective material."""
+        if self._effective_material == "acrylic":
+            _win_materials.apply_acrylic(hwnd)
+        elif self._dwm_material:  # mica with a real system backdrop
+            _win_materials.apply_mica(hwnd)
+        else:
+            _win_materials.clear_backdrop(hwnd)
+
     def _on_material_changed(self, val: str):
         from audio_player.platform import platform_info
         if val and val != "auto":
             self._material = val
         else:
             self._material = platform_info.policy.material
-        want = self._material in ("glass", "acrylic")
-        if want != self._use_translucent:
-            self._use_translucent = want
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, want)
+        self._resolve_material()
         # Update DWM backdrop on Win11
         if sys.platform == "win32" and hasattr(self, '_win_done') and self._win_done:
             hwnd = int(self.winId())
-            if self._material == "acrylic":
-                _win_materials.apply_acrylic(hwnd)
-            elif self._material == "mica":
-                _win_materials.apply_mica(hwnd)
-            else:
-                _win_materials.clear_backdrop(hwnd)
-        self.update()
+            self._apply_dwm_backdrop(hwnd)
+            self._apply_native_corners(hwnd)
+        if hasattr(self, '_now_playing_bar'):
+            self._bar_update("refresh_theme")
 
     def _refresh_accent_colors(self):
         """Re-apply inline accent-dependent styles across all widgets."""
@@ -1805,10 +1979,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _apply_ui_radius(self, radius: int):
         QSettings("VBPlayer", "VB Player").setValue("ui_radius", radius)
         self._ui_radius = radius
-        if hasattr(self, '_seek_slider'):
-            self._seek_slider._apply_sizing(radius)
-        if hasattr(self, '_volume_control'):
-            self._volume_control._refresh_style(radius)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1824,20 +1994,25 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if self._blur_enabler:
             self._blur_enabler.enable()
 
-        # One-time Windows native init (HWND only valid after first show)
-        if sys.platform == "win32" and not getattr(self, '_win_done', False):
+        # Windows native init (HWND only valid after first show; re-run if Qt
+        # recreated the native window — fullscreen/flag changes can do that)
+        if sys.platform == "win32" and (
+                not getattr(self, '_win_done', False)
+                or getattr(self, '_win_hwnd', None) != int(self.winId())):
             self._win_done = True
             try:
                 hwnd = int(self.winId())
+                self._win_hwnd = hwnd
                 # Must run FIRST: enables DWM animations for frameless window
                 _win_materials.enable_dwm_frame(hwnd)
-                if self._material == "acrylic":
-                    _win_materials.apply_acrylic(hwnd)
-                elif self._material == "mica":
-                    _win_materials.apply_mica(hwnd)
-                _win_materials.apply_rounded_corners(hwnd)
-                if current_theme_mode() == "dark":
+                # Dark/light flag BEFORE the backdrop — the backdrop renders
+                # in the wrong (light) variant if this flips after it
+                if current_theme_mode() == "light":
+                    _win_materials.apply_light_titlebar(hwnd)
+                else:
                     _win_materials.enable_dark_mode_for_window(hwnd)
+                self._apply_dwm_backdrop(hwnd)
+                self._apply_native_corners(hwnd)
             except Exception as e:
                 print(f"[win] DWM backdrop failed: {e}", file=sys.stderr)
             try:
@@ -1852,10 +2027,18 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._mask_dirty = True
             if self.isMaximized():
                 self.clearMask()
+            # Qt's fullscreen/maximize style rewrite silently drops the DWM
+            # frame treatment — re-apply or the window gets Win7-style borders
+            self._reassert_native_chrome()
 
     def _apply_mask(self):
         if not self._use_frameless:
             return  # CSD/native titlebar: compositor handles corners
+        # Win11: DWM rounds the corners natively — a client-side 1-bit mask
+        # would clip the system backdrop (and fight DWMWA_WINDOW_CORNER_PREFERENCE)
+        if sys.platform == "win32" and _win_materials.native_rounded_corners():
+            self.clearMask()
+            return
         r = self._border_radius
         w, h = self.width(), self.height()
         if r > 0 and not self.isMaximized() and w > 0 and h > 0:
@@ -1879,13 +2062,21 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             pct = int(user_val)
             return int(pct * 255 / 100)
         # Defaults (percentage)
-        if self._material == "acrylic":
+        if self._effective_material == "acrylic":
             return int(92 * 255 / 100)  # 92%
         return int(84 * 255 / 100)  # 84%
 
+    def _tint_alpha(self) -> int:
+        """Readability tint over a DWM backdrop — light, unlike the fallback fill
+        (default 15%, clamped 0-60%)."""
+        s = QSettings("VBPlayer", "VB Player")
+        user_val = s.value("material_tint")
+        pct = int(user_val) if user_val is not None else 15
+        return max(0, min(60, pct)) * 255 // 100
+
     def _material_texture_opacity(self) -> float:
         """Read user-configured texture strength from QSettings."""
-        if self._material != "acrylic":
+        if self._effective_material != "acrylic":
             return 0.0
         s = QSettings("VBPlayer", "VB Player")
         user_val = s.value("material_texture")
@@ -1898,19 +2089,30 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         base = self.palette().color(QPalette.ColorRole.Window)
 
-        if self._use_translucent and self._material in ("glass", "acrylic"):
+        if self._dwm_material:
+            # DWM composites the backdrop — paint only a light tint so it
+            # shows through (the old 84-92% fill hid it completely)
+            base = QColor(base.red(), base.green(), base.blue(), self._tint_alpha())
+        elif self._use_translucent and self._effective_material in ("glass", "acrylic"):
             alpha = self._material_alpha()
             base = QColor(base.red(), base.green(), base.blue(), alpha)
 
-        if self._use_frameless and self._border_radius > 0 and not self.isMaximized() and not self.isFullScreen():
+        # Win11 rounds corners in DWM; painting a rounded path there would
+        # leave artifacts outside the DWM clip. Full-rect fill is correct.
+        native_corners = (sys.platform == "win32"
+                          and _win_materials.native_rounded_corners())
+        if (not native_corners and self._use_frameless and self._border_radius > 0
+                and not self.isMaximized() and not self.isFullScreen()):
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), self._border_radius, self._border_radius)
             painter.fillPath(path, base)
         else:
             painter.fillRect(self.rect(), base)
 
-        # Acrylic noise texture (no accent tint)
-        if self._material == "acrylic" and self._use_translucent:
+        # Acrylic noise texture — fake-acrylic fallback only; the system
+        # backdrop brings its own material texture
+        if (self._effective_material == "acrylic" and self._use_translucent
+                and not self._dwm_material):
             tex_opacity = self._material_texture_opacity()
             if tex_opacity > 0:
                 if self._noise_pixmap is None or self._noise_pixmap.width() < self.width() or \

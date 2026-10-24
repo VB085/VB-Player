@@ -330,6 +330,9 @@ class SettingsPage(QWidget):
         mat_layout = QVBoxLayout(self._material_group)
         self._material_combo = _NoWheelComboBox()
         self._material_combo.addItem(_("settings.material_auto"), "auto")
+        from audio_player.platform import platform_info
+        if platform_info.capabilities.supports_mica:
+            self._material_combo.addItem(_("settings.material_mica"), "mica")
         self._material_combo.addItem(_("settings.material_acrylic"), "acrylic")
         self._material_combo.addItem(_("settings.material_glass"), "glass")
         self._material_combo.addItem(_("settings.material_none"), "none")
@@ -927,7 +930,7 @@ class SettingsPage(QWidget):
         self._texture_slider.setValue(tex)
         self._texture_label.setText(_("settings.material_texture_value", pct=tex))
 
-        barstyle = str(s.value("playback_bar_style", "full") or "full")
+        barstyle = str(s.value("playback_bar_style", "pill") or "pill")
         idx = self._barstyle_combo.findData(barstyle)
         if idx >= 0:
             self._barstyle_combo.setCurrentIndex(idx)
@@ -1043,6 +1046,9 @@ class SettingsPage(QWidget):
         self._material_combo.blockSignals(True)
         self._material_combo.clear()
         self._material_combo.addItem(_("settings.material_auto"), "auto")
+        from audio_player.platform import platform_info as _pi
+        if _pi.capabilities.supports_mica:
+            self._material_combo.addItem(_("settings.material_mica"), "mica")
         self._material_combo.addItem(_("settings.material_acrylic"), "acrylic")
         self._material_combo.addItem(_("settings.material_glass"), "glass")
         self._material_combo.addItem(_("settings.material_none"), "none")
@@ -1056,7 +1062,7 @@ class SettingsPage(QWidget):
         self._barstyle_combo.clear()
         self._barstyle_combo.addItem(_("settings.bar_full"), "full")
         self._barstyle_combo.addItem(_("settings.bar_pill"), "pill")
-        barstyle = str(self._settings.value("playback_bar_style", "full") or "full")
+        barstyle = str(self._settings.value("playback_bar_style", "pill") or "pill")
         idx = self._barstyle_combo.findData(barstyle)
         if idx >= 0:
             self._barstyle_combo.setCurrentIndex(idx)
