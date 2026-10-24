@@ -302,5 +302,6 @@
   "window.restore": "元に戻す",
   "window.close": "閉じる",
   "settings.material_mica": "マイカ (Mica)",
-  "volume.title": "音量"
+  "volume.title": "音量",
+  "pill.prev_hover_hint": "前の曲（スクロールで音量調整）"
 }

@@ -349,5 +349,6 @@
   "window.restore": "Restore",
   "window.close": "Close",
   "settings.material_mica": "Mica",
-  "volume.title": "Volume"
+  "volume.title": "Volume",
+  "pill.prev_hover_hint": "Previous (scroll to adjust volume)"
 }

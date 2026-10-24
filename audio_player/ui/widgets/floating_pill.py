@@ -1,10 +1,12 @@
 """Floating pill — Apple Music-style centered playback capsule."""
 
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
+                             QPushButton, QGraphicsOpacityEffect)
+from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QFont, QPixmap, QPainterPath
 
 from audio_player.app import current_accent, current_theme_mode
+from audio_player.i18n import _
 from audio_player.ui.utils import format_duration
 from audio_player.ui.icons import (
     TRANSPORT_PREV, TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT, _icon,
@@ -64,14 +66,16 @@ class FloatingPill(QWidget):
         info.addWidget(self._artist_label)
         layout.addLayout(info, 1)
 
-        # Prev
-        prev_btn = QPushButton()
-        prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#999"))
-        prev_btn.setObjectName("pillBtn")
-        prev_btn.setFixedSize(36, 36)
-        prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        prev_btn.clicked.connect(self.prevClicked.emit)
-        layout.addWidget(prev_btn)
+        # Prev — hidden until hover (Apple Music style secondary control):
+        # keeps its layout slot so nothing shifts, only opacity animates
+        self._prev_btn = QPushButton()
+        self._prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#999"))
+        self._prev_btn.setObjectName("pillBtn")
+        self._prev_btn.setFixedSize(36, 36)
+        self._prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._prev_btn.setToolTip(_("pill.prev_hover_hint"))
+        self._prev_btn.clicked.connect(self.prevClicked.emit)
+        layout.addWidget(self._prev_btn)
 
         # Play
         self._play_btn = QPushButton()
@@ -93,6 +97,37 @@ class FloatingPill(QWidget):
 
         # Cache progress style — avoid QSettings read on every paint frame
         self._pill_progress_style = "line"
+
+        # Secondary-control fade (prev button) — QGraphicsOpacityEffect,
+        # since windowOpacity only works on top-level windows
+        self._prev_effect = QGraphicsOpacityEffect(self._prev_btn)
+        self._prev_btn.setGraphicsEffect(self._prev_effect)
+        self._secondary_anim = QPropertyAnimation(self._prev_effect, b"opacity")
+        self._secondary_anim.setDuration(150)
+        self._secondary_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._set_secondary_visible(False, animate=False)
+
+    def _set_secondary_visible(self, visible: bool, animate: bool = True):
+        """Fade the prev button in/out. Opacity-only: layout never shifts."""
+        btn = self._prev_btn
+        target = 1.0 if visible else 0.0
+        btn.setEnabled(visible)
+        if not animate:
+            self._secondary_anim.stop()
+            self._prev_effect.setOpacity(target)
+            return
+        self._secondary_anim.stop()
+        self._secondary_anim.setStartValue(self._prev_effect.opacity())
+        self._secondary_anim.setEndValue(target)
+        self._secondary_anim.start()
+
+    def enterEvent(self, event):
+        self._set_secondary_visible(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._set_secondary_visible(False)
+        super().leaveEvent(event)
 
     def _apply_style(self):
         is_light = current_theme_mode() == "light"

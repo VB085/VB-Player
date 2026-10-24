@@ -302,5 +302,6 @@
   "window.restore": "還原",
   "window.close": "關閉",
   "settings.material_mica": "雲母 (Mica)",
-  "volume.title": "音量"
+  "volume.title": "音量",
+  "pill.prev_hover_hint": "上一首（滾輪調節音量）"
 }
