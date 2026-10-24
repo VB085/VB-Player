@@ -1,6 +1,7 @@
 """HiFi Now Playing — immersive full-page playback dashboard."""
 
 import sys
+import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QMenu
@@ -41,49 +42,58 @@ class _OpacityHelper(QObject):
 # format_duration, format_size — imported from audio_player.ui.utils
 
 
+def _box_blur_1d(arr: np.ndarray, r: int, axis: int) -> np.ndarray:
+    """Edge-clamped box blur along *axis* via cumulative sum — O(n) per pass.
+
+    Window per output element i is [i-r, i+r] (2r+1 samples), matching the
+    old per-pixel implementation's range(-r, r+1) with min/max edge clamp.
+    """
+    if r <= 0:
+        return arr
+    a = np.moveaxis(arr, axis, 0)
+    a = np.pad(a, ((r, r),) + ((0, 0),) * (a.ndim - 1), mode='edge')
+    c = np.cumsum(a, axis=0, dtype=np.float32)
+    # cz[k] = sum of padded[0..k-1];  window sum padded[i..i+2r] = cz[i+2r+1] - cz[i]
+    cz = np.concatenate([np.zeros_like(c[:1]), c], axis=0)
+    n = arr.shape[axis]
+    total = cz[2 * r + 1:] - cz[:n]
+    return np.moveaxis(total / (2 * r + 1), 0, axis)
+
+
+def _blur_qimage(img: QImage, radius: int = 40) -> QImage:
+    """Blur an image down to its 80×80 thumbnail form (thread-safe: QImage only).
+
+    Same algorithm as the old per-pixel version — downscale, 3 iterations of
+    horizontal+vertical box blur with edge clamp — but vectorized in numpy,
+    so it costs ~1 ms instead of hundreds of ms on the calling thread.
+    """
+    if img.isNull():
+        return img
+    small = img.scaled(80, 80, Qt.AspectRatioMode.IgnoreAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    small = small.convertToFormat(QImage.Format.Format_RGB888)
+    w, h = small.width(), small.height()
+    if w == 0 or h == 0:
+        return img
+    ptr = small.bits()
+    ptr.setsize(w * h * 3)
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape(h, w, 3).astype(np.float32)
+    r = max(0, radius // 4)
+    for _ in range(3):
+        arr = _box_blur_1d(arr, r, 0)
+        arr = _box_blur_1d(arr, r, 1)
+    out = np.clip(arr, 0, 255).astype(np.uint8)
+    return QImage(out.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888).copy()
+
+
 def _blur_pixmap(pix: QPixmap, radius: int = 40) -> QPixmap:
-    """Stack blur for background — fast enough for single image."""
+    """Stack blur for background — vectorized, cached upstream by callers."""
     if pix.isNull():
         return pix
-    # Scale down first for speed
-    small = pix.scaled(80, 80, Qt.AspectRatioMode.IgnoreAspectRatio,
-                       Qt.TransformationMode.SmoothTransformation)
-    # Use QGraphicsBlurEffect via QImage conv — simple box blur
-    img = small.toImage()
-    w, h = img.width(), img.height()
-    # Multi-pass box blur (approximates gaussian)
-    for _ in range(3):
-        # Horizontal pass
-        for y in range(h):
-            row = []
-            for x in range(w):
-                row.append(img.pixelColor(x, y))
-            for x in range(w):
-                r = g = b = cnt = 0
-                for dx in range(-radius // 4, radius // 4 + 1):
-                    nx = min(max(x + dx, 0), w - 1)
-                    c = row[nx]
-                    r += c.red()
-                    g += c.green()
-                    b += c.blue()
-                    cnt += 1
-                img.setPixelColor(x, y, QColor(r // cnt, g // cnt, b // cnt))
-        # Vertical pass
-        for x in range(w):
-            col = []
-            for y in range(h):
-                col.append(img.pixelColor(x, y))
-            for y in range(h):
-                r = g = b = cnt = 0
-                for dy in range(-radius // 4, radius // 4 + 1):
-                    ny = min(max(y + dy, 0), h - 1)
-                    c = col[ny]
-                    r += c.red()
-                    g += c.green()
-                    b += c.blue()
-                    cnt += 1
-                img.setPixelColor(x, y, QColor(r // cnt, g // cnt, b // cnt))
-    result = QPixmap.fromImage(img)
+    blurred = _blur_qimage(pix.toImage(), radius)
+    if blurred.isNull():
+        return pix
+    result = QPixmap.fromImage(blurred)
     return result.scaled(pix.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
                          Qt.TransformationMode.SmoothTransformation)
 
@@ -103,6 +113,7 @@ class HiFiNowPlayingPage(QWidget):
         self._blurred_bg: QPixmap | None = None
         self._cached_bg: QPixmap | None = None  # scaled-to-window cached bg
         self._old_cached_bg: QPixmap | None = None  # previous bg during crossfade
+        self._old_cached_scaled: QPixmap | None = None  # scaled copy of the above (per-size cache)
         self._bg_fade_progress: float = 1.0  # 0=old, 1=new
         self._bg_fade_helper: _OpacityHelper | None = None
         self._macos_vibrancy = False  # True on macOS: use NSVisualEffectView instead of blur
@@ -223,6 +234,7 @@ class HiFiNowPlayingPage(QWidget):
                     self._old_cached_bg = self._cached_bg
                 else:
                     self._old_cached_bg = None
+                self._old_cached_scaled = None  # invalidate scaled cache
                 self._cover_pixmap = pix
                 self._blurred_bg = None  # invalidate
                 self._cached_bg = None
@@ -231,6 +243,7 @@ class HiFiNowPlayingPage(QWidget):
         self._cover_pixmap = None
         self._blurred_bg = None
         self._old_cached_bg = self._cached_bg  # fade old to empty
+        self._old_cached_scaled = None  # invalidate scaled cache
         self._start_bg_crossfade()
 
     def _start_bg_crossfade(self):
@@ -730,7 +743,7 @@ class HiFiNowPlayingPage(QWidget):
 
         # ---- Background: blurred cover with crossfade ----
         if self._cover_pixmap and not self._cover_pixmap.isNull():
-            if self._blurred_bg is None or not self._macos_vibrancy:
+            if self._blurred_bg is None:
                 self._blurred_bg = _blur_pixmap(self._cover_pixmap)
             if self._cached_bg is None or self._cached_bg.size() != self.size():
                 self._cached_bg = self._blurred_bg.scaled(
@@ -740,11 +753,15 @@ class HiFiNowPlayingPage(QWidget):
             t = self._bg_fade_progress
             # Draw old background (fading out) if crossfade in progress
             if t < 1.0 and self._old_cached_bg and not self._old_cached_bg.isNull():
-                old_scaled = self._old_cached_bg.scaled(w, h,
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation)
+                # Cache the scaled old bg — full-window SmoothTransformation
+                # is far too expensive to redo on every animation frame
+                if getattr(self, '_old_cached_scaled', None) is None or \
+                        self._old_cached_scaled.size() != self.size():
+                    self._old_cached_scaled = self._old_cached_bg.scaled(w, h,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation)
                 p.setOpacity(1.0 - t)
-                p.drawPixmap(0, 0, old_scaled)
+                p.drawPixmap(0, 0, self._old_cached_scaled)
                 p.setOpacity(1.0)
             # Draw new background
             if t > 0:

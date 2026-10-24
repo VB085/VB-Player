@@ -36,9 +36,10 @@ class SpectrumWidget(QWidget):
         self._peak_color = QColor(255, 255, 255, 180)
         self._rebuild_colors()
 
+        self._dirty = True  # levels/colors changed since last paint
         self._timer = QTimer(self)
         self._timer.setInterval(1000 // self.FPS)
-        self._timer.timeout.connect(self.update)
+        self._timer.timeout.connect(self._tick)
         self._timer.start()
 
         # Lyrics overlay as child widget
@@ -64,6 +65,22 @@ class SpectrumWidget(QWidget):
     def refresh_accent(self):
         """Rebuild color tables when accent changes."""
         self._rebuild_colors()
+        self._dirty = True
+
+    def _tick(self):
+        # Repaint only when something changed — when paused/stopped the bars
+        # are static, so skipping the repaint saves full widget repaints at 50 fps.
+        if self._dirty:
+            self._dirty = False
+            self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
 
     @property
     def lyrics_overlay(self) -> LyricsOverlay:
@@ -95,9 +112,13 @@ class SpectrumWidget(QWidget):
 
     def set_mode(self, mode: SpectrumMode):
         self._mode = mode
+        self._dirty = True
+        self.update()
 
     def cycle_mode(self):
         self._mode = SpectrumMode((int(self._mode) + 1) % 3)
+        self._dirty = True
+        self.update()
 
     def set_position_ratio(self, ratio: float):
         self._current_pos_ratio = ratio
@@ -107,6 +128,7 @@ class SpectrumWidget(QWidget):
             target = self._spectrum_cache[idx]
             self._levels += (target - self._levels) * self._animation_speed
             self._peaks = np.maximum(self._peaks * self._peak_decay, self._levels)
+            self._dirty = True
 
     def set_audio_data(self, spectrum_cache: np.ndarray, sample_rate: int):
         self._spectrum_cache = spectrum_cache
@@ -114,6 +136,7 @@ class SpectrumWidget(QWidget):
         if spectrum_cache is not None and len(spectrum_cache) > 0:
             self._levels = spectrum_cache[0].copy()
             self._peaks = spectrum_cache[0].copy()
+            self._dirty = True
             self.update()
 
     def clear(self):
@@ -121,6 +144,7 @@ class SpectrumWidget(QWidget):
         self._peaks = np.zeros(self.BAR_COUNT, dtype=np.float64)
         self._spectrum_cache = None
         self._lyrics.set_lyrics([])
+        self._dirty = True
         self.update()
 
     def resizeEvent(self, event):

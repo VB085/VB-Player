@@ -68,7 +68,7 @@ def _build_light_palette(accent: QColor) -> QPalette:
     return p
 
 def apply_theme(app: QApplication, mode: str = "dark", accent_name: str = "purple"):
-    global _theme_mode, _accent_name
+    global _theme_mode, _accent_name, _applied_qss_key
     _theme_mode = mode
     _accent_name = accent_name
     accent = ACCENTS.get(accent_name, ACCENTS["purple"])
@@ -76,13 +76,10 @@ def apply_theme(app: QApplication, mode: str = "dark", accent_name: str = "purpl
         app.setPalette(_build_light_palette(accent))
     else:
         app.setPalette(_build_dark_palette(accent))
-    # Inject accent into cached QSS
-    qss = _qss_text(mode)
-    qss = qss.replace("@ACCENT_DARKER@", accent.darker(150).name())
-    qss = qss.replace("@ACCENT_DARK@", accent.darker(120).name())
-    qss = qss.replace("@ACCENT_LIGHT@", accent.lighter(130).name())
-    qss = qss.replace("@ACCENT@", accent.name())
-    app.setStyleSheet(qss)
+    key, qss = _composed_qss(mode, accent)
+    if key != _applied_qss_key:
+        app.setStyleSheet(qss)
+        _applied_qss_key = key
 
 _qss_cache: dict[str, str] = {}
 
@@ -91,6 +88,26 @@ def _qss_text(mode: str) -> str:
         path = THEME_DIR / ("light.qss" if mode == "light" else "dark_purple.qss")
         _qss_cache[mode] = path.read_text(encoding="utf-8")
     return _qss_cache[mode]
+
+# Fully-composed QSS (accent placeholders already substituted), keyed by
+# (theme, accent) — avoids re-running replace chains and, more importantly,
+# lets callers skip app.setStyleSheet() entirely when nothing changed.
+_qss_composed_cache: dict[tuple, str] = {}
+_applied_qss_key: tuple | None = None
+
+def _composed_qss(mode: str, accent: QColor) -> tuple[tuple, str]:
+    key = (mode, accent.name())
+    qss = _qss_composed_cache.get(key)
+    if qss is None:
+        if len(_qss_composed_cache) > 64:
+            _qss_composed_cache.clear()
+        qss = _qss_text(mode)
+        qss = qss.replace("@ACCENT_DARKER@", accent.darker(150).name())
+        qss = qss.replace("@ACCENT_DARK@", accent.darker(120).name())
+        qss = qss.replace("@ACCENT_LIGHT@", accent.lighter(130).name())
+        qss = qss.replace("@ACCENT@", accent.name())
+        _qss_composed_cache[key] = qss
+    return key, qss
 
 _dynamic_accent: QColor | None = None
 _pending_color: QColor | None = None
@@ -130,6 +147,7 @@ def set_dynamic_accent(color: QColor):
 
 def _commit_accent():
     global _pending_color, _dynamic_accent, _anim_timer, _anim_from, _anim_to, _anim_step
+    global _applied_qss_key
     if _pending_color is None:
         return
     to_color = _pending_color
@@ -151,14 +169,15 @@ def _commit_accent():
     p.setColor(QPalette.ColorRole.Highlight, c)
     p.setColor(QPalette.ColorRole.Link, c.lighter(130) if _theme_mode != "light" else c.darker(110))
     app.setPalette(p)
-    qss = _qss_text(_theme_mode)
-    qss = qss.replace("@ACCENT_DARKER@", c.darker(150).name())
-    qss = qss.replace("@ACCENT_DARK@", c.darker(120).name())
-    qss = qss.replace("@ACCENT_LIGHT@", c.lighter(130).name())
-    qss = qss.replace("@ACCENT@", c.name())
-    app.setStyleSheet(qss)
-    win = app.activeWindow()
-    if win: win.update()
+    # Only re-apply the stylesheet when the accent actually changed in QSS
+    # terms (e.g. static → dynamic). During consecutive dynamic transitions
+    # the applied QSS already matches the from-color, so skip the re-parse.
+    key, qss = _composed_qss(_theme_mode, c)
+    if key != _applied_qss_key:
+        app.setStyleSheet(qss)
+        _applied_qss_key = key
+        win = app.activeWindow()
+        if win: win.update()
     for cb in _on_anim_tick:
         cb(c)
     if _anim_timer is None:
@@ -182,13 +201,14 @@ def _anim_tick():
     ACCENTS["dynamic"] = color
     app = QApplication.instance()
     if app is None: return
-    # Palette only — cheap, no QSS re-parse
+    # Palette only — cheap, no QSS re-parse. The palette change itself
+    # invalidates the widgets that follow Highlight/Link; subscribers repaint
+    # themselves via _on_anim_tick. No explicit full-window update() here:
+    # it forced a whole-window software repaint every animation frame.
     p = app.palette()
     p.setColor(QPalette.ColorRole.Highlight, color)
     p.setColor(QPalette.ColorRole.Link, color.lighter(130) if _theme_mode != "light" else color.darker(110))
     app.setPalette(p)
-    win = app.activeWindow()
-    if win: win.update()
     for cb in _on_anim_tick:
         cb(color)
     if _anim_step >= _ANIM_STEPS:

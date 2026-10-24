@@ -13,38 +13,7 @@ from audio_player.ui.icons import (
     MODE_SHUFFLE, MODE_REPEAT_ALL, VOLUME_LOW, _icon,
 )
 from audio_player.ui.utils import format_duration
-
-
-def _blur_pixmap(pix: QPixmap, radius: int = 40) -> QPixmap:
-    """Multi-pass box blur for background."""
-    if pix.isNull():
-        return pix
-    small = pix.scaled(80, 80, Qt.AspectRatioMode.IgnoreAspectRatio,
-                       Qt.TransformationMode.SmoothTransformation)
-    img = small.toImage()
-    w, h = img.width(), img.height()
-    for _ in range(3):
-        for y in range(h):
-            row = [img.pixelColor(x, y) for x in range(w)]
-            for x in range(w):
-                r = g = b = cnt = 0
-                for dx in range(-radius // 4, radius // 4 + 1):
-                    nx = min(max(x + dx, 0), w - 1)
-                    c = row[nx]
-                    r += c.red(); g += c.green(); b += c.blue(); cnt += 1
-                img.setPixelColor(x, y, QColor(r // cnt, g // cnt, b // cnt))
-        for x in range(w):
-            col = [img.pixelColor(x, y) for y in range(h)]
-            for y in range(h):
-                r = g = b = cnt = 0
-                for dy in range(-radius // 4, radius // 4 + 1):
-                    ny = min(max(y + dy, 0), h - 1)
-                    c = col[ny]
-                    r += c.red(); g += c.green(); b += c.blue(); cnt += 1
-                img.setPixelColor(x, y, QColor(r // cnt, g // cnt, b // cnt))
-    result = QPixmap.fromImage(img)
-    return result.scaled(pix.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
-                         Qt.TransformationMode.SmoothTransformation)
+from audio_player.ui.widgets.hifi_now_playing import _blur_pixmap
 
 
 class NowPlayingPage(QWidget):
