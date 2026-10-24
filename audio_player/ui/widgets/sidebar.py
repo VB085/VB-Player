@@ -140,6 +140,10 @@ class Sidebar(QWidget):
         self._update_nav_highlight()
         self.navChanged.emit(key)
 
+    def select(self, key: str):
+        """Programmatically activate a nav item (Ctrl+1..7 shortcuts)."""
+        self._on_nav(key)
+
     def _update_nav_highlight(self):
         """Highlight selected nav item. Background follows accent via inline style."""
         accent = current_accent()

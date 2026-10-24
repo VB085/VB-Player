@@ -400,10 +400,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._pre_mute_vol = 0.8
         self._now_playing_bar.volumeChanged.connect(self._on_bar_volume)
         self._now_playing_bar.muteToggled.connect(self._toggle_mute)
+        self._pill.volumeChanged.connect(self._on_bar_volume)
         _dv = int(QSettings("VBPlayer", "VB Player").value("default_volume", 100) or 100)
         self._engine.volume = max(0.0, min(1.0, _dv / 100.0))
         self._pre_mute_vol = self._engine.volume
-        self._now_playing_bar.set_volume(self._engine.volume)
+        self._set_volume_ui(self._engine.volume)
 
         # Pill wrapper — centers the pill horizontally
         pill_wrapper = QWidget()
@@ -755,7 +756,29 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             "remove_selected": self._remove_selected,
             "cycle_playback_mode": self._cycle_playback_mode_shortcut,
             "jump_to_pct": lambda pct: self._jump_to_pct(pct),
+            # dormant bindings activate (see shortcut_manager.register_all)
+            "focus_search": self._focus_search,
+            "toggle_mute": self._toggle_mute,
+            "fullscreen_lyrics": self._show_fullscreen_lyrics,
+            "goto_page": self._goto_page,
         })
+
+    def _focus_search(self):
+        """Ctrl+F — focus the current page's search box."""
+        bar_attr = {
+            Page.SONGS: '_pl_search_bar', Page.ALBUMS: '_album_search_bar',
+            Page.FAVORITES: '_fav_search_bar', Page.PLAYLISTS: '_pls_search_bar',
+        }.get(self._content_stack.currentIndex())
+        if bar_attr and hasattr(self, bar_attr):
+            edit = getattr(self, bar_attr)
+            edit.setFocus()
+            edit.selectAll()
+
+    def _goto_page(self, idx: int):
+        """Ctrl+1..7 — jump to a sidebar page (same order as the sidebar)."""
+        keys = ["songs", "albums", "favorites", "playlists", "output", "tools", "settings"]
+        if 1 <= idx <= len(keys):
+            self._sidebar.select(keys[idx - 1])
 
     def _jump_to_pct(self, pct: int):
         # Skip if a text input has focus
@@ -869,7 +892,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._engine.durationChanged.connect(self._on_duration_changed)
         # Volume display follows engine (e.g. keyboard shortcuts)
         self._engine.volumeChanged.connect(
-            lambda v: self._now_playing_bar.set_volume(v, self._muted))
+            lambda v: self._set_volume_ui(v, self._muted))
 
 
         # Engine exclusive mode log
@@ -1028,13 +1051,18 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if playing is not None:
             self._taskbar.set_playing(playing)
 
+    def _set_volume_ui(self, vol: float, muted: bool = False):
+        """Mirror the engine volume onto both bars (full bar UI + pill state)."""
+        self._now_playing_bar.set_volume(vol, muted)
+        self._pill.set_volume(vol, muted)
+
     def _on_bar_volume(self, vol: float):
-        """User moved the volume slider / scrolled the bar."""
+        """User moved the volume slider / scrolled a bar."""
         self._engine.volume = max(0.0, min(1.0, float(vol)))
         if vol > 0:
             self._muted = False
             self._pre_mute_vol = max(0.05, vol)
-        self._now_playing_bar.set_volume(self._engine.volume, self._muted)
+        self._set_volume_ui(self._engine.volume, self._muted)
 
     def _toggle_mute(self):
         if self._muted:
@@ -1044,7 +1072,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._pre_mute_vol = self._engine.volume if self._engine.volume > 0 else self._pre_mute_vol
             self._muted = True
             self._engine.volume = 0.0
-        self._now_playing_bar.set_volume(self._engine.volume, self._muted)
+        self._set_volume_ui(self._engine.volume, self._muted)
 
     def _refresh_covers(self):
         """Re-render album covers after radius setting change."""
@@ -1761,7 +1789,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             inset = _win_materials.frame_inset(hwnd)
             dark = _win_materials.dark_mode_flag(hwnd)
             want_dark = 0 if current_theme_mode() == "light" else 1
-            if inset != (0, 0) or dark != want_dark:
+            # dark=None means "unreadable" (e.g. hwnd in transition) — not drift
+            if inset != (0, 0) or (dark is not None and dark != want_dark):
                 print(f"[win] chrome drift detected inset={inset} dark={dark} — reasserting",
                       file=sys.stderr)
                 self._reassert_native_chrome()

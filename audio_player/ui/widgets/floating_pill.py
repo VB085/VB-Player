@@ -7,7 +7,7 @@ from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QFont, QPixmap, QPainterP
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.ui.utils import format_duration
 from audio_player.ui.icons import (
-    TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT, _icon,
+    TRANSPORT_PREV, TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT, _icon,
 )
 
 PILL_W = 580
@@ -20,8 +20,9 @@ class FloatingPill(QWidget):
 
     playPauseClicked = pyqtSignal()
     nextClicked = pyqtSignal()
-    prevClicked = pyqtSignal()        # unused but kept for API compatibility
+    prevClicked = pyqtSignal()
     expandRequested = pyqtSignal()
+    volumeChanged = pyqtSignal(float)   # 0.0 - 1.0, user-initiated (wheel)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -32,6 +33,7 @@ class FloatingPill(QWidget):
         self._ratio = 0.0
         self._duration_ms = 1
         self._position_ms = 0
+        self._volume = 1.0
         self._title = ""
         self._artist = ""
 
@@ -61,6 +63,15 @@ class FloatingPill(QWidget):
         f2 = QFont(); f2.setPointSize(9); self._artist_label.setFont(f2)
         info.addWidget(self._artist_label)
         layout.addLayout(info, 1)
+
+        # Prev
+        prev_btn = QPushButton()
+        prev_btn.setIcon(_icon(TRANSPORT_PREV, color="#999"))
+        prev_btn.setObjectName("pillBtn")
+        prev_btn.setFixedSize(36, 36)
+        prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        prev_btn.clicked.connect(self.prevClicked.emit)
+        layout.addWidget(prev_btn)
 
         # Play
         self._play_btn = QPushButton()
@@ -155,6 +166,18 @@ class FloatingPill(QWidget):
 
     def set_duration(self, ms: int):
         self._duration_ms = ms if ms > 0 else 1
+
+    def set_volume(self, vol: float, muted: bool = False):
+        """Track the engine volume for wheel adjustment (no UI on the pill)."""
+        self._volume = 0.0 if muted else max(0.0, min(1.0, float(vol)))
+
+    def wheelEvent(self, event):
+        """Scroll on the pill = volume ±5% (same as the full bar)."""
+        dy = event.angleDelta().y()
+        if dy:
+            step = 0.05 if dy > 0 else -0.05
+            self.volumeChanged.emit(max(0.0, min(1.0, self._volume + step)))
+        super().wheelEvent(event)
 
     def refresh_theme(self):
         # Re-read progress style setting in case it changed
