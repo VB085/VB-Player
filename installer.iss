@@ -3,7 +3,7 @@
 ; Build: iscc installer.iss
 
 #define MyAppName "VB Player"
-#define MyAppVersion "0.7.3"
+#define MyAppVersion "0.7.4"
 #define MyAppPublisher "VB Player Team"
 #define MyAppURL "https://github.com/VB085/VB-Player"
 #define MyAppExeName "VB Player.exe"
