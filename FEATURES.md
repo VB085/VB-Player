@@ -25,7 +25,7 @@
 | 主题 | 暗 (Adwaita-dark) / 亮，全局 QPalette + QSS 注入。`QSettings: theme_mode` |
 | 强调色 | 6 种预设（purple/blue/green/orange/pink/red）+ 动态 + 系统跟随。`QSettings: accent` |
 | 动态强调色 | 从专辑封面提取主色 → 12 步 QTimer 动画（600ms cubic ease-out）→ 全局 QSS + QPalette + delegate 同步。每帧更新 `_dynamic_accent` + `app.setStyleSheet()` + `app.setPalette()` + `on_anim_tick` 回调链。`QSettings: dynamic_accent_enabled` |
-| 窗口材质 | 无 / 玻璃（半透明 84-100%）/ 毛玻璃（半透明 92-100% + SoftLight 噪点）。`QSettings: window_material / material_alpha / material_texture` |
+| 窗口材质 | Win11 22H2+: 云母 Mica（系统材质，客户端透明+15% 可读着色）/ 亚克力（系统）/ 玻璃 / 无；Win10 及 21H2 自动回退玻璃假透明。`QSettings: window_material / material_tint`。侧栏与底栏表面随材质半透明化（Fluent 分层）。 |
 | 毛玻璃噪点 | numpy `integers(0,256,(h,w))` → QImage Grayscale8 → SoftLight 混合 → 纹理强度 0-30% 可调 |
 | KDE 真毛玻璃 | `_KDE_NET_WM_BLUR_BEHIND_REGION` X11 atom。KWinBlurEnabler ctypes 调 libX11。仅 KDE X11。 |
 | 标题栏 | 无边框（自绘 TitleBar + 圆角遮罩）/ CSD（合成器装饰）/ 原生。`QSettings: window_titlebar` |
@@ -37,8 +37,8 @@
 
 | 功能 | 详情 |
 |---|---|
-| 完整底栏 | 84px 高，左封面 56×56 + 曲名/艺人 12pt/10pt，中控键（⏮48 ⏯56 ⏭48），右时间 11pt mono。4px 顶部进度条。左右 min-width=220 对称。 |
-| 悬浮胶囊 | Apple Music 风格。72px 高，max 580px 宽，居中浮于内容区上方。玻璃背景 rgba 16px 圆角。左封面 40px，中曲名·艺人，右 ⏯40 ⏭36。顶部 4px 进度线。点空白 → HiFi。`QSettings: playback_bar_style` |
+| 完整底栏 | 84px 高，左封面 56×56 + 曲名/艺人 12pt/10pt，中控键（⏮48 ⏯56 ⏭48），右音量按钮+滑杆+时间 11pt mono。左右 min-width=220 对称。 |
+| 悬浮胶囊 | Apple Music 风格。72px 高，max 580px 宽，居中浮于内容区上方。玻璃背景 rgba 16px 圆角。左封面 40px，中曲名·艺人，右 ⏯40 ⏭36。顶部 4px 进度线。点空白 → HiFi。`QSettings: playback_bar_style`（默认 pill） |
 | 胶囊进度样式 | 顶边细线 / 绕边框一圈 dash。`QSettings: pill_progress_style` |
 | 胶囊定位 | `_body` 内绝对定位，resizeEvent + showEvent 自动追踪。HiFi 覆盖时自动隐藏。 |
 | HiFi 展开 | 底栏→全屏沉浸页，350ms slide-up 动画 (OutCubic)。收起 slide-down。 |
