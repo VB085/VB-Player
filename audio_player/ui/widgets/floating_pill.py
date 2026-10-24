@@ -99,52 +99,27 @@ class FloatingPill(QWidget):
         # Cache progress style — avoid QSettings read on every paint frame
         self._pill_progress_style = "line"
 
-        # Secondary-control reveal (prev button) — fade + slide-in, since
-        # windowOpacity only works on top-level windows this uses a
-        # QGraphicsOpacityEffect plus manual x-offset animation
+        # Secondary-control reveal (prev button) — pure opacity fade
+        # (QGraphicsOpacityEffect; windowOpacity only works on top-levels)
         self._prev_effect = QGraphicsOpacityEffect(self._prev_btn)
         self._prev_btn.setGraphicsEffect(self._prev_effect)
         self._secondary_anim = QPropertyAnimation(self._prev_effect, b"opacity")
         self._secondary_anim.setDuration(220)
         self._secondary_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._slide_anim = QPropertyAnimation(self._prev_btn, b"pos")
-        self._slide_anim.setDuration(220)
-        self._slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._prev_base_pos = None  # captured after first layout
         self._set_secondary_visible(False, animate=False)
 
     def _set_secondary_visible(self, visible: bool, animate: bool = True):
-        """Reveal/hide the prev button: opacity + 10px slide (Apple Music
-        style). Layout slot is untouched — only opacity and x-offset move."""
-        btn = self._prev_btn
+        """Fade the prev button in/out. Opacity-only: layout never shifts."""
         target = 1.0 if visible else 0.0
-        btn.setEnabled(visible)
-        if self._prev_base_pos is None:
-            return  # not laid out yet — showEvent/resizeEvent will seed it
-        base = self._prev_base_pos
+        self._prev_btn.setEnabled(visible)
         if not animate:
             self._secondary_anim.stop()
-            self._slide_anim.stop()
             self._prev_effect.setOpacity(target)
-            btn.move(base)
             return
         self._secondary_anim.stop()
         self._secondary_anim.setStartValue(self._prev_effect.opacity())
         self._secondary_anim.setEndValue(target)
         self._secondary_anim.start()
-        self._slide_anim.stop()
-        off = QPoint(10, 0)
-        zero = QPoint(0, 0)
-        # slide IN: from right (base+10) to rest (base); slide OUT: reverse
-        self._slide_anim.setStartValue(base + (off if visible else zero))
-        self._slide_anim.setEndValue(base + (zero if visible else off))
-        self._slide_anim.start()
-
-    def _seed_prev_base_pos(self):
-        """Capture the prev button's layout position (call when the layout
-        has settled and the button is at rest, i.e. after first show)."""
-        if not self._slide_anim.state() == self._slide_anim.state().__class__.Running:
-            self._prev_base_pos = self._prev_btn.pos()
 
     def enterEvent(self, event):
         self._set_secondary_visible(True)
@@ -153,15 +128,6 @@ class FloatingPill(QWidget):
     def leaveEvent(self, event):
         self._set_secondary_visible(False)
         super().leaveEvent(event)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        # layout has run — capture the resting position for the slide anim
-        self._seed_prev_base_pos()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._seed_prev_base_pos()
 
     def _apply_style(self):
         is_light = current_theme_mode() == "light"
