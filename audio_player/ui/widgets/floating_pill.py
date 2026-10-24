@@ -483,34 +483,25 @@ class FloatingPill(QWidget):
             p.setBrush(accent)
             p.drawRoundedRect(fill, radius, radius)
 
-        # Handle: grows with hover, grows more while scrubbing
-        if hover:
-            handle_d = 10 + 2 * self._prog_hover_t + (4 if self._scrubbing else 0)
-            hx = 8 + (w - 16) * min(shown_ratio, 1.0) - handle_d / 2
-            hy = y_center - handle_d / 2
-            # soft shadow under the handle (depth cue)
-            p.setBrush(QColor(0, 0, 0, 60))
-            p.drawEllipse(QPointF(hx + 1, hy + 2), handle_d / 2, handle_d / 2)
-            p.setBrush(QColor("#ffffff"))
-            p.drawEllipse(QPointF(hx, hy), handle_d / 2, handle_d / 2)
-            # time bubble above the handle
-            if self._prog_hover_t > 0.5:
-                p.setOpacity(min(1.0, (self._prog_hover_t - 0.5) * 2))
-                bubble = format_duration(self._scrub_preview_ms if self._scrubbing
-                                         else self._position_ms)
-                bf = QFont(self.font()); bf.setPointSize(8)
-                p.setFont(bf)
-                bw = p.fontMetrics().horizontalAdvance(bubble) + 14
-                bh = 18
-                bx = max(4, min(w - bw - 4, hx + handle_d / 2 - bw / 2))
-                by = y_center - thick - bh - 4
-                bubble_rect = QRectF(bx, by, bw, bh)
-                p.setBrush(QColor(20, 20, 20, 220) if not is_light else QColor(250, 250, 250, 235))
-                p.drawRoundedRect(bubble_rect, 4, 4)
-                p.setPen(QColor("#fff") if not is_light else QColor("#333"))
-                p.drawText(bubble_rect, Qt.AlignmentFlag.AlignCenter, bubble)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setOpacity(1.0)
+        # Time bubble above the fill head (scrub position feedback)
+        if hover and self._prog_hover_t > 0.5:
+            p.setOpacity(min(1.0, (self._prog_hover_t - 0.5) * 2))
+            head_x = 8 + (w - 16) * min(shown_ratio, 1.0)
+            bubble = format_duration(self._scrub_preview_ms if self._scrubbing
+                                     else self._position_ms)
+            bf = QFont(self.font()); bf.setPointSize(8)
+            p.setFont(bf)
+            bw = p.fontMetrics().horizontalAdvance(bubble) + 14
+            bh = 18
+            bx = max(4, min(w - bw - 4, head_x - bw / 2))
+            by = y_center - thick - bh - 4
+            bubble_rect = QRectF(bx, by, bw, bh)
+            p.setBrush(QColor(20, 20, 20, 220) if not is_light else QColor(250, 250, 250, 235))
+            p.drawRoundedRect(bubble_rect, 4, 4)
+            p.setPen(QColor("#fff") if not is_light else QColor("#333"))
+            p.drawText(bubble_rect, Qt.AlignmentFlag.AlignCenter, bubble)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setOpacity(1.0)
 
     def _draw_ring_progress(self, p, w, h):
         from PyQt6.QtGui import QPen
@@ -536,7 +527,13 @@ class FloatingPill(QWidget):
 
     def mouseDoubleClickEvent(self, e: QMouseEvent):
         """Double-click empty/cover/info areas to expand — single clicks do
-        nothing (a stray click expanding to fullscreen was too aggressive)."""
+        nothing (a stray click expanding to fullscreen was too aggressive).
+        The progress band is exempt: rapid scrub clicks there must never
+        expand the pill mid-adjustment."""
+        pos = e.position()
+        if self._in_progress_band(pos.y()):
+            e.accept()
+            return
         child = self.childAt(e.pos())
         if child is None or not isinstance(child, QPushButton):
             self.expandRequested.emit()
