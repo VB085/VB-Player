@@ -469,7 +469,6 @@ class FloatingPill(QWidget):
         hover = self._prog_hover_t > 0.0
         thick = 4 + 4 * self._prog_hover_t          # 4px → 8px (eased)
         # hover darkens only slightly — 60 was read as a heavy black bar
-        groove_a = 30 + int(10 * self._prog_hover_t)
         # line stays anchored to the pill's top edge (y=0, as before the
         # scrub interaction); thickening grows downward into the capsule
         radius = thick / 2
@@ -477,9 +476,7 @@ class FloatingPill(QWidget):
         shown_ratio = self._scrub_preview_ratio if self._scrubbing else self._ratio
 
         p.setPen(Qt.PenStyle.NoPen)
-        groove = QRectF(8, 0, w - 16, thick)
-        p.setBrush(QColor(0, 0, 0, groove_a) if not is_light else QColor(0, 0, 0, 10 + int(8 * self._prog_hover_t)))
-        p.drawRoundedRect(groove, radius, radius)
+        # no groove — the accent fill is the whole line
         if shown_ratio > 0:
             fill = QRectF(8, 0, (w - 16) * min(shown_ratio, 1.0), thick)
             p.setBrush(accent)
