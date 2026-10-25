@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget,
 )
 from PyQt6.QtCore import Qt
 
@@ -40,13 +40,22 @@ class TagEditorDialog(QDialog):
         )
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 0, 18, 16)
+        layout.setSpacing(7)
 
-        # Title
+        # Drag bar (frameless dialog must be movable)
+        drag = QWidget()
+        drag.setFixedHeight(38)
+        drag.setStyleSheet("background:transparent;")
+        dlay = QHBoxLayout(drag)
+        dlay.setContentsMargins(0, 0, 0, 0)
         title = QLabel(_("tags.edit_title"))
-        title.setStyleSheet(f"color:{text_c};font-size:16px;font-weight:bold;")
-        layout.addWidget(title)
+        title.setStyleSheet(f"color:{text_c};font-size:14px;font-weight:bold;background:transparent;")
+        dlay.addWidget(title)
+        dlay.addStretch()
+        drag.mousePressEvent = lambda e: (self.windowHandle().startSystemMove()
+                                          if e.button() == Qt.MouseButton.LeftButton else None)
+        layout.addWidget(drag)
 
         # Filename subtitle
         fname = QLabel(os.path.basename(filepath))
@@ -73,7 +82,7 @@ class TagEditorDialog(QDialog):
             edit = QLineEdit(value)
             edit.setStyleSheet(
                 f"QLineEdit{{background:{input_bg};color:{text_c};border:1px solid {border};"
-                f"border-radius:6px;padding:8px 10px;font-size:13px;}}"
+                f"border-radius:6px;padding:6px 9px;font-size:12px;}}"
                 f"QLineEdit:focus{{border:1px solid {accent.name()};}}"
             )
             layout.addWidget(edit)
@@ -93,15 +102,38 @@ class TagEditorDialog(QDialog):
         btn_row.addWidget(cancel_btn)
 
         ok_btn = QPushButton(_("settings.ok"))
-        ok_btn.setStyleSheet(
-            f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
-            f"border-radius:6px;padding:8px 20px;font-size:12px;font-weight:bold;}}"
-            f"QPushButton:hover{{background:{accent.lighter(115).name()};}}"
-        )
         ok_btn.clicked.connect(self.accept)
         btn_row.addWidget(ok_btn)
-
+        self._ok_btn = ok_btn
+        self._cancel_btn = cancel_btn
         layout.addLayout(btn_row)
+        self._refresh_accent()
+
+    def _refresh_accent(self):
+        """Accent colors resolved at show time — the dynamic accent may have
+        moved since construction (e.g. opened right after a track change)."""
+        from audio_player.app import current_accent as _ca
+        accent = _ca()
+        text_c = "#333333" if _is_light_mode() else "#e2e8f0"
+        border = "#e0e0e0" if _is_light_mode() else "#222222"
+        self._ok_btn.setStyleSheet(
+            f"QPushButton{{background:{accent.name()};color:#fff;border:none;"
+            f"border-radius:6px;padding:7px 20px;font-size:12px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{accent.lighter(115).name()};}}")
+        self._cancel_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:#94a3b8;border:1px solid {border};"
+            f"border-radius:6px;padding:7px 20px;font-size:12px;}}"
+            f"QPushButton:hover{{color:{text_c};border-color:{text_c};}}")
+        for edit in self._fields.values():
+            edit.setStyleSheet(
+                f"QLineEdit{{background:{'#f8f8f8' if _is_light_mode() else '#141418'};"
+                f"color:{text_c};border:1px solid {border};"
+                f"border-radius:6px;padding:6px 9px;font-size:12px;}}"
+                f"QLineEdit:focus{{border:1px solid {accent.name()};}}")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_accent()
 
     def get_tags(self) -> dict[str, str | int | None]:
         """Return edited tags as a dict matching TrackMetadata field names."""
