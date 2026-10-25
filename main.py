@@ -227,7 +227,35 @@ def main():
     # tooltips: off by default, 1.2s hover delay when on (settings → show_tooltips)
     from audio_player.ui.tooltip_gate import install_tooltip_gate
     install_tooltip_gate(app)
+
+    # Splash: MainWindow construction (8 pages + QML scene) takes ~1.5 s
+    # with zero feedback — a minimal frameless splash covers that gap.
+    from PyQt6.QtWidgets import QSplashScreen, QLabel, QVBoxLayout, QWidget
+    from PyQt6.QtCore import Qt as _Qt
+    from PyQt6.QtGui import QPixmap, QPainter, QColor, QFont
+    _sp = QPixmap(360, 200)
+    _sp.fill(_Qt.GlobalColor.transparent)
+    _p = QPainter(_sp)
+    _p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    _p.setPen(_Qt.PenStyle.NoPen)
+    _p.setBrush(QColor(24, 24, 27, 245))
+    _p.drawRoundedRect(0, 0, 360, 200, 14, 14)
+    _p.setPen(QColor("#ffffff"))
+    _f = QFont(); _f.setPointSize(17); _f.setBold(True); _p.setFont(_f)
+    _p.drawText(_sp.rect().adjusted(0, 20, 0, -70), _Qt.AlignmentFlag.AlignCenter, "VB Player")
+    _p.end()
+    splash = QSplashScreen(_sp)
+    splash.setAttribute(_Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    msg = QLabel("正在启动…", splash)
+    msg.setStyleSheet("color:#888; font-size:12px; background:transparent;")
+    msg.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+    msg.setGeometry(0, 130, 360, 24)
+    splash.show()
+    app.processEvents()
+
     window = MainWindow()
+    window.show()
+    splash.finish(window)
 
     # --- Hang watchdog: Windows reports this app as AppHangB1 (main thread
     # stops pumping events ≥5 s). An independent thread watches a heartbeat
@@ -262,7 +290,6 @@ def main():
 
     threading.Thread(target=_watchdog, daemon=True, name="hang-watchdog").start()
 
-    window.show()
     sys.exit(app.exec())
 
 

@@ -1658,6 +1658,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         """Return from overlay to normal view."""
         self._hifi_overlay.setCurrentWidget(self._body)
         self._hifi_page.hide()
+        # closing the immersive page while fullscreen must ALSO leave
+        # fullscreen — staying fullscreen on a playlist grid made no sense
+        # and left no visible way out
+        if self.isFullScreen():
+            self._toggle_fullscreen()
         if self._bar_style == "full":
             self._now_playing_bar.show()
         elif self._bar_style == "pill":
@@ -1973,9 +1978,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self.update()
 
     def _apply_native_corners(self, hwnd: int):
-        """Win11: let DWM round the corners (radius maps to a preference)."""
+        """Win11: let DWM round the corners (radius maps to a preference).
+        Fullscreen must always be square — DWM rounding clips the content
+        corners against the black backdrop ("rounded black edges")."""
         if sys.platform == "win32" and _win_materials.native_rounded_corners():
-            pref = "none" if self._border_radius <= 0 else "round"
+            pref = "none" if (self._border_radius <= 0 or self.isFullScreen()) else "round"
             _win_materials.apply_rounded_corners(hwnd, pref)
 
     def _apply_dwm_backdrop(self, hwnd: int):
