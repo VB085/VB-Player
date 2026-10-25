@@ -937,6 +937,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Album view
         self._album_view.albumClicked.connect(self._on_album_clicked)
         self._album_view.importRequested.connect(self._open_folder)
+        self._album_view.albumPlayRequested.connect(self._play_album_from_top)
 
         # Library controller
         self._library_ctrl.playRequested.connect(self._play_from_paths)
@@ -1436,6 +1437,22 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
     def _on_album_clicked(self, album_info):
         self._album_detail_page.show_album(album_info)
         self._content_stack.setCurrentIndex(Page.ALBUM_DETAIL)
+
+    def _play_album_from_top(self, album_info):
+        """右键专辑卡 → 播放: 曲目入主列表,从第一首开始。"""
+        if not album_info.tracks:
+            return
+        paths = [fp for _, fp in album_info.tracks]
+        existing = {self._playlist.track_at(i).get("path") for i in range(self._playlist.count)}
+        new_paths = [p for p in paths if p not in existing]
+        if new_paths:
+            self._playlist.add_files(new_paths)
+        # all rows now in the main playlist — find the album's first track
+        target = paths[0]
+        for i in range(self._playlist.count):
+            if self._playlist.track_at(i).get("path") == target:
+                self._playback_ctrl.play_track_at(i)
+                break
 
     def _toggle_album_view_mode(self):
         if self._album_view.view_mode() == "grid":

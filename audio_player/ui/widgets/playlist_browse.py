@@ -703,51 +703,25 @@ class PlaylistDetailPage(QWidget):
         filepath = idx.data(PlaylistManager.FilePathRole)
         if not filepath:
             return
-
-        from audio_player.ui.theme_helpers import menu_style
-        menu = QMenu(self)
-        menu.setStyleSheet(menu_style())
-
-        # Favorites
-        is_fav = self._is_favorite_fn and self._is_favorite_fn(filepath)
-        fav_text = _("context.unfavorite") if is_fav else _("context.favorite")
-        fav_action = QAction(fav_text, self)
-        fav_action.triggered.connect(lambda: (
-            self.removeFromFavorites.emit([filepath]) if is_fav
-            else self.addToFavorites.emit([filepath])
-        ))
-        menu.addAction(fav_action)
-
-        # Add to playlist
-        if self._get_playlist_names_fn:
-            names = self._get_playlist_names_fn()
-            if names:
-                menu.addSeparator()
-                pls_menu = menu.addMenu(_("context.add_to_playlist"))
-                pls_menu.setStyleSheet(menu.styleSheet())
-                for name in names:
-                    act = QAction(name, self)
-                    act.triggered.connect(lambda checked, n=name: self.addToPlaylist.emit(n, [filepath]))
-                    pls_menu.addAction(act)
-                pls_menu.addSeparator()
-                new_act = QAction(_("context.new_playlist"), self)
-                new_act.triggered.connect(lambda: self.addToPlaylist.emit("", [filepath]))
-                pls_menu.addAction(new_act)
-
-        # Remove from playlist
-        if self._info:
-            menu.addSeparator()
-            rm_act = QAction(_("context.remove"), self)
+        from audio_player.ui.shared import build_track_menu
+        from PyQt6.QtGui import QAction
+        extra = []
+        if self._info:   # removing from THIS playlist is detail-page specific
             row = idx.row()
-            rm_act.triggered.connect(lambda: self.removeFromPlaylist.emit([int(row)]))
-            menu.addAction(rm_act)
-
-        # Edit tags
-        menu.addSeparator()
-        edit_tags_act = QAction(_("context.edit_tags"), self)
-        edit_tags_act.triggered.connect(lambda: self.editTags.emit(filepath))
-        menu.addAction(edit_tags_act)
-
+            rm = QAction(_("context.remove"), self)
+            rm.triggered.connect(lambda: self.removeFromPlaylist.emit([int(row)]))
+            extra.append(rm)
+        menu = build_track_menu(
+            self, [filepath],
+            is_favorite_fn=self._is_favorite_fn,
+            playlist_names_fn=self._get_playlist_names_fn,
+            on_favorite=lambda p, unfav: (
+                self.removeFromFavorites.emit(p) if unfav
+                else self.addToFavorites.emit(p)),
+            on_add_to_playlist=lambda n, p: self.addToPlaylist.emit(n, p),
+            on_edit_tags=self.editTags.emit,
+            extra_actions=extra,
+        )
         menu.exec(self._track_view.viewport().mapToGlobal(pos))
 
     def set_current_playlist_index(self, playlist_idx: int | None):

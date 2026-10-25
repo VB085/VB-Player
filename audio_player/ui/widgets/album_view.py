@@ -98,6 +98,7 @@ from audio_player.ui.utils import (
 
 class AlbumCardWidget(QFrame):
     clicked = pyqtSignal(object)
+    playRequested = pyqtSignal(object)   # album → play from the top
 
     def __init__(self, album: AlbumInfo, parent=None):
         super().__init__(parent)
@@ -184,6 +185,24 @@ class AlbumCardWidget(QFrame):
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
         self.clicked.emit(self._album)
+
+    def contextMenuEvent(self, event):
+        """右键: 播放专辑 / 在文件夹中显示."""
+        from PyQt6.QtGui import QAction
+        from audio_player.ui.theme_helpers import menu_style
+        menu = QMenu(self)
+        menu.setStyleSheet(menu_style())
+        play_act = QAction(_("album.play"), self)
+        play_act.triggered.connect(lambda: self.playRequested.emit(self._album))
+        menu.addAction(play_act)
+        if self._album.tracks:
+            fp = self._album.tracks[0][1]
+            folder = os.path.dirname(fp) if fp else ""
+            if folder:
+                act = QAction(_("context.show_in_explorer"), self)
+                act.triggered.connect(lambda: os.startfile(folder))
+                menu.addAction(act)
+        menu.exec(event.globalPos())
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +388,7 @@ class AlbumGridView(QWidget):
     albumClicked = pyqtSignal(object)
     trackDoubleClicked = pyqtSignal(int)
     importRequested = pyqtSignal()
+    albumPlayRequested = pyqtSignal(object)
 
     CARD_W = 172
     CARD_SPACING = 8
@@ -561,6 +581,7 @@ class AlbumGridView(QWidget):
         for album in slice_:
             card = AlbumCardWidget(album)
             card.clicked.connect(self.albumClicked)
+            card.playRequested.connect(self.albumPlayRequested.emit)
             self._cards.append(card)
         if self._view_mode == "grid":
             self._relayout_grid()
@@ -781,43 +802,17 @@ class AlbumDetailPage(QWidget):
         filepath = idx.data(self._track_model.FilePathRole)
         if not filepath:
             return
-
-        from audio_player.ui.theme_helpers import menu_style
-        menu = QMenu(self)
-        menu.setStyleSheet(menu_style())
-
-        # Favorites toggle
-        is_fav = self._is_favorite_fn and self._is_favorite_fn(filepath)
-        fav_text = _("context.unfavorite") if is_fav else _("context.favorite")
-        fav_action = QAction(fav_text, self)
-        fav_action.triggered.connect(lambda: (
-            self.removeFromFavorites.emit([filepath]) if is_fav
-            else self.addToFavorites.emit([filepath])
-        ))
-        menu.addAction(fav_action)
-
-        # Add to playlist submenu
-        if self._get_playlist_names_fn:
-            names = self._get_playlist_names_fn()
-            if names:
-                menu.addSeparator()
-                pls_menu = menu.addMenu(_("context.add_to_playlist"))
-                pls_menu.setStyleSheet(menu.styleSheet())
-                for name in names:
-                    act = QAction(name, self)
-                    act.triggered.connect(lambda checked, n=name: self.addToPlaylist.emit(n, [filepath]))
-                    pls_menu.addAction(act)
-                pls_menu.addSeparator()
-                new_act = QAction(_("context.new_playlist"), self)
-                new_act.triggered.connect(lambda: self.addToPlaylist.emit("", [filepath]))
-                pls_menu.addAction(new_act)
-
-        # Edit tags
-        menu.addSeparator()
-        edit_tags_act = QAction(_("context.edit_tags"), self)
-        edit_tags_act.triggered.connect(lambda: self.editTags.emit(filepath))
-        menu.addAction(edit_tags_act)
-
+        from audio_player.ui.shared import build_track_menu
+        menu = build_track_menu(
+            self, [filepath],
+            is_favorite_fn=self._is_favorite_fn,
+            playlist_names_fn=self._get_playlist_names_fn,
+            on_favorite=lambda p, unfav: (
+                self.removeFromFavorites.emit(p) if unfav
+                else self.addToFavorites.emit(p)),
+            on_add_to_playlist=lambda n, p: self.addToPlaylist.emit(n, p),
+            on_edit_tags=self.editTags.emit,
+        )
         menu.exec(self._track_view.viewport().mapToGlobal(pos))
 
     def set_current_playlist_index(self, playlist_idx: int | None):

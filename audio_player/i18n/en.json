@@ -364,5 +364,7 @@
   "favorites.empty_title": "No favorites yet",
   "favorites.empty_hint": "Right-click a song and add it to favorites",
   "loading.title": "Loading your library",
-  "loading.count": "{done} / {total} tracks"
+  "loading.count": "{done} / {total} tracks",
+  "context.show_in_explorer": "Show in folder",
+  "album.play": "Play album"
 }

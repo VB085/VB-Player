@@ -318,5 +318,7 @@
   "favorites.empty_title": "還沒有收藏",
   "favorites.empty_hint": "在歌曲上右鍵，加入收藏",
   "loading.title": "正在整理音樂庫",
-  "loading.count": "{done} / {total} 首"
+  "loading.count": "{done} / {total} 首",
+  "context.show_in_explorer": "在資料夾中顯示",
+  "album.play": "播放專輯"
 }

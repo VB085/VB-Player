@@ -486,58 +486,23 @@ class PlaylistView(QListView):
         indices = self.selectedIndexes()
         if not indices:
             return
-
-        paths = []
-        for idx in indices:
-            p = idx.data(model.FilePathRole)
-            if p:
-                paths.append(p)
+        paths = [idx.data(model.FilePathRole) for idx in indices
+                 if idx.data(model.FilePathRole)]
         if not paths:
             return
 
-        from audio_player.ui.theme_helpers import menu_style
-        menu = QMenu(self)
-        menu.setStyleSheet(menu_style())
-
-        # Favorites toggle
-        all_fav = self._is_favorite_fn and all(self._is_favorite_fn(p) for p in paths)
-        fav_text = _("context.unfavorite") if all_fav else _("context.favorite")
-        fav_action = QAction(fav_text, self)
-        fav_action.triggered.connect(lambda: (
-            self.removeFromFavorites.emit(paths) if all_fav
-            else self.addToFavorites.emit(paths)
-        ))
-        menu.addAction(fav_action)
-
-        # Play next
-        menu.addSeparator()
-        play_next_act = QAction(_("context.play_next"), self)
-        play_next_act.triggered.connect(lambda: self.playNext.emit(paths))
-        menu.addAction(play_next_act)
-
-        # Add to playlist submenu
-        if self._get_playlist_names_fn:
-            names = self._get_playlist_names_fn()
-            if names:
-                menu.addSeparator()
-                pls_menu = menu.addMenu(_("context.add_to_playlist"))
-                pls_menu.setStyleSheet(menu.styleSheet())
-                for name in names:
-                    act = QAction(name, self)
-                    act.triggered.connect(lambda checked, n=name: self.addToPlaylist.emit(n, paths))
-                    pls_menu.addAction(act)
-                pls_menu.addSeparator()
-                new_act = QAction(_("context.new_playlist"), self)
-                new_act.triggered.connect(lambda: self.addToPlaylist.emit("", paths))
-                pls_menu.addAction(new_act)
-
-        # Edit tags (single file only)
-        if len(paths) == 1:
-            menu.addSeparator()
-            edit_tags_act = QAction(_("context.edit_tags"), self)
-            edit_tags_act.triggered.connect(lambda: self.editTags.emit(paths[0]))
-            menu.addAction(edit_tags_act)
-
+        from audio_player.ui.shared import build_track_menu
+        menu = build_track_menu(
+            self, paths,
+            is_favorite_fn=self._is_favorite_fn,
+            playlist_names_fn=self._get_playlist_names_fn,
+            on_favorite=lambda p, unfav: (
+                self.removeFromFavorites.emit(p) if unfav
+                else self.addToFavorites.emit(p)),
+            on_play_next=self.playNext.emit,
+            on_add_to_playlist=lambda n, p: self.addToPlaylist.emit(n, p),
+            on_edit_tags=self.editTags.emit,
+        )
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def dragEnterEvent(self, event):

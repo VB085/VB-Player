@@ -318,5 +318,7 @@
   "favorites.empty_title": "お気に入りはまだありません",
   "favorites.empty_hint": "曲を右クリックしてお気に入りに追加",
   "loading.title": "ライブラリを整理しています",
-  "loading.count": "{done} / {total} 曲"
+  "loading.count": "{done} / {total} 曲",
+  "context.show_in_explorer": "フォルダーで表示",
+  "album.play": "アルバムを再生"
 }
