@@ -7,7 +7,7 @@ from PyQt6.QtCore import (Qt, pyqtSignal, QSettings, QSize, QRect,
                          QModelIndex, QAbstractListModel, QTimer, QThread)
 from typing import Callable
 from PyQt6.QtGui import (QPainter, QColor, QFont, QPen, QPixmap, QFontMetrics,
-                         QPainterPath, QAction)
+                         QPainterPath, QAction, QImage)
 from audio_player.app import current_accent, current_theme_mode
 import os
 import threading
@@ -18,22 +18,23 @@ class _AlbumThumbDecoder(QThread):
     delivers them via signal — a synchronous loadFromData per album card
     (3-8 ms × 123 albums) was multi-second GUI stall territory."""
 
-    ready = pyqtSignal(object, QPixmap)   # (cover QLabel, pixmap)
+    ready = pyqtSignal(str, QImage)       # (album key, image)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._queue: list = []   # (album, cover_label, radius_px)
+        self._queue: list = []   # (album, key, radius_px)
         self._lock = threading.Lock()
         self._wake = threading.Event()
 
-    def request_pixmap(self, album, cover_label, radius_px: str):
+    def request_pixmap(self, album, key: str, radius_px: str):
         with self._lock:
-            self._queue.append((album, cover_label, radius_px))
+            self._queue.append((album, key, radius_px))
         self._wake.set()
         if not self.isRunning():
             self.start()
 
     def run(self):
+        from PyQt6.QtGui import QImage
         while True:
             self._wake.wait(timeout=2.0)
             self._wake.clear()
@@ -42,27 +43,43 @@ class _AlbumThumbDecoder(QThread):
                 self._queue = []
             if not batch:
                 continue
-            for album, cover_label, radius_px in batch:
-                pix = QPixmap()
-                ok = pix.loadFromData(album.cover_data) if album.cover_data else False
-                if not ok or pix.isNull():
+            for album, key, radius_px in batch:
+                # QImage in this thread — QPixmap creation is GUI-bound
+                img = QImage()
+                ok = img.loadFromData(album.cover_data) if album.cover_data else False
+                if not ok or img.isNull():
                     continue
-                scaled = pix.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
+                scaled = img.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation)
                 radius = 12 if radius_px == "12px" else 2
-                rounded = QPixmap(142, 142)
+                rounded = QImage(142, 142, QImage.Format.Format_ARGB32)
                 rounded.fill(Qt.GlobalColor.transparent)
                 pt = QPainter(rounded)
                 pt.setRenderHint(QPainter.RenderHint.Antialiasing)
                 path = QPainterPath()
                 path.addRoundedRect(0, 0, 142, 142, radius, radius)
                 pt.setClipPath(path)
-                pt.drawPixmap(0, 0, scaled)
+                pt.drawImage(0, 0, scaled)
                 pt.end()
-                self.ready.emit(cover_label, rounded)
+                self.ready.emit(key, rounded)
 
 
 _album_thumb_decoder = _AlbumThumbDecoder()
+# key → cover QLabel of the live card; the decoder's ready signal looks the
+# label up here on the GUI thread (labels die with their cards — passing
+# the widget itself through the queue delivered to dead objects)
+_album_cover_registry: dict[str, QLabel] = {}
+
+
+def _on_album_cover_ready(key: str, img):
+    cover = _album_cover_registry.get(key)
+    if cover is None:
+        return   # card was rebuilt/destroyed meanwhile — drop
+    from PyQt6.QtGui import QPixmap
+    cover.setPixmap(QPixmap.fromImage(img))
+
+
+_album_thumb_decoder.ready.connect(_on_album_cover_ready)
 
 from audio_player.player.album_manager import AlbumInfo
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
@@ -100,9 +117,10 @@ class AlbumCardWidget(QFrame):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Cover art — placeholder now; the real pixmap is decoded by
-        # _ThumbDecoder off the GUI thread and delivered via callback
-        # (a synchronous loadFromData here is 3-8 ms per album × 123
-        # albums = multi-second GUI stalls during any grid rebuild)
+        # _AlbumThumbDecoder off the GUI thread and delivered via the
+        # key registry (a synchronous loadFromData here is 3-8 ms per
+        # album × 123 albums = multi-second GUI stalls on grid rebuilds)
+        key = album.name or "\u0001"
         cover_radius = str(QSettings("VBPlayer", "VB Player").value("album_cover_radius", "true")).lower() == "true"
         radius_px = "12px" if cover_radius else "2px"
         cover = QLabel()
@@ -110,7 +128,8 @@ class AlbumCardWidget(QFrame):
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
         if album.cover_data:
-            _album_thumb_decoder.request_pixmap(album, cover, radius_px)
+            _album_cover_registry[key] = cover
+            _album_thumb_decoder.request_pixmap(album, key, radius_px)
         else:
             _set_placeholder_icon(cover)
             cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
@@ -494,12 +513,12 @@ class AlbumGridView(QWidget):
             self._albums = list(self._all_albums)
 
         # Reuse cards by key — second visit is instant
-        old = {(c._album.name or "", c._album.artist or ""): c for c in self._cards}
+        old = {(c._album.name or ""): c for c in self._cards}
         kept = set()
         new = []
         pending = []
         for album in self._albums:
-            key = (album.name or "", album.artist or "")
+            key = album.name or ""
             card = old.get(key)
             if card is not None:
                 kept.add(id(card))
@@ -515,6 +534,9 @@ class AlbumGridView(QWidget):
             QTimer.singleShot(30, self._build_pending_slice)
         for card in self._cards:
             if id(card) not in kept and id(card) not in {id(c) for c in new}:
+                gone = card._album.name or ""
+                if _album_cover_registry.get(gone) is card:
+                    _album_cover_registry.pop(gone, None)
                 card.setParent(None); card.deleteLater()
         self._cards = new
 
