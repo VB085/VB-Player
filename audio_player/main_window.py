@@ -419,6 +419,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # ===== Overlay stack: body | hifi (also used as now-playing overlay) =====
         self._hifi_page = HiFiQmlPage()
         self._hifi_page.hide()
+        # immersive page background breathes with the music
+        self._hifi_page.set_spectrum_source(lambda: self._engine.spectrum_bands)
         self._now_playing_page = self._hifi_page  # same widget, reused
         self._hifi_overlay = QStackedWidget()
         self._hifi_overlay.addWidget(self._body)       # 0: normal

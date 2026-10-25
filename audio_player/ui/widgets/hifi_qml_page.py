@@ -4,7 +4,7 @@ import os
 import queue
 import tempfile
 from pathlib import Path
-from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QThread, QTimer
 from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtQuickWidgets import QQuickWidget
 from PyQt6.QtWidgets import QApplication
@@ -116,12 +116,24 @@ class HiFiQmlPage(QQuickWidget):
         self._position_ms = 0
         self._duration_ms = 0
         self._is_playing = False
+        self._spectrum_source = None
+        self._energy_timer = QTimer(self)
+        self._energy_timer.setInterval(50)  # 20 fps
+        self._energy_timer.timeout.connect(self._push_energy)
         self._cover_worker: _CoverWorker | None = None
         self._cover_gen = 0
         self._lyrics_times: list[int] = []
         self._last_lyrics_idx = -2
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_energy_timer()
+
+    def hideEvent(self, event):
+        self._energy_timer.stop()
+        super().hideEvent(event)
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._stop_cover_worker)
@@ -182,6 +194,39 @@ class HiFiQmlPage(QQuickWidget):
         self._is_playing = playing
         root = self.rootObject()
         if root: root.setProperty("isPlaying", playing)
+        self._update_energy_timer()
+
+    def set_spectrum_source(self, fn):
+        """fn() → list of 0..1 band values; drives the background breathing."""
+        self._spectrum_source = fn
+        self._update_energy_timer()
+
+    def _update_energy_timer(self):
+        """Run the energy push only while visible AND playing."""
+        should_run = self.isVisible() and self._is_playing and self._spectrum_source is not None
+        if should_run and not self._energy_timer.isActive():
+            self._energy_timer.start()
+        elif not should_run and self._energy_timer.isActive():
+            self._energy_timer.stop()
+            root = self.rootObject()
+            if root: root.setProperty("energyLevel", 0.0)
+
+    def _push_energy(self):
+        fn = self._spectrum_source
+        root = self.rootObject()
+        if fn is None or root is None:
+            return
+        try:
+            bands = fn()
+        except Exception:
+            bands = None
+        if not bands:
+            root.setProperty("energyLevel", 0.0)
+            return
+        # perceived loudness: mean of bands, soft-clamped (×2.5 keeps the
+        # quiet verse ~0.25 and pushes the chorus into the felt range)
+        e = min(1.0, (sum(bands) / len(bands)) * 2.5)
+        root.setProperty("energyLevel", e)
 
     def set_quality(self, text: str):
         root = self.rootObject()
