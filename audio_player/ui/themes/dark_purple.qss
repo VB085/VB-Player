@@ -55,7 +55,9 @@ QSlider::handle:vertical { background: @ACCENT_LIGHT@; height: 14px; width: 14px
 
 /* Cards */
 QFrame#albumCard { background: #2d2d2d; border: 1px solid #333; border-radius: 10px; }
-QFrame#albumCard:hover { background: #363636; border-color: #444; }
+QFrame#albumCard:hover { background: #363636; border: 1px solid @ACCENT@; }
+QFrame#playlistCard { background: #2d2d2d; border: 1px solid #333; border-radius: 10px; }
+QFrame#playlistCard:hover { background: #363636; border: 1px solid @ACCENT@; }
 
 /* ---- Labels ---- */
 QLabel { color: #eee; font-size: 12px; }
