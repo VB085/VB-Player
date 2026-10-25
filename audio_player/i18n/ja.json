@@ -309,5 +309,12 @@
   "volume.mute_hint": "ミュート",
   "volume.unmute_hint": "ミュート解除",
   "transport.play_pause": "再生 / 一時停止",
-  "settings.show_tooltips": "ホバーヒントを表示"
+  "settings.show_tooltips": "ホバーヒントを表示",
+  "playlist.no_playlists_title": "プレイリストはまだありません",
+  "playlist.no_playlists_hint": "作成して、好きな曲をまとめましょう",
+  "album.no_albums_title": "アルバムはまだありません",
+  "album.no_albums_hint": "音楽フォルダを取り込むと自動で整理されます",
+  "album.import_action": "音楽を取り込む",
+  "favorites.empty_title": "お気に入りはまだありません",
+  "favorites.empty_hint": "曲を右クリックしてお気に入りに追加"
 }

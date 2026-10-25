@@ -376,5 +376,12 @@
   "volume.mute_hint": "静音",
   "volume.unmute_hint": "取消静音",
   "transport.play_pause": "播放 / 暂停",
-  "settings.show_tooltips": "显示悬停提示"
+  "settings.show_tooltips": "显示悬停提示",
+  "playlist.no_playlists_title": "还没有歌单",
+  "playlist.no_playlists_hint": "建一个，把喜欢的歌收在一起",
+  "album.no_albums_title": "还没有专辑",
+  "album.no_albums_hint": "导入音乐文件夹后自动整理",
+  "album.import_action": "导入音乐",
+  "favorites.empty_title": "还没有收藏",
+  "favorites.empty_hint": "在歌曲上右键，加入收藏"
 }

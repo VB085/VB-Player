@@ -313,6 +313,7 @@ class AlbumListView(QListView):
 class AlbumGridView(QWidget):
     albumClicked = pyqtSignal(object)
     trackDoubleClicked = pyqtSignal(int)
+    importRequested = pyqtSignal()
 
     CARD_W = 172
     CARD_SPACING = 8
@@ -325,6 +326,7 @@ class AlbumGridView(QWidget):
         self._cards: list[AlbumCardWidget] = []
         self._view_mode = "grid"
         self._filter_text = ""
+        self._empty_state = None
 
         # Debounce timer for resize
         self._relayout_timer = QTimer(self)
@@ -399,14 +401,24 @@ class AlbumGridView(QWidget):
                 item.widget().hide()
 
         if not self._albums:
-            empty = QLabel(_("album.no_albums"))
-            empty.setObjectName("emptyState")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._grid.addWidget(empty, 0, 0)
+            if self._empty_state is None:
+                from audio_player.ui.widgets.empty_state import EmptyStateWidget
+                self._empty_state = EmptyStateWidget(
+                    "fa6s.compact-disc", _("album.no_albums_title"),
+                    _("album.no_albums_hint"), _("album.import_action"))
+                self._empty_state.actionClicked.connect(self.importRequested.emit)
+            vp = self._scroll.viewport()
+            self._empty_state.setParent(vp)
+            self._empty_state.setGeometry(vp.rect())
+            self._empty_state.show()
+            self._empty_state.raise_()
             # Hide cached cards
             for card in self._cards:
                 card.hide()
             return
+
+        if self._empty_state is not None:
+            self._empty_state.hide()
 
         avail_w = self._scroll.viewport().width() if self._scroll.viewport() else self.width()
         cols = max(1, (avail_w + self.CARD_SPACING) // (self.CARD_W + self.CARD_SPACING))
@@ -488,6 +500,8 @@ class AlbumGridView(QWidget):
         super().resizeEvent(event)
         if self._view_mode == "grid" and self._albums:
             self._relayout_grid()
+        elif self._empty_state is not None and self._empty_state.isVisible():
+            self._empty_state.setGeometry(self._scroll.viewport().rect())
 
 
 # ---------------------------------------------------------------------------

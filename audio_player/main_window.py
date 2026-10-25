@@ -570,6 +570,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._fav_view.removeFromFavorites.connect(self._library_ctrl.on_remove_from_favorites)
         self._fav_view.addToPlaylist.connect(self._library_ctrl.on_add_to_playlist)
         layout.addWidget(self._fav_view, 1)
+        from audio_player.ui.widgets.empty_state import EmptyStateWidget
+        self._fav_empty = EmptyStateWidget(
+            "fa6s.star", _("favorites.empty_title"), _("favorites.empty_hint"))
+        self._fav_empty.setParent(self._fav_view.viewport())
+        self._fav_empty.hide()
         return w
 
     def _build_playlists_page(self) -> QWidget:
@@ -615,6 +620,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._pls_grid_view.playlistClicked.connect(self._on_playlist_clicked)
         self._pls_grid_view.editRequested.connect(self._on_edit_playlist)
         self._pls_grid_view.deleteRequested.connect(self._on_delete_playlist)
+        self._pls_grid_view.createRequested.connect(self._create_new_playlist)
         layout.addWidget(self._pls_grid_view, 1)
         return w
 
@@ -625,6 +631,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._fav_playlist.add_files(paths)
         self._fav_proxy.invalidateFilter()
         self._fav_label.setText(_("page.favorites_count", count=len(paths)))
+        # empty-state overlay on the list viewport
+        if paths:
+            self._fav_empty.hide()
+        else:
+            self._fav_empty.setGeometry(self._fav_view.viewport().rect())
+            self._fav_empty.show()
+            self._fav_empty.raise_()
 
     def _refresh_playlists_page(self):
         names = self._library.get_playlist_names()
@@ -906,6 +919,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         # Album view
         self._album_view.albumClicked.connect(self._on_album_clicked)
+        self._album_view.importRequested.connect(self._open_folder)
 
         # Library controller
         self._library_ctrl.playRequested.connect(self._play_from_paths)

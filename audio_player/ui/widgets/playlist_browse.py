@@ -360,6 +360,7 @@ class PlaylistGridView(QWidget):
     playlistClicked = pyqtSignal(object)
     editRequested = pyqtSignal(object)
     deleteRequested = pyqtSignal(object)
+    createRequested = pyqtSignal()
 
     CARD_W = 172
     CARD_SPACING = 8
@@ -392,10 +393,12 @@ class PlaylistGridView(QWidget):
         self._grid_layout.setSpacing(self.CARD_SPACING)
         self._grid_scroll.setWidget(self._grid_container)
 
-        # No-playlists label
-        self._empty_label = QLabel(_("playlist.no_playlists"))
-        self._empty_label.setObjectName("emptyState")
-        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # No-playlists empty state
+        from audio_player.ui.widgets.empty_state import EmptyStateWidget
+        self._empty_label = EmptyStateWidget(
+            "fa6s.rectangle-list", _("playlist.no_playlists_title"),
+            _("playlist.no_playlists_hint"), _("playlist.new"))
+        self._empty_label.actionClicked.connect(self.createRequested.emit)
         self._empty_label.setVisible(False)
 
         # List page
@@ -460,9 +463,11 @@ class PlaylistGridView(QWidget):
                 w.hide()
 
         if not self._cards:
-            self._empty_label.setVisible(True)
-            self._empty_label.setParent(self._grid_container)
-            self._grid_layout.addWidget(self._empty_label, 0, 0)
+            vp = self._grid_scroll.viewport()
+            self._empty_label.setParent(vp)
+            self._empty_label.setGeometry(vp.rect())
+            self._empty_label.show()
+            self._empty_label.raise_()
             return
 
         self._empty_label.setVisible(False)
@@ -506,6 +511,9 @@ class PlaylistGridView(QWidget):
         super().resizeEvent(event)
         if self._view_mode == "grid" and self._playlists:
             self._relayout_grid()
+        elif self._empty_label.isVisible():
+            # keep the empty state filling the viewport
+            self._empty_label.setGeometry(self._grid_scroll.viewport().rect())
 
 
 # ---------------------------------------------------------------------------

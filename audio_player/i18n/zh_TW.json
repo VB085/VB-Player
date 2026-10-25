@@ -309,5 +309,12 @@
   "volume.mute_hint": "靜音",
   "volume.unmute_hint": "取消靜音",
   "transport.play_pause": "播放 / 暫停",
-  "settings.show_tooltips": "顯示懸停提示"
+  "settings.show_tooltips": "顯示懸停提示",
+  "playlist.no_playlists_title": "還沒有歌單",
+  "playlist.no_playlists_hint": "建一個，把喜歡的歌收在一起",
+  "album.no_albums_title": "還沒有專輯",
+  "album.no_albums_hint": "匯入音樂資料夾後自動整理",
+  "album.import_action": "匯入音樂",
+  "favorites.empty_title": "還沒有收藏",
+  "favorites.empty_hint": "在歌曲上右鍵，加入收藏"
 }

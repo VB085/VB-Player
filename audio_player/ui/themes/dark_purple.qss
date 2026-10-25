@@ -131,6 +131,8 @@ QWidget#settingsDragBar { background: #242424; }
 QLabel#settingsDragLabel { color: #bbb; font-size: 13px; font-weight: 500; }
 
 QLabel#emptyState { color: #888; font-size: 13px; }
+QLabel#emptyTitle { color: #bbb; font-size: 15px; font-weight: 600; }
+QLabel#emptyHint { color: #777; font-size: 12px; }
 
 /* Dialog */
 QDialog { background: #2d2d2d; border: 1px solid #444; border-radius: 12px; }

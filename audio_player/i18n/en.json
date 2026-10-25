@@ -355,5 +355,12 @@
   "volume.mute_hint": "Mute",
   "volume.unmute_hint": "Unmute",
   "transport.play_pause": "Play / Pause",
-  "settings.show_tooltips": "Show hover hints"
+  "settings.show_tooltips": "Show hover hints",
+  "playlist.no_playlists_title": "No playlists yet",
+  "playlist.no_playlists_hint": "Make one and gather the songs you like",
+  "album.no_albums_title": "No albums yet",
+  "album.no_albums_hint": "Import a music folder to get started",
+  "album.import_action": "Import music",
+  "favorites.empty_title": "No favorites yet",
+  "favorites.empty_hint": "Right-click a song and add it to favorites"
 }
