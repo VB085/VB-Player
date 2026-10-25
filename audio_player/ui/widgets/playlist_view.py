@@ -1,15 +1,20 @@
 import os
+import threading
+import time
 from typing import Callable
 from PyQt6.QtWidgets import (QListView, QStyledItemDelegate, QStyle,
                              QAbstractItemView, QMenu)
 from PyQt6.QtCore import (Qt, pyqtSignal, QSize, QRect, QRectF, QModelIndex,
-                          QSortFilterProxyModel, QSettings, QTimer, QPoint)
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QAction, QPixmap, QPainterPath
+                          QSortFilterProxyModel, QSettings, QTimer, QPoint,
+                          QThread)
+from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QAction, QPixmap,
+                         QPainterPath, QImage)
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
 
-# Per-delegate thumbnail cache: filepath → QPixmap
-_cover_cache: dict[str, QPixmap] = {}
+# Per-delegate thumbnail cache: filepath → QImage (thread-built;
+# paint() draws it directly — QImage.drawPixmap is fine in paintEvent)
+_cover_cache: dict[str, QImage] = {}
 _COVER_CACHE_MAX = 3000  # 40×40 ARGB ≈ 6.5 KB each — 3000 ≈ 20 MB, fine
 _current_file: str = ""  # globally tracked for playing indicator
 _highlight_mode: str = "glow"  # cached QSettings value — avoid I/O in paint()
@@ -63,35 +68,102 @@ def _source_row(model, proxy_index):
 
 
 def _thumbnail(src, index: QModelIndex, filepath: str) -> QPixmap | None:
-    """Return cached 40×40 rounded cover thumbnail, or generate and cache."""
+    """Return the cached 40×40 rounded thumbnail, or None while a
+    background worker decodes it (never decode on the GUI thread —
+    full-size JPEG loadFromData + smooth scale per visible row was THE
+    scroll-stutter source: p90 225 ms)."""
+    if filepath in _cover_cache:
+        return _cover_cache[filepath]
     cover_data = index.data(src.CoverDataRole) if src else None
     if not cover_data:
         return None
-    # Fast path: filepath is unique — cover data doesn't change for same file
-    if filepath in _cover_cache:
-        return _cover_cache[filepath]
-    pix = QPixmap()
-    pix.loadFromData(cover_data)
-    if pix.isNull():
-        return None
-    scaled = pix.scaled(THUMB_SIZE, THUMB_SIZE,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation)
-    rounded = QPixmap(THUMB_SIZE, THUMB_SIZE)
-    rounded.fill(Qt.GlobalColor.transparent)
-    pp = QPainter(rounded)
-    pp.setRenderHint(QPainter.RenderHint.Antialiasing)
-    path = QPainterPath()
-    path.addRoundedRect(0, 0, THUMB_SIZE, THUMB_SIZE, THUMB_RADIUS, THUMB_RADIUS)
-    pp.setClipPath(path)
-    pp.drawPixmap((THUMB_SIZE - scaled.width()) // 2,
-                  (THUMB_SIZE - scaled.height()) // 2, scaled)
-    pp.end()
-    _cover_cache[filepath] = rounded
-    if len(_cover_cache) > _COVER_CACHE_MAX:
-        for k in list(_cover_cache.keys())[:500]:
-            del _cover_cache[k]
-    return rounded
+    _thumb_decoder.request(filepath, cover_data)
+    return None
+
+
+class _ThumbDecoder(QThread):
+    """Decodes full-size cover JPEGs into rounded thumbnails off the GUI
+    thread. Results land in _cover_cache; views repaint via a signal."""
+
+    ready = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._queue: dict[str, bytes | None] = {}
+        self._meta_hints: dict[str, object] = {}
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+
+    def request(self, filepath: str, cover_data: bytes):
+        with self._lock:
+            self._queue[filepath] = cover_data
+        self._wake.set()
+        if not self.isRunning():
+            self.start()
+
+    def request_lazy(self, filepath: str, meta):
+        """Queue a lazy-cover row: the worker reads the cover disk cache
+        itself (main thread must not touch the filesystem)."""
+        with self._lock:
+            if filepath not in self._queue:
+                self._queue[filepath] = None  # None = read from cover cache
+        self._meta_hints[filepath] = meta
+        self._wake.set()
+        if not self.isRunning():
+            self.start()
+
+    def run(self):
+        while True:
+            self._wake.wait(timeout=2.0)
+            self._wake.clear()
+            with self._lock:
+                batch = dict(self._queue)
+                self._queue.clear()
+                meta_hints = dict(self._meta_hints)
+                self._meta_hints.clear()
+            if not batch:
+                continue
+            from audio_player.player.metadata import ensure_cover
+            from PyQt6.QtGui import QImage
+            for filepath, data in batch.items():
+                if data is None:
+                    meta = meta_hints.get(filepath)
+                    if meta is None or getattr(meta, "cover_data", None):
+                        continue
+                    ensure_cover(filepath, meta)
+                    data = meta.cover_data
+                    if not data:
+                        continue
+                # QImage only in this thread — QPixmap is GUI-thread-bound
+                img = QImage()
+                if img.loadFromData(data) and not img.isNull():
+                    scaled = img.scaled(THUMB_SIZE, THUMB_SIZE,
+                                        Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)
+                    rounded = QImage(THUMB_SIZE, THUMB_SIZE,
+                                     QImage.Format.Format_ARGB32)
+                    rounded.fill(Qt.GlobalColor.transparent)
+                    pp = QPainter(rounded)
+                    pp.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    path = QPainterPath()
+                    path.addRoundedRect(0, 0, THUMB_SIZE, THUMB_SIZE,
+                                        THUMB_RADIUS, THUMB_RADIUS)
+                    pp.setClipPath(path)
+                    pp.drawImage((THUMB_SIZE - scaled.width()) // 2,
+                                 (THUMB_SIZE - scaled.height()) // 2, scaled)
+                    pp.end()
+                    _cover_cache[filepath] = rounded
+                    if len(_cover_cache) > _COVER_CACHE_MAX:
+                        for k in list(_cover_cache.keys())[:500]:
+                            del _cover_cache[k]
+                    self.ready.emit(filepath)
+                # yield aggressively — this thread must never starve the GUI
+                # thread's render/scroll work on low-core machines
+                time.sleep(0.008)
+
+
+_thumb_decoder = _ThumbDecoder()
+_thumb_decoder.ready.connect(lambda _p: None)  # views connect viewport updates
 
 
 class _PlaylistDelegate(QStyledItemDelegate):
@@ -156,9 +228,9 @@ class _PlaylistDelegate(QStyledItemDelegate):
             painter.setBrush(accent)
             painter.drawRoundedRect(QRect(rect.x() + 4, rect.y() + 8, 4, rect.height() - 16), 2, 2)
 
-        # Cover pixmap
+        # Cover image (QImage from the decoder thread — drawImage takes it)
         if thumb and not thumb.isNull():
-            painter.drawPixmap(cover_x, cover_y, thumb)
+            painter.drawImage(cover_x, cover_y, thumb)
         else:
             placeholder = QColor("#2a2a2a") if not is_light else QColor("#e0e0e0")
             painter.setPen(Qt.PenStyle.NoPen)
@@ -265,6 +337,10 @@ class PlaylistView(QListView):
         self._prewarm_timer.setSingleShot(True)
         self._prewarm_timer.setInterval(0)
         self._prewarm_timer.timeout.connect(self._prewarm_step)
+        # thumbnails decode off-thread — repaint only the row that got one
+        # (a full-viewport update per thumbnail was an update storm while
+        # scrolling: dozens of full repaints per second)
+        _thumb_decoder.ready.connect(self._on_thumb_ready)
 
         self.clicked.connect(self._on_click)
         self.doubleClicked.connect(self._on_double_click)
@@ -291,6 +367,18 @@ class PlaylistView(QListView):
     def showEvent(self, event):
         super().showEvent(event)
         self._prio_timer.start()
+
+    def _on_thumb_ready(self, filepath: str):
+        """Repaint only the row whose thumbnail finished — never the whole
+        viewport (full-view updates per thumbnail were an update storm)."""
+        model = self.model()
+        if model is None:
+            return
+        for row in range(min(model.rowCount(), 200)):  # visible region only
+            idx = model.index(row, 0)
+            if idx.data(Qt.ItemDataRole.UserRole + 5) == filepath:  # FilePathRole
+                self.update(idx)
+                return
 
     def _prioritize_visible(self):
         model = self.model()
@@ -356,11 +444,11 @@ class PlaylistView(QListView):
             if not path or path in _cover_cache:
                 continue
             if not idx.data(model.CoverDataRole):
-                # lazy covers: bulk load skipped the bytes — fetch on idle
+                # lazy covers: bulk load skipped the bytes — hand the row to
+                # the decoder thread, which reads the cover cache off-thread
                 meta = model.track_metadata(row) if hasattr(model, "track_metadata") else None
                 if meta is not None and getattr(meta, "cover_data", None) is None:
-                    from audio_player.player.metadata import ensure_cover
-                    ensure_cover(path, meta)
+                    _thumb_decoder.request_lazy(path, meta)
                     generated += 1
                 if not idx.data(model.CoverDataRole):
                     continue

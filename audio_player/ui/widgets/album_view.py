@@ -4,12 +4,65 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSplitter, QSizePolicy, QListView, QStyledItemDelegate,
                              QStyle, QLayout, QMenu)
 from PyQt6.QtCore import (Qt, pyqtSignal, QSettings, QSize, QRect,
-                         QModelIndex, QAbstractListModel, QTimer)
+                         QModelIndex, QAbstractListModel, QTimer, QThread)
 from typing import Callable
 from PyQt6.QtGui import (QPainter, QColor, QFont, QPen, QPixmap, QFontMetrics,
                          QPainterPath, QAction)
 from audio_player.app import current_accent, current_theme_mode
 import os
+import threading
+
+
+class _AlbumThumbDecoder(QThread):
+    """Decodes album-cover pixmaps (142px rounded) off the GUI thread and
+    delivers them via signal — a synchronous loadFromData per album card
+    (3-8 ms × 123 albums) was multi-second GUI stall territory."""
+
+    ready = pyqtSignal(object, QPixmap)   # (cover QLabel, pixmap)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._queue: list = []   # (album, cover_label, radius_px)
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+
+    def request_pixmap(self, album, cover_label, radius_px: str):
+        with self._lock:
+            self._queue.append((album, cover_label, radius_px))
+        self._wake.set()
+        if not self.isRunning():
+            self.start()
+
+    def run(self):
+        while True:
+            self._wake.wait(timeout=2.0)
+            self._wake.clear()
+            with self._lock:
+                batch = self._queue
+                self._queue = []
+            if not batch:
+                continue
+            for album, cover_label, radius_px in batch:
+                pix = QPixmap()
+                ok = pix.loadFromData(album.cover_data) if album.cover_data else False
+                if not ok or pix.isNull():
+                    continue
+                scaled = pix.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)
+                radius = 12 if radius_px == "12px" else 2
+                rounded = QPixmap(142, 142)
+                rounded.fill(Qt.GlobalColor.transparent)
+                pt = QPainter(rounded)
+                pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+                path = QPainterPath()
+                path.addRoundedRect(0, 0, 142, 142, radius, radius)
+                pt.setClipPath(path)
+                pt.drawPixmap(0, 0, scaled)
+                pt.end()
+                self.ready.emit(cover_label, rounded)
+
+
+_album_thumb_decoder = _AlbumThumbDecoder()
 
 from audio_player.player.album_manager import AlbumInfo
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
@@ -46,7 +99,10 @@ class AlbumCardWidget(QFrame):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Cover art
+        # Cover art — placeholder now; the real pixmap is decoded by
+        # _ThumbDecoder off the GUI thread and delivered via callback
+        # (a synchronous loadFromData here is 3-8 ms per album × 123
+        # albums = multi-second GUI stalls during any grid rebuild)
         cover_radius = str(QSettings("VBPlayer", "VB Player").value("album_cover_radius", "true")).lower() == "true"
         radius_px = "12px" if cover_radius else "2px"
         cover = QLabel()
@@ -54,27 +110,7 @@ class AlbumCardWidget(QFrame):
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
         if album.cover_data:
-            pix = QPixmap()
-            ok = pix.loadFromData(album.cover_data)
-            if ok and not pix.isNull():
-                scaled_pix = pix.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
-                                        Qt.TransformationMode.SmoothTransformation)
-                if cover_radius:
-                    rounded = QPixmap(142, 142)
-                    rounded.fill(Qt.GlobalColor.transparent)
-                    pt = QPainter(rounded)
-                    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                    path = QPainterPath()
-                    path.addRoundedRect(0, 0, 142, 142, 12, 12)
-                    pt.setClipPath(path)
-                    pt.drawPixmap(0, 0, scaled_pix)
-                    pt.end()
-                    cover.setPixmap(rounded)
-                else:
-                    cover.setPixmap(scaled_pix)
-            else:
-                _set_placeholder_icon(cover)
-                cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
+            _album_thumb_decoder.request_pixmap(album, cover, radius_px)
         else:
             _set_placeholder_icon(cover)
             cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
@@ -445,9 +481,9 @@ class AlbumGridView(QWidget):
         self._filter_text = text.lower()
         self._apply_filter()
 
-    _CARD_SLICE = 25   # cards built per tick — one full rebuild of 100+
-                       # cards (loadFromData + smooth scale each) froze the
-                       # GUI for ~2 s at end of the startup load
+    _CARD_SLICE = 8    # cards per tick — one loadFromData+smooth-scale is
+                       # 3-8 ms, so a slice must stay under a frame; ticks
+                       # are spaced 30 ms to leave the loop to interaction
 
     def _apply_filter(self):
         if self._filter_text:
@@ -476,7 +512,7 @@ class AlbumGridView(QWidget):
         from PyQt6.QtCore import QTimer
         self._pending_albums = pending
         if pending:
-            QTimer.singleShot(0, self._build_pending_slice)
+            QTimer.singleShot(30, self._build_pending_slice)
         for card in self._cards:
             if id(card) not in kept and id(card) not in {id(c) for c in new}:
                 card.setParent(None); card.deleteLater()
@@ -509,7 +545,7 @@ class AlbumGridView(QWidget):
         else:
             self._list_view.set_albums(self._albums)
         if self._pending_albums:
-            QTimer.singleShot(0, self._build_pending_slice)
+            QTimer.singleShot(30, self._build_pending_slice)
         else:
             self._pending_albums = None
 
