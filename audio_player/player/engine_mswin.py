@@ -67,6 +67,12 @@ class MSAudioEngine(QObject):
         self._seek_offset_ms = 0
         self._play_start_time = 0
 
+        # Live spectrum for visualizers: the WASAPI feed thread taps the
+        # decoded PCM (last 2048 frames → 8 log-spaced bands, ~20 fps).
+        # Plain attribute swap — readers on the UI thread need no lock.
+        self.spectrum_bands = [0.0] * 8
+        self._tap_last = 0.0
+
         # WASAPI
         self._sd_stream = None
         self._sd_rate = 0          # sample rate the persistent stream runs at
@@ -326,6 +332,7 @@ class MSAudioEngine(QObject):
         self._app_state = PlaybackState.Paused
         self.stateChanged.emit(PlaybackState.Paused)
         self._poll_timer.stop()
+        self.spectrum_bands = [0.0] * 8
 
     def stop(self):
         self._stop_event.set()
@@ -364,6 +371,7 @@ class MSAudioEngine(QObject):
         self._app_state = PlaybackState.Stopped
         self.stateChanged.emit(PlaybackState.Stopped)
         self._poll_timer.stop()
+        self.spectrum_bands = [0.0] * 8
 
     def toggle(self):
         if self._app_state == PlaybackState.Playing:
@@ -557,6 +565,38 @@ class MSAudioEngine(QObject):
         t.start()
         t.join(timeout=3)
 
+    def _tap_spectrum(self, _np, arr):
+        """Sample the decoded PCM for the live spectrum (feed thread).
+
+        Throttled to ~20 fps. Never raises — visualization must not be able
+        to take the audio path down with it.
+        """
+        try:
+            now = time.monotonic()
+            if now - self._tap_last < 0.05:
+                return
+            self._tap_last = now
+            mono = arr[0::2]  # left channel is enough for a visual
+            n = min(2048, len(mono))
+            if n < 512:
+                return
+            seg = mono[-n:].astype(_np.float32)
+            spec = _np.abs(_np.fft.rfft(seg * _np.hanning(n)))
+            half = len(spec)
+            # 8 log-spaced bands from ~40 Hz to ~16 kHz
+            edges = [int(round(2 * (372 ** (i / 8)))) for i in range(9)]
+            bands = []
+            for i in range(8):
+                lo, hi = edges[i], max(edges[i] + 1, min(edges[i + 1], half))
+                if lo >= half:
+                    bands.append(0.0)
+                    continue
+                v = float(spec[lo:hi].max()) / (n / 4)
+                bands.append(min(1.0, v * 2.2) ** 0.6)
+            self.spectrum_bands = bands
+        except Exception:
+            pass
+
     def _wasapi_loop(self, feed_gen: int):
         """Feed thread: read ffmpeg → ring. Callback handles output.
         Exits when superseded by a newer feed generation or on stop_event."""
@@ -591,6 +631,7 @@ class MSAudioEngine(QObject):
                 pending = pending[complete:]
                 with ring_lock:
                     ring.append(arr)
+                self._tap_spectrum(_np, arr)
                 time.sleep(0)  # yield after each append
             else:
                 time.sleep(0.05)  # ring full — long sleep, free GIL for Qt

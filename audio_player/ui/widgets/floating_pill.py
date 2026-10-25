@@ -166,6 +166,74 @@ class _FadeIconButton(QPushButton):
         self._refresh_icon()
 
 
+class _VizBars(QWidget):
+    """Mini spectrum: a few thin accent bars dancing with the music.
+
+    Polls a data source (engine.spectrum_bands) at 20 fps; each bar falls
+    smoothly (peak decay) so the motion reads as fluid, not jittery.
+    Invisible when nothing plays.
+    """
+
+    BAR_W = 4
+    GAP = 3
+    MAX_H = 24
+    MIN_H = 3
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._n = 5
+        self.setFixedSize(self._n * self.BAR_W + (self._n - 1) * self.GAP + 4,
+                          self.MAX_H + 6)
+        self._levels = [0.0] * self._n
+        self._source = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)  # 20 fps
+        self._timer.timeout.connect(self._tick)
+
+    def set_spectrum_source(self, fn):
+        self._source = fn
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+        self._levels = [0.0] * self._n
+        self.update()
+
+    def _tick(self):
+        src = self._source
+        if src is None:
+            return
+        try:
+            bands = src()
+        except Exception:
+            bands = None
+        n = self._n
+        if not bands:
+            new = [0.0] * n
+        else:
+            m = len(bands)
+            idx = [min(int(m * ((i + 1) / (n + 1)) ** 1.3), m - 1) for i in range(n)]
+            new = [float(bands[i]) for i in idx]
+        # attack instant, decay smooth
+        self._levels = [max(v, prev * 0.72) for v, prev in zip(new, self._levels)]
+        self.update()
+
+    def paintEvent(self, event):
+        if all(v <= 0.02 for v in self._levels):
+            return  # nothing playing — invisible
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(current_accent())
+        w, h = self.width(), self.height()
+        x = 2
+        for v in self._levels:
+            bh = self.MIN_H + max(0.0, min(1.0, v)) * (self.MAX_H - self.MIN_H)
+            p.drawRoundedRect(QRectF(x, h - bh - 2, self.BAR_W, bh), 2, 2)
+            x += self.BAR_W + self.GAP
+        p.end()
+
+
 class FloatingPill(QWidget):
     """Centered floating playback capsule — glass background, cover, progress bar."""
 
@@ -189,6 +257,7 @@ class FloatingPill(QWidget):
         self._volume = 1.0
         self._title = ""
         self._artist = ""
+        self._source = None
         # progress scrub state
         self._prog_hover_t = 0.0     # 0..1 eased hover thickness
         self._scrubbing = False
@@ -222,6 +291,10 @@ class FloatingPill(QWidget):
         f2 = QFont(); f2.setPointSize(9); self._artist_label.setFont(f2)
         info.addWidget(self._artist_label)
         layout.addLayout(info, 1)
+
+        # Mini spectrum — comes alive while music plays
+        self._viz = _VizBars()
+        layout.addWidget(self._viz)
 
         # Prev — hidden until hover (Apple Music style secondary control):
         # keeps its layout slot so nothing shifts, fades in on hover
@@ -387,6 +460,21 @@ class FloatingPill(QWidget):
     def set_playing(self, playing: bool):
         icon = TRANSPORT_PAUSE if playing else TRANSPORT_PLAY
         self._play_btn.setIcon(_icon(icon, color="#fff"))
+
+    def set_spectrum_source(self, fn):
+        """fn() → list of 0..1 band values from the engine (live spectrum)."""
+        self._source = fn
+        self._viz.set_spectrum_source(fn)
+
+    def hideEvent(self, event):
+        # pill hidden (immersive page open) — the poll timer is pointless
+        self._viz.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        if self._source is not None:
+            self._viz.set_spectrum_source(self._source)
+        super().showEvent(event)
 
     def set_position(self, ms: int):
         # while scrubbing the preview drives the visuals, not the engine echo

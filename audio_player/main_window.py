@@ -401,6 +401,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._now_playing_bar.volumeChanged.connect(self._on_bar_volume)
         self._now_playing_bar.muteToggled.connect(self._toggle_mute)
         self._pill.volumeChanged.connect(self._on_bar_volume)
+        # live spectrum tap: pill bars poll the engine's decoded PCM
+        self._pill.set_spectrum_source(lambda: self._engine.spectrum_bands)
         _dv = int(QSettings("VBPlayer", "VB Player").value("default_volume", 100) or 100)
         self._engine.volume = max(0.0, min(1.0, _dv / 100.0))
         self._pre_mute_vol = self._engine.volume
