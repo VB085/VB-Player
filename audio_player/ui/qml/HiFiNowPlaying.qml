@@ -5,7 +5,14 @@ Rectangle {
     id: root; color: "transparent"
 
     property string trackTitle: ""; property string trackArtist: ""; property string trackAlbum: ""
+    // cover/bg fade in as they arrive (black → content transitions are jarring)
     property string coverPath: ""; property string bgPath: ""
+    property real _bgFade: 0.0
+    Behavior on _bgFade { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
+    property real _coverFade: 0.0
+    Behavior on _coverFade { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
+    onCoverPathChanged: { _coverFade = 0.0; if (coverPath !== "") _coverFade = 1.0 }
+    onBgPathChanged: { _bgFade = 0.0; if (bgPath !== "") _bgFade = 1.0 }
     property int    positionMs: 0; property int    durationMs: 0
     property bool   isPlaying: false
     property string qualityText: ""; property string qualitySimple: ""
@@ -40,7 +47,8 @@ Rectangle {
     property real _btnMargin: 60 + (40 - 60) * _p
     property real _barTop: _h - 168 + (40 * _p)
 
-    Image { anchors.fill: parent; source: root.bgPath; fillMode: Image.PreserveAspectCrop; visible: root.bgPath !== "" }
+    Image { anchors.fill: parent; source: root.bgPath; fillMode: Image.PreserveAspectCrop
+        visible: root.bgPath !== ""; opacity: root._bgFade }
     Rectangle { anchors.fill: parent; visible: root.bgPath === ""
         gradient: Gradient { GradientStop { position:0.0; color:"#0d0d1a" } GradientStop { position:1.0; color:"#1a1a2e" } } }
     Rectangle { anchors.fill: parent; color: "#a0000000" }
@@ -65,7 +73,8 @@ Rectangle {
         Rectangle { x:_coverX+3; y:_coverY+5; width:_coverW; height:_coverH; radius:12; color:"#50000000" }
         Rectangle { x:_coverX; y:_coverY; width:_coverW; height:_coverH; radius:12; clip:true
             color: root.coverPath ? "transparent" : "#1e1e40"
-            Image { anchors.fill:parent; source:root.coverPath; fillMode:Image.PreserveAspectCrop; visible:root.coverPath!=="" }
+            Image { anchors.fill:parent; source:root.coverPath; fillMode:Image.PreserveAspectCrop
+                visible:root.coverPath!==""; opacity: root._coverFade }
             Text { anchors.centerIn:parent; text:"♪"; color:"#a78bfa"; font.pointSize:Math.max(8,_coverW/6); visible:root.coverPath==="" } }
         Rectangle { x:_coverX; y:_coverY; width:_coverW; height:_coverH; radius:12; color:"transparent"; border.color:"#14ffffff"; border.width:1 }
         Column { y:_coverY+_coverH+32; width:_p>0.5 ? _coverW : Math.min(_w*0.7,500)

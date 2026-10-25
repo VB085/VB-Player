@@ -1563,7 +1563,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         meta = self._playlist.track_metadata(self._playlist.current_index)
         if meta is None:
             meta = read_metadata(filepath)
-        self._metadata_panel.show_metadata(meta, filepath)
+        # lazy covers: this is the final assembly point for the now-playing
+        # track — make sure the object everyone reads from carries the cover
+        from audio_player.player.metadata import ensure_cover
+        ensure_cover(filepath, meta)
+        try:
+            self._metadata_panel.show_metadata(meta, filepath)
+        except Exception as _e:
+            import traceback as _tb
+            print("[asm-err]", _tb.format_exc()[-400:], file=sys.stderr)
         title = meta.title or os.path.basename(filepath)
         artist = meta.artist or ""
         if artist:

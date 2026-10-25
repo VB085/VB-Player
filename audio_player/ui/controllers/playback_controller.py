@@ -100,6 +100,16 @@ class PlaybackController(QObject):
             self.logMessage.emit(_("log.now_playing", artist=artist, title=title))
         else:
             self.logMessage.emit(_("log.now_playing_no_artist", title=title))
+        # lazy covers: the now-playing track must always carry its cover
+        # bytes — nothing else in the UI path fetches them. When metadata
+        # came from read_metadata (playlist row was still empty), write the
+        # enriched object back so the model row owns the cover too.
+        from audio_player.player.metadata import ensure_cover
+        ensure_cover(filepath, meta)
+        if 0 <= self._playlist.current_index < self._playlist.count:
+            row_meta = self._playlist.track_metadata(self._playlist.current_index)
+            if row_meta is not None and row_meta is not meta and not row_meta.cover_data:
+                row_meta.cover_data = meta.cover_data
         self.metadataLoaded.emit(meta, filepath)
         self.trackLoaded.emit(filepath)
         if self._analyzer is not None:
