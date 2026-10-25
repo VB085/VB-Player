@@ -639,7 +639,12 @@ class MSAudioEngine(QObject):
                 break
 
         if feed_gen == self._feed_gen and not self._stop_event.is_set():
-            self.trackFinished.emit()
+            # EOF is only "track finished" if ffmpeg is still alive — a seek
+            # kills the process mid-read, and the dying feed thread must not
+            # advance the playlist (it would skip to the next track)
+            proc = self._ffmpeg_proc
+            if proc is not None and proc.poll() is None:
+                self.trackFinished.emit()
 
     # ── ASIO output (asio_ctypes directly) ────────────────────────────
 
@@ -732,9 +737,12 @@ class MSAudioEngine(QObject):
             # Wait for ring to drain before emitting trackFinished
             while not feed_stop.is_set() and dev._wpos != rpos[0]:
                 time.sleep(0.05)
-            if not feed_stop.is_set() and fed > 0:
+            # same guard as the WASAPI path: a seek killing ffmpeg must not
+            # read as "track finished" (it would skip to the next track)
+            proc = self._ffmpeg_proc
+            if not feed_stop.is_set() and fed > 0 and proc is not None and proc.poll() is None:
                 self.trackFinished.emit()
-            elif not feed_stop.is_set():
+            elif not feed_stop.is_set() and fed == 0:
                 self.errorOccurred.emit("ASIO: ffmpeg failed to decode")
 
         self._output_thread = threading.Thread(target=_feed, daemon=True)

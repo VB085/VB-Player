@@ -105,8 +105,17 @@ Rectangle {
             width: root.durationMs>0 ? parent.width*(root.positionMs/root.durationMs) : 0 }
         Text { anchors.left:parent.left; y:24; text:formatTime(root.positionMs); font.pointSize:10; color:Qt.lighter(root.accentColor,1.3) }
         Text { anchors.right:parent.right; y:24; text:formatTime(root.durationMs); font.pointSize:10; color:Qt.lighter(root.accentColor,1.3) }
-        MouseArea { anchors.fill:parent; anchors.margins:-10; cursorShape:Qt.PointingHandCursor
-            onPositionChanged:(mouse)=>{ if(mouse.buttons&Qt.LeftButton)root.seekRequested(mouse.x/parent.width*root.durationMs) }
+        // seek on release only — a seek per mouse-move spawns a kill/restart
+        // storm of ffmpeg processes (each EOF risked skipping to the next track)
+        MouseArea { anchors.fill:parent; anchors.margins:-10
+            cursorShape: root.isPlaying ? Qt.PointingHandCursor : Qt.ArrowCursor
+            enabled: root.isPlaying && root.durationMs > 0
+            property bool _scrubbing: false
+            property real _scrubX: 0
+            onPressed:(mouse)=>{ _scrubbing = true; _scrubX = mouse.x; mouse.accepted = true }
+            onPositionChanged:(mouse)=>{ if (_scrubbing) { _scrubX = mouse.x; mouse.accepted = true } }
+            onReleased:(mouse)=>{ if (_scrubbing) { _scrubbing = false
+                root.seekRequested(_scrubX/parent.width*root.durationMs) } }
             onClicked:(mouse)=>root.seekRequested(mouse.x/parent.width*root.durationMs) } }
 
     Item { id:transportRow; anchors.bottom:parent.bottom; anchors.bottomMargin:_btnMargin
