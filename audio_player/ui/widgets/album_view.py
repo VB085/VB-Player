@@ -445,6 +445,10 @@ class AlbumGridView(QWidget):
         self._filter_text = text.lower()
         self._apply_filter()
 
+    _CARD_SLICE = 25   # cards built per tick — one full rebuild of 100+
+                       # cards (loadFromData + smooth scale each) froze the
+                       # GUI for ~2 s at end of the startup load
+
     def _apply_filter(self):
         if self._filter_text:
             p = self._filter_text
@@ -457,16 +461,24 @@ class AlbumGridView(QWidget):
         old = {(c._album.name or "", c._album.artist or ""): c for c in self._cards}
         kept = set()
         new = []
+        pending = []
         for album in self._albums:
             key = (album.name or "", album.artist or "")
-            card = old.get(key) or AlbumCardWidget(album)
-            if key in old:
+            card = old.get(key)
+            if card is not None:
                 kept.add(id(card))
             else:
-                card.clicked.connect(self.albumClicked)
+                pending.append(album)
+                continue
             new.append(card)
+        # build only a slice now; remaining albums keep their grid slots and
+        # get cards on the next event-loop tick(s)
+        from PyQt6.QtCore import QTimer
+        self._pending_albums = pending
+        if pending:
+            QTimer.singleShot(0, self._build_pending_slice)
         for card in self._cards:
-            if id(card) not in kept:
+            if id(card) not in kept and id(card) not in {id(c) for c in new}:
                 card.setParent(None); card.deleteLater()
         self._cards = new
 
@@ -474,6 +486,32 @@ class AlbumGridView(QWidget):
             self._relayout_grid()
         else:
             self._list_view.set_albums(self._albums)
+
+    def _build_pending_slice(self):
+        """Create up to _CARD_SLICE album cards per tick — keeps the GUI
+        responsive while a full grid rebuild streams in."""
+        pending = getattr(self, "_pending_albums", None)
+        if not pending:
+            return
+        from PyQt6.QtCore import QTimer
+        # aborted by a newer _apply_filter run?
+        if self._cards and len(self._cards) + len(pending) != len(self._albums):
+            self._pending_albums = None
+            return
+        slice_ = pending[:self._CARD_SLICE]
+        self._pending_albums = pending[self._CARD_SLICE:]
+        for album in slice_:
+            card = AlbumCardWidget(album)
+            card.clicked.connect(self.albumClicked)
+            self._cards.append(card)
+        if self._view_mode == "grid":
+            self._relayout_grid()
+        else:
+            self._list_view.set_albums(self._albums)
+        if self._pending_albums:
+            QTimer.singleShot(0, self._build_pending_slice)
+        else:
+            self._pending_albums = None
 
     def refresh_from_playlist(self, read_missing: bool = True):
         if self._playlist is None:

@@ -1683,6 +1683,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             # re-assert reads it to pick the corner preference
             self._border_radius = 12
             self._mask_dirty = True
+            if sys.platform == "win32" and getattr(self, '_win_done', False):
+                _win_materials.restore_border(int(self.winId()))
             self.showNormal()
             self.update()
         else:
@@ -1690,6 +1692,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 self._title_bar.hide()
             self._border_radius = 0
             self._mask_dirty = True
+            # DWM's 1px dark border reads as hairlines on edge-to-edge
+            # fullscreen content — remove it for the duration
+            if sys.platform == "win32" and getattr(self, '_win_done', False):
+                _win_materials.clear_border(int(self.winId()))
             self.showFullScreen()
 
     def _build_quality_text(self, meta) -> str:

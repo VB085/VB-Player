@@ -235,6 +235,21 @@ def apply_border_color(hwnd: int, r: int, g: int, b: int) -> bool:
     return _set_dwm_dword(hwnd, DWMWA_BORDER_COLOR, color)
 
 
+_DWMWA_COLOR_NONE = 0xFFFFFFFE     # disable the DWM border entirely
+_DWMWA_COLOR_DEFAULT = 0xFFFFFFFF  # back to the system default
+
+
+def clear_border(hwnd: int) -> bool:
+    """Remove the DWM 1px border — fullscreen content edge-to-edge must not
+    show hairlines (the dark-mode border color 40,40,40 is visible there)."""
+    return _set_dwm_dword(hwnd, DWMWA_BORDER_COLOR, _DWMWA_COLOR_NONE)
+
+
+def restore_border(hwnd: int) -> bool:
+    """Undo clear_border — back to the system-default border."""
+    return _set_dwm_dword(hwnd, DWMWA_BORDER_COLOR, _DWMWA_COLOR_DEFAULT)
+
+
 def apply_titlebar_color(hwnd: int, r: int, g: int, b: int) -> bool:
     """Set the title bar background color."""
     color = (b << 16) | (g << 8) | r

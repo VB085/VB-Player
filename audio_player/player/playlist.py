@@ -135,6 +135,9 @@ class PlaylistManager(QAbstractListModel):
             if not self._flush_timer.isActive():
                 self._flush_timer.start(80)
 
+    _FLUSH_CHUNK = 150   # rows per repaint tick — a 1400-row single
+                         # dataChanged once froze the GUI for 2.3 s
+
     def _flush_dirty_rows(self):
         """Coalesced repaint: one dataChanged per contiguous range (~12 Hz
         max regardless of loader speed), then progress."""
@@ -142,6 +145,12 @@ class PlaylistManager(QAbstractListModel):
             return
         rows = sorted(set(self._dirty_rows))
         self._dirty_rows.clear()
+        if len(rows) > self._FLUSH_CHUNK:
+            # keep the tail for the next tick — a single huge range repaint
+            # stalls the main thread (and starves every timer behind it)
+            self._dirty_rows = rows[self._FLUSH_CHUNK:]
+            rows = rows[:self._FLUSH_CHUNK]
+            self._flush_timer.start()
         start = prev = rows[0]
         for r in rows[1:]:
             if r == prev + 1:
