@@ -1698,6 +1698,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._mask_dirty = True
             if sys.platform == "win32" and getattr(self, '_win_done', False):
                 _win_materials.restore_border(int(self.winId()))
+                _win_materials.apply_rounded_corners(int(self.winId()), "round")
             self.showNormal()
             self.update()
         else:
@@ -1706,9 +1707,14 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._border_radius = 0
             self._mask_dirty = True
             # DWM's 1px dark border reads as hairlines on edge-to-edge
-            # fullscreen content — remove it for the duration
+            # fullscreen content — remove it for the duration. The corner
+            # preference is ALSO persistent (set to round for the windowed
+            # look) — left alone it keeps rounding the fullscreen window's
+            # corners against the black backdrop ("rounded black edges"),
+            # so force square for the duration.
             if sys.platform == "win32" and getattr(self, '_win_done', False):
                 _win_materials.clear_border(int(self.winId()))
+                _win_materials.apply_rounded_corners(int(self.winId()), "none")
             self.showFullScreen()
 
     def _build_quality_text(self, meta) -> str:
