@@ -27,7 +27,6 @@ class LoadingOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self._done = 0
         self._total = 0
-        self._first_launch = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 24, 24, 24)
@@ -61,11 +60,6 @@ class LoadingOverlay(QWidget):
         self._count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._count)
 
-        self._hint = QLabel("")
-        self._hint.setObjectName("emptyHint")
-        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self._hint)
-
         # delayed show + fade-out machinery
         self._show_timer = QTimer(self)
         self._show_timer.setSingleShot(True)
@@ -85,10 +79,6 @@ class LoadingOverlay(QWidget):
         self._bar.setStyleSheet(
             f"QProgressBar{{background:#0fffffff;border:none;border-radius:4px;}}"
             f"QProgressBar::chunk{{background:{accent.name()};border-radius:4px;}}")
-
-    def set_first_launch(self, first: bool):
-        self._first_launch = first
-        self._hint.setText(_("loading.first_hint") if first else _("loading.hint"))
 
     def arm(self, done: int, total: int):
         """Called on progress; starts the delayed show for big libraries."""

@@ -385,7 +385,5 @@
   "favorites.empty_title": "还没有收藏",
   "favorites.empty_hint": "在歌曲上右键，加入收藏",
   "loading.title": "正在整理音乐库",
-  "loading.count": "{done} / {total} 首",
-  "loading.hint": "正在读取曲目信息",
-  "loading.first_hint": "首次启动需要建立缓存，之后会快很多"
+  "loading.count": "{done} / {total} 首"
 }

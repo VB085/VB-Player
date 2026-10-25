@@ -19,9 +19,6 @@ Rectangle {
     property real   topbarOpacity: 1.0; Behavior on topbarOpacity { NumberAnimation { duration: 300 } }
     property real   buttonsOpacity: 1.0; Behavior on buttonsOpacity { NumberAnimation { duration: 300 } }
     property bool   autoHideEnabled: true; property int    autoHideSeconds: 3
-    // 0..1 loudness from the engine's spectrum tap — background "breathes"
-    property real   energyLevel: 0.0
-    Behavior on energyLevel { NumberAnimation { duration: 140; easing.type: Easing.OutQuad } }
 
     signal collapseRequested(); signal fullscreenRequested()
     signal playPauseClicked(); signal nextClicked(); signal prevClicked()
@@ -43,15 +40,10 @@ Rectangle {
     property real _btnMargin: 60 + (40 - 60) * _p
     property real _barTop: _h - 168 + (40 * _p)
 
-    Image { anchors.fill: parent; source: root.bgPath; fillMode: Image.PreserveAspectCrop; visible: root.bgPath !== ""
-        // subtle zoom breathing with the music (≤1.2% — felt, not seen)
-        scale: 1.0 + root.energyLevel * 0.012
-        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutQuad } } }
+    Image { anchors.fill: parent; source: root.bgPath; fillMode: Image.PreserveAspectCrop; visible: root.bgPath !== "" }
     Rectangle { anchors.fill: parent; visible: root.bgPath === ""
         gradient: Gradient { GradientStop { position:0.0; color:"#0d0d1a" } GradientStop { position:1.0; color:"#1a1a2e" } } }
-    Rectangle { anchors.fill: parent
-        // dark veil lightens slightly on loud passages (62.5% → ~48%)
-        color: Qt.rgba(0, 0, 0, Math.max(0.48, 0.625 - root.energyLevel * 0.145)) }
+    Rectangle { anchors.fill: parent; color: "#a0000000" }
 
     Row { anchors.right:parent.right; anchors.top:parent.top; anchors.rightMargin:12; anchors.topMargin:16; spacing:8; opacity:root.topbarOpacity
         Rectangle { width:36; height:36; radius:18; color: root.lyricsLayoutProgress>0.5 ? root.accentColor : "#19ffffff"

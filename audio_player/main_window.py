@@ -196,10 +196,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
         # Startup library loading: overlay + incremental album refresh
         from audio_player.ui.widgets.loading_overlay import LoadingOverlay
-        from audio_player.player.metadata import store_is_cold, save_metadata_store
+        from audio_player.player.metadata import save_metadata_store
         self._loading_overlay = LoadingOverlay(self._content_stack)
         self._loading_overlay.setGeometry(self._content_stack.rect())
-        self._loading_overlay.set_first_launch(store_is_cold())
         self._content_stack.installEventFilter(self)
         self._initial_load_done = False
         self._album_refresh_timer = QTimer(self)
@@ -435,8 +434,6 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # ===== Overlay stack: body | hifi (also used as now-playing overlay) =====
         self._hifi_page = HiFiQmlPage()
         self._hifi_page.hide()
-        # immersive page background breathes with the music
-        self._hifi_page.set_spectrum_source(lambda: self._engine.spectrum_bands)
         self._now_playing_page = self._hifi_page  # same widget, reused
         self._hifi_overlay = QStackedWidget()
         self._hifi_overlay.addWidget(self._body)       # 0: normal
