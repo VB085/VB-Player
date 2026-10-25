@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 BIN_DIR="dist/VB Player"
 BIN="$BIN_DIR/VB Player"
-VERSION="0.7.5"
+VERSION="0.7.6"
 _RAW_ARCH="$(uname -m)"
 case "$_RAW_ARCH" in
     x86_64)  ARCH="amd64" ;;

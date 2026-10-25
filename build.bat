@@ -1,5 +1,5 @@
 @echo off
-echo === Building VB Player v0.7.5 ===
+echo === Building VB Player v0.7.6 ===
 
 echo Step 1: PyInstaller packaging...
 call .venv\Scripts\python.exe -m PyInstaller --noconfirm --name "VB Player" --windowed --add-data "audio_player/ui/themes;audio_player/ui/themes" --add-data "audio_player/i18n;audio_player/i18n" --hidden-import audio_player.platform.windows.asio_ctypes main.py
