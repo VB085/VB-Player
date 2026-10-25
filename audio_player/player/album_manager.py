@@ -19,8 +19,13 @@ class AlbumInfo:
 
 
 class AlbumManager:
-    def group_by_album(self, tracks: list[dict]) -> list[AlbumInfo]:
-        """Group tracks by (album, artist). Falls back to folder grouping."""
+    def group_by_album(self, tracks: list[dict], read_missing: bool = True) -> list[AlbumInfo]:
+        """Group tracks by (album, artist). Falls back to folder grouping.
+
+        *read_missing*=False skips tracks whose metadata hasn't loaded yet
+        (they group by folder name, no disk I/O) — used during the startup
+        incremental refresh so the GUI thread never blocks on reads.
+        """
         from audio_player.player.metadata import read_metadata
 
         # Phase 1: group by (album_name, album_artist)
@@ -28,7 +33,7 @@ class AlbumManager:
         for i, t in enumerate(tracks):
             filepath = t.get("path", "")
             meta = t.get("metadata")
-            if meta is None and filepath:
+            if meta is None and filepath and read_missing:
                 meta = read_metadata(filepath)
 
             album = (meta.album or "") if meta else ""
@@ -66,8 +71,12 @@ class AlbumManager:
             cover_path = ""
             year = None
 
+            first_meta = None
+            first_fp = ""
             for idx, fp, meta in items:
                 if meta:
+                    if first_meta is None:
+                        first_meta, first_fp = meta, fp
                     if meta.cover_data:
                         cover_data = meta.cover_data
                         cover_path = fp
@@ -80,6 +89,16 @@ class AlbumManager:
                         formats_seen.add(meta.format)
                     info.total_size += meta.file_size or 0
                 info.tracks.append((idx, fp))
+
+            # lazy covers: bulk loads skip cover bytes — fetch the album
+            # cover for the card only on final/full refreshes (bounded: one
+            # read per album; incremental passes show placeholders)
+            if not cover_data and first_meta is not None and read_missing:
+                from audio_player.player.metadata import ensure_cover
+                ensure_cover(first_fp, first_meta)
+                if first_meta.cover_data:
+                    cover_data = first_meta.cover_data
+                    cover_path = first_fp
 
             info.disc_count = max(len(discs), 1)
             info.total_duration = total_dur

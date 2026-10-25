@@ -316,5 +316,9 @@
   "album.no_albums_hint": "匯入音樂資料夾後自動整理",
   "album.import_action": "匯入音樂",
   "favorites.empty_title": "還沒有收藏",
-  "favorites.empty_hint": "在歌曲上右鍵，加入收藏"
+  "favorites.empty_hint": "在歌曲上右鍵，加入收藏",
+  "loading.title": "正在整理音樂庫",
+  "loading.count": "{done} / {total} 首",
+  "loading.hint": "正在讀取曲目資訊",
+  "loading.first_hint": "首次啟動需要建立快取，之後會快很多"
 }

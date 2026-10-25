@@ -258,6 +258,7 @@ class FloatingPill(QWidget):
         self._title = ""
         self._artist = ""
         self._source = None
+        self._is_playing = False
         # progress scrub state
         self._prog_hover_t = 0.0     # 0..1 eased hover thickness
         self._scrubbing = False
@@ -458,13 +459,20 @@ class FloatingPill(QWidget):
         self._artist_label.setText(" · ".join(parts) if parts else "")
 
     def set_playing(self, playing: bool):
+        self._is_playing = bool(playing)
         icon = TRANSPORT_PAUSE if playing else TRANSPORT_PLAY
         self._play_btn.setIcon(_icon(icon, color="#fff"))
+        # bars only dance while music plays — no idle timer churn
+        if playing and self._source is not None:
+            self._viz.set_spectrum_source(self._source)
+        else:
+            self._viz.stop()
 
     def set_spectrum_source(self, fn):
         """fn() → list of 0..1 band values from the engine (live spectrum)."""
         self._source = fn
-        self._viz.set_spectrum_source(fn)
+        if self._is_playing:
+            self._viz.set_spectrum_source(fn)
 
     def hideEvent(self, event):
         # pill hidden (immersive page open) — the poll timer is pointless
@@ -472,7 +480,7 @@ class FloatingPill(QWidget):
         super().hideEvent(event)
 
     def showEvent(self, event):
-        if self._source is not None:
+        if self._source is not None and self._is_playing:
             self._viz.set_spectrum_source(self._source)
         super().showEvent(event)
 

@@ -68,11 +68,13 @@ class _MetaLoader(QThread):
             if not self._running:
                 break
             try:
-                meta = read_metadata(filepath)
+                # priority 0 (visible region) carries cover bytes; the bulk
+                # pass skips them — covers arrive via prewarm/ensure_cover
+                meta = read_metadata(filepath, load_cover=(_prio == 0))
             except Exception:
                 meta = TrackMetadata()
             self.loaded.emit(row, meta)
-            self.msleep(20)  # throttle — avoid flooding main thread with repaints
+            self.msleep(0)  # yield — repaints are coalesced by the flush timer
 
     def stop(self):
         self._running = False
@@ -93,6 +95,7 @@ class PlaylistManager(QAbstractListModel):
 
     currentIndexChanged = pyqtSignal(int)
     metadataLoaded = pyqtSignal(int, object)
+    loadProgress = pyqtSignal(int, int)   # (done, total) during bulk loads
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,6 +107,13 @@ class PlaylistManager(QAbstractListModel):
         self._loader = None if _MSYS2 else _MetaLoader(self)
         if self._loader is not None:
             self._loader.loaded.connect(self._on_meta_loaded)
+        # coalesced repaints during bulk loads
+        from PyQt6.QtCore import QTimer
+        self._dirty_rows: list[int] = []
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(80)
+        self._flush_timer.timeout.connect(self._flush_dirty_rows)
 
     def track_metadata(self, index: int):
         """Return cached TrackMetadata for row *index*, or None if not loaded yet."""
@@ -117,13 +127,35 @@ class PlaylistManager(QAbstractListModel):
             self._loader.stop()
 
     def _on_meta_loaded(self, row: int, meta):
-        """Receive metadata from loader thread, update model."""
+        """Receive metadata from loader thread: store now, repaint batched."""
         if 0 <= row < len(self._tracks):
             self._tracks[row]["metadata"] = meta
             self._tracks[row]["has_metadata"] = True
-            idx = self.index(row, 0)
-            self.dataChanged.emit(idx, idx, [])
-            self.metadataLoaded.emit(row, meta)
+            self._dirty_rows.append(row)
+            if not self._flush_timer.isActive():
+                self._flush_timer.start(80)
+
+    def _flush_dirty_rows(self):
+        """Coalesced repaint: one dataChanged per contiguous range (~12 Hz
+        max regardless of loader speed), then progress."""
+        if not self._dirty_rows:
+            return
+        rows = sorted(set(self._dirty_rows))
+        self._dirty_rows.clear()
+        start = prev = rows[0]
+        for r in rows[1:]:
+            if r == prev + 1:
+                prev = r
+                continue
+            self.dataChanged.emit(self.index(start, 0), self.index(prev, 0), [])
+            start = prev = r
+        self.dataChanged.emit(self.index(start, 0), self.index(prev, 0), [])
+        for r in rows:
+            self.metadataLoaded.emit(r, self._tracks[r].get("metadata"))
+        pending = sum(1 for t in self._tracks
+                      if not t.get("is_url") and not t.get("has_metadata"))
+        done = sum(1 for t in self._tracks if t.get("has_metadata"))
+        self.loadProgress.emit(done, done + pending)
 
     def prioritize_rows(self, rows):
         """Jump *rows* to the front of the metadata queue (visible region)."""

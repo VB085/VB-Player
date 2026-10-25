@@ -475,12 +475,12 @@ class AlbumGridView(QWidget):
         else:
             self._list_view.set_albums(self._albums)
 
-    def refresh_from_playlist(self):
+    def refresh_from_playlist(self, read_missing: bool = True):
         if self._playlist is None:
             return
         from audio_player.player.album_manager import AlbumManager
         mgr = AlbumManager()
-        albums = mgr.group_by_album(self._playlist._tracks)
+        albums = mgr.group_by_album(self._playlist._tracks, read_missing=read_missing)
         self.set_albums(albums)
 
     def refresh_theme_mode(self, is_light: bool):

@@ -362,5 +362,9 @@
   "album.no_albums_hint": "Import a music folder to get started",
   "album.import_action": "Import music",
   "favorites.empty_title": "No favorites yet",
-  "favorites.empty_hint": "Right-click a song and add it to favorites"
+  "favorites.empty_hint": "Right-click a song and add it to favorites",
+  "loading.title": "Loading your library",
+  "loading.count": "{done} / {total} tracks",
+  "loading.hint": "Reading track info",
+  "loading.first_hint": "The first launch builds a cache — later ones are much faster"
 }

@@ -266,6 +266,14 @@ class PlaylistView(QListView):
         self._prewarm_timer.setInterval(0)
         self._prewarm_timer.timeout.connect(self._prewarm_step)
 
+        self.clicked.connect(self._on_click)
+        self.doubleClicked.connect(self._on_double_click)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+        # External callbacks for context menu state queries
+        self._is_favorite_fn: Callable[[str], bool] | None = None
+        self._get_playlist_names_fn: Callable[[], list[str]] | None = None
+
         # Visible-region metadata priority: when scrolling stops, the rows on
         # screen jump to the front of the loader queue so covers appear in
         # ~0.5 s instead of waiting behind the whole playlist's bulk load.
@@ -348,21 +356,20 @@ class PlaylistView(QListView):
             if not path or path in _cover_cache:
                 continue
             if not idx.data(model.CoverDataRole):
-                continue
+                # lazy covers: bulk load skipped the bytes — fetch on idle
+                meta = model.track_metadata(row) if hasattr(model, "track_metadata") else None
+                if meta is not None and getattr(meta, "cover_data", None) is None:
+                    from audio_player.player.metadata import ensure_cover
+                    ensure_cover(path, meta)
+                    generated += 1
+                if not idx.data(model.CoverDataRole):
+                    continue
             _thumbnail(model, idx, path)
             generated += 1
             budget -= 1
         if generated or scanned < count:
             self._prewarm_timer.start()  # more work or lap not yet complete
         # full lap with nothing to generate → stop; dataChanged re-arms later
-
-        self.clicked.connect(self._on_click)
-        self.doubleClicked.connect(self._on_double_click)
-        self.customContextMenuRequested.connect(self._show_context_menu)
-
-        # External callbacks for context menu state queries
-        self._is_favorite_fn: Callable[[str], bool] | None = None
-        self._get_playlist_names_fn: Callable[[], list[str]] | None = None
 
     def setFilterText(self, text: str):
         """Filter visible rows by *text* against title/artist/album."""

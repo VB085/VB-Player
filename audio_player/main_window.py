@@ -194,6 +194,22 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Clear playlist selection when clicking away
         self._body.installEventFilter(self)
 
+        # Startup library loading: overlay + incremental album refresh
+        from audio_player.ui.widgets.loading_overlay import LoadingOverlay
+        from audio_player.player.metadata import store_is_cold, save_metadata_store
+        self._loading_overlay = LoadingOverlay(self._content_stack)
+        self._loading_overlay.setGeometry(self._content_stack.rect())
+        self._loading_overlay.set_first_launch(store_is_cold())
+        self._content_stack.installEventFilter(self)
+        self._initial_load_done = False
+        self._album_refresh_timer = QTimer(self)
+        self._album_refresh_timer.setSingleShot(True)
+        self._album_refresh_timer.setInterval(500)
+        self._album_refresh_timer.timeout.connect(self._incremental_album_refresh)
+        self._playlist.loadProgress.connect(self._on_load_progress)
+        QApplication.instance().aboutToQuit.connect(save_metadata_store)
+        on_anim_tick(lambda c: self._loading_overlay.refresh_accent())
+
         # Keep the DWM dark flag ours through dynamic-accent palette churn.
         # The palette-applied hook is the primary (synchronous) corrector;
         # the event guard catches async palette/style churn.
@@ -1032,7 +1048,41 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 self._playlist_view.clearSelection()
                 if hasattr(self, '_fav_view'):
                     self._fav_view.clearSelection()
+        elif (event.type() == QEvent.Type.Resize and obj is self._content_stack
+                and self._loading_overlay is not None and self._loading_overlay.isVisible()):
+            self._loading_overlay.setGeometry(self._content_stack.rect())
         return super().eventFilter(obj, event)
+
+    # ── Startup library loading ─────────────────────────────────────────
+
+    def _on_load_progress(self, done: int, total: int):
+        if self._initial_load_done:
+            return
+        self._loading_overlay.arm(done, total)
+        # albums fill in progressively while the loader works (throttled)
+        self._album_refresh_timer.start()
+        if done >= total and total > 0:
+            self._finish_initial_load()
+
+    def _incremental_album_refresh(self):
+        if self._initial_load_done:
+            return
+        self._album_view.refresh_from_playlist(read_missing=False)
+
+    def _finish_initial_load(self):
+        self._initial_load_done = True
+        self._album_refresh_timer.stop()
+        self._album_view.refresh_from_playlist()  # final pass (all metadata in memory)
+        self._loading_overlay.finish()
+        from audio_player.player.metadata import save_metadata_store
+        save_metadata_store()
+        album_count = len(self._album_view._albums)
+        self._sidebar.update_stats(self._playlist.count, album_count)
+        if hasattr(self, '_manage_track_label'):
+            self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
+        if hasattr(self, '_manage_album_label'):
+            self._manage_album_label.setText(_("manage.albums_found", count=album_count))
+        self._log_message(_("log.library_loaded", count=self._playlist.count, albums=album_count))
 
     def _apply_bar_style(self, style: str):
         self._bar_style = style
@@ -1099,7 +1149,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if meta:
             self._bar_update("update_cover", meta.cover_data)
             self._hifi_page.set_cover(meta.cover_data)
-        self._album_view.refresh_from_playlist()
+        self._album_view.refresh_from_playlist(read_missing=self._initial_load_done)
         self._metadata_panel.update()
 
     def _make_search_bar(self):
@@ -1184,7 +1234,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if key in page_map:
             self._content_stack.setCurrentIndex(page_map[key])
             if key == "albums":
-                self._album_view.refresh_from_playlist()
+                self._album_view.refresh_from_playlist(read_missing=self._initial_load_done)
             elif key == "favorites":
                 self._library_ctrl.refresh_favorites_page(self._fav_label)
             elif key == "playlists":
@@ -1314,7 +1364,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._playlist.current_index = 0
         self._playlist.blockSignals(False)
         self._playlist_proxy.invalidate()
-        self._album_view.refresh_from_playlist()
+        self._album_view.refresh_from_playlist(read_missing=self._initial_load_done)
         # Pre-load first track without playing
         path = self._playlist.current_track_path
         if path:
@@ -1334,30 +1384,42 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._library.scan_watch_folders_async()
 
     def _on_scan_finished(self, paths: list[str]):
-        """Handle async scan results — load tracks into playlist."""
+        """Handle async scan results — merge into playlist without a full
+        rebuild when the restored playlist already matches (avoids re-loading
+        metadata for the whole library on every launch)."""
         if not paths:
             return
-        self._playlist.blockSignals(True)
-        self._playlist.clear()
-        self._playlist.add_files(paths)
-        if self._playlist.count > 0:
-            self._playlist.current_index = 0
-        self._playlist.blockSignals(False)
-        if hasattr(self, '_playlist_proxy'):
-            self._playlist_proxy.invalidate()
+        new = set(paths)
+        existing = ({self._playlist.track_at(i).get("path", "")
+                     for i in range(self._playlist.count)}
+                    if self._playlist.count else set())
+        if existing != new:
+            added = [p for p in paths if p not in existing]
+            removed = existing - new
+            if existing and not removed:
+                # pure additions — keep already-loaded rows untouched
+                self._playlist.add_files(added)
+            else:
+                self._playlist.blockSignals(True)
+                self._playlist.clear()
+                self._playlist.add_files(paths)
+                if self._playlist.count > 0:
+                    self._playlist.current_index = 0
+                self._playlist.blockSignals(False)
+            if hasattr(self, '_playlist_proxy'):
+                self._playlist_proxy.invalidate()
 
-        self._album_view.refresh_from_playlist()
-
-        path = self._playlist.current_track_path
-        if path:
-            self._engine.load(path)
-        album_count = len(self._album_view._albums)
-        self._sidebar.update_stats(self._playlist.count, album_count)
-        if hasattr(self, '_manage_track_label'):
-            self._manage_track_label.setText(_("manage.tracks_loaded", count=self._playlist.count))
-        if hasattr(self, '_manage_album_label'):
-            self._manage_album_label.setText(_("manage.albums_found", count=album_count))
-        self._log_message(_("log.library_loaded", count=self._playlist.count, albums=album_count))
+        # album view fills in progressively via loadProgress — no blocking
+        # full grouping here (the old sync read_metadata sweep froze the GUI)
+        if not self._engine.current_file:
+            path = self._playlist.current_track_path
+            if path:
+                self._engine.load(path)
+        # nothing restored → no loader work queued → finish immediately
+        if self._playlist.count and not any(
+                not t.get("has_metadata") for t in self._playlist._tracks
+                if not t.get("is_url")):
+            self._finish_initial_load()
 
     def _play_album_track(self, idx: int):
         """Load album tracks into main playlist and play at *idx*."""
@@ -1942,7 +2004,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._sidebar.refresh_accent()
         self._refresh_manage_accent()
         self._bar_update("refresh_accent")
-        self._album_view.refresh_from_playlist()
+        self._album_view.refresh_from_playlist(read_missing=self._initial_load_done)
         if hasattr(self, '_settings_page'):
             self._settings_page.refresh_accent()
 
