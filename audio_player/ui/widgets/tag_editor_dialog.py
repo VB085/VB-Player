@@ -29,6 +29,7 @@ class TagEditorDialog(QDialog):
 
         is_light = _is_light_mode()
         bg = "#ffffff" if is_light else "#0f0f0f"
+        self._panel_bg = bg
         border = "#e0e0e0" if is_light else "#222222"
         text_c = "#333333" if is_light else "#e2e8f0"
         sub_c = "#666666" if is_light else "#94a3b8"
@@ -134,6 +135,18 @@ class TagEditorDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self._refresh_accent()
+
+    def paintEvent(self, event):
+        """Draw the panel background — a stylesheet QDialog background does
+        not paint on a WA_TranslucentBackground top-level window."""
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtGui import QPainter, QPainterPath, QColor
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 12, 12)
+        painter.fillPath(path, QColor(self._panel_bg))
+        painter.end()
 
     def get_tags(self) -> dict[str, str | int | None]:
         """Return edited tags as a dict matching TrackMetadata field names."""
