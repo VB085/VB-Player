@@ -14,6 +14,24 @@ from audio_player.player.metadata import TrackMetadata
 from audio_player.ui.utils import is_light_mode as _is_light_mode
 
 
+class _DragBar(QWidget):
+    """Title-row drag strip. mousePressEvent returns None explicitly —
+    event handlers must not return values under sip."""
+
+    def __init__(self, owner: QDialog):
+        super().__init__(owner)
+        self._owner = owner
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._owner.windowHandle().startSystemMove()
+        e.accept()
+        # explicit None — never return the move() result
+
+    def mouseMoveEvent(self, e):
+        e.ignore()
+
+
 class TagEditorDialog(QDialog):
     """Frameless dialog for editing audio file tags."""
 
@@ -44,19 +62,20 @@ class TagEditorDialog(QDialog):
         layout.setContentsMargins(18, 0, 18, 16)
         layout.setSpacing(7)
 
-        # Drag bar (frameless dialog must be movable)
-        drag = QWidget()
-        drag.setFixedHeight(38)
-        drag.setStyleSheet("background:transparent;")
-        dlay = QHBoxLayout(drag)
+        # Drag row: clicking anywhere on the title row moves the dialog.
+        # Implemented as a real child widget class — instance-attribute
+        # event-handler assignment (`w.mousePressEvent = fn`) trips
+        # sipBadCatcherResult on every mouse event under PyQt6.
+        self._drag_bar = _DragBar(self)
+        self._drag_bar.setFixedHeight(38)
+        self._drag_bar.setStyleSheet("background:transparent;")
+        dlay = QHBoxLayout(self._drag_bar)
         dlay.setContentsMargins(0, 0, 0, 0)
         title = QLabel(_("tags.edit_title"))
         title.setStyleSheet(f"color:{text_c};font-size:14px;font-weight:bold;background:transparent;")
         dlay.addWidget(title)
         dlay.addStretch()
-        drag.mousePressEvent = lambda e: (self.windowHandle().startSystemMove()
-                                          if e.button() == Qt.MouseButton.LeftButton else None)
-        layout.addWidget(drag)
+        layout.addWidget(self._drag_bar)
 
         # Filename subtitle
         fname = QLabel(os.path.basename(filepath))
