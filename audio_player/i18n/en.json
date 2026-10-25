@@ -366,5 +366,7 @@
   "loading.title": "Loading your library",
   "loading.count": "{done} / {total} tracks",
   "context.show_in_explorer": "Show in folder",
-  "album.play": "Play album"
+  "album.play": "Play album",
+  "toast.undo": "Undo",
+  "toast.removed": "Removed {count} tracks"
 }

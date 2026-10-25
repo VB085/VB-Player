@@ -217,6 +217,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         from audio_player.app import on_palette_applied
         on_palette_applied(self._sync_dark_flag)
 
+        # Toast for undoable actions (delete etc.)
+        from audio_player.ui.widgets.toast import Toast
+        self._toast = Toast(self)
+        self._content_stack.installEventFilter(self)
+
         # Chrome watchdog: self-heal frameless chrome broken by unknown paths
         if sys.platform == "win32":
             self._chrome_watchdog = QTimer(self)
@@ -1049,6 +1054,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         elif (event.type() == QEvent.Type.Resize and obj is self._content_stack
                 and self._loading_overlay is not None and self._loading_overlay.isVisible()):
             self._loading_overlay.setGeometry(self._content_stack.rect())
+            if self._toast.isVisible():
+                self._toast._reposition()
         return super().eventFilter(obj, event)
 
     # ── Startup library loading ─────────────────────────────────────────
@@ -1796,8 +1803,15 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _remove_selected(self):
         indices = [idx.row() for idx in self._playlist_view.selectedIndexes()]
-        if indices:
-            self._playlist.remove_indices(indices)
+        if not indices:
+            return
+        snapshots = [(row, self._playlist.track_at(row))
+                     for row in sorted(set(indices))]
+        self._playlist.remove_indices(indices)
+        n = len(snapshots)
+        self._toast.show_toast(
+            _("toast.removed", count=n),
+            on_action=lambda: self._playlist.restore_tracks(snapshots))
 
     def _on_repeat_mode_changed(self, mode: int):
         from audio_player.player.playlist import RepeatMode

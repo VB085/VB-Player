@@ -320,5 +320,7 @@
   "loading.title": "正在整理音樂庫",
   "loading.count": "{done} / {total} 首",
   "context.show_in_explorer": "在資料夾中顯示",
-  "album.play": "播放專輯"
+  "album.play": "播放專輯",
+  "toast.undo": "撤銷",
+  "toast.removed": "已移除 {count} 首"
 }

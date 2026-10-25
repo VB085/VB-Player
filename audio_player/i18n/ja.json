@@ -320,5 +320,7 @@
   "loading.title": "ライブラリを整理しています",
   "loading.count": "{done} / {total} 曲",
   "context.show_in_explorer": "フォルダーで表示",
-  "album.play": "アルバムを再生"
+  "album.play": "アルバムを再生",
+  "toast.undo": "元に戻す",
+  "toast.removed": "{count} 曲を削除しました"
 }

@@ -366,6 +366,15 @@ class PlaylistManager(QAbstractListModel):
             elif row < self._current_index:
                 self._current_index -= 1
 
+    def restore_tracks(self, snapshots: list[tuple[int, dict]]):
+        """Undo for remove_indices: reinsert (original_row, track_dict)
+        pairs in ascending original order so relative order is preserved."""
+        for row, track in sorted(snapshots, key=lambda s: s[0]):
+            row = max(0, min(row, len(self._tracks)))
+            self.beginInsertRows(QModelIndex(), row, row)
+            self._tracks.insert(row, track)
+            self.endInsertRows()
+
     def clear(self):
         self.beginResetModel()
         self._tracks.clear()
