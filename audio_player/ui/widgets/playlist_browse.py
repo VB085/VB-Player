@@ -113,7 +113,7 @@ class PlaylistCardWidget(QFrame):
         cover.setFixedSize(152, 152)
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
-        if info.cover_data:
+        if info and info.cover_data:
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
@@ -235,7 +235,7 @@ class PlaylistListDelegate(QStyledItemDelegate):
         cover_size = 44
         cover_bg = QColor("#e0e0e0") if is_light else QColor("#1a1a2e")
         cover_drawn = False
-        if info.cover_data:
+        if info and info.cover_data:
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
@@ -654,7 +654,7 @@ class PlaylistDetailPage(QWidget):
         cover_radius = str(QSettings("VBPlayer", "VB Player").value("album_cover_radius", "true")).lower() == "true"
         radius_px = "12px" if cover_radius else "2px"
         self._cover_label.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
-        if info.cover_data:
+        if info and info.cover_data:
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
@@ -805,11 +805,11 @@ class PlaylistDetailPage(QWidget):
 # ---------------------------------------------------------------------------
 
 class PlaylistEditDialog(QDialog):
-    def __init__(self, info: PlaylistInfo, parent=None):
+    def __init__(self, info: PlaylistInfo | None, parent=None):
         super().__init__(parent)
         self._info = info
         self._cover_path = ""
-        self._cover_data = info.cover_data
+        self._cover_data = info.cover_data if info else None
         self.setWindowTitle(_("playlist.edit_title"))
         self.setMinimumWidth(400)
         from audio_player.platform import platform_info
@@ -825,6 +825,7 @@ class PlaylistEditDialog(QDialog):
         input_bg = "#f8f8f8" if is_light else "#141418"
         accent = current_accent()
 
+        self._panel_bg = bg
         self.setStyleSheet(
             f"QDialog{{background:{bg};border:1px solid {border};border-radius:12px;}}"
         )
@@ -842,7 +843,7 @@ class PlaylistEditDialog(QDialog):
         name_lbl = QLabel(_("playlist.name_label"))
         name_lbl.setStyleSheet(f"color:{sub_c};font-size:11px;")
         layout.addWidget(name_lbl)
-        self._name_edit = QLineEdit(info.name)
+        self._name_edit = QLineEdit(info.name if info else "")
         self._name_edit.setStyleSheet(
             f"QLineEdit{{background:{input_bg};color:{text_c};border:1px solid {border};"
             f"border-radius:6px;padding:8px 10px;font-size:13px;}}"
@@ -855,7 +856,7 @@ class PlaylistEditDialog(QDialog):
         desc_lbl.setStyleSheet(f"color:{sub_c};font-size:11px;")
         layout.addWidget(desc_lbl)
         self._desc_edit = QTextEdit()
-        self._desc_edit.setPlainText(info.description)
+        self._desc_edit.setPlainText(info.description if info else "")
         self._desc_edit.setMaximumHeight(80)
         self._desc_edit.setStyleSheet(
             f"QTextEdit{{background:{input_bg};color:{text_c};border:1px solid {border};"
@@ -879,7 +880,7 @@ class PlaylistEditDialog(QDialog):
         self._cover_preview.mousePressEvent = self._pick_cover
         cover_row.addWidget(self._cover_preview)
 
-        if info.cover_data:
+        if info and info.cover_data:
             rm_btn = QPushButton(_("playlist.cover_remove"))
             rm_btn.setStyleSheet(
                 f"QPushButton{{background:transparent;color:{sub_c};border:none;font-size:11px;}}"
@@ -962,6 +963,17 @@ class PlaylistEditDialog(QDialog):
         self._update_cover_preview()
         if self._rm_cover_btn:
             self._rm_cover_btn.setVisible(False)
+
+    def paintEvent(self, event):
+        """WA_TranslucentBackground swallows the stylesheet background —
+        the panel must be drawn here (same as the tag editor)."""
+        from PyQt6.QtCore import QRectF
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 12, 12)
+        painter.fillPath(path, QColor(self._panel_bg))
+        painter.end()
 
     def get_name(self) -> str:
         return self._name_edit.text().strip()
