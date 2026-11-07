@@ -664,7 +664,7 @@ class FloatingPill(QWidget):
         # made dblclick-only expansion unreliable on a real mouse)
         if (e.button() == Qt.MouseButton.LeftButton and not self._scrubbing
                 and not self._in_progress_band(pos.y())
-                and self.childAt(pos) is self._cover_label):
+                and self.childAt(pos.toPoint()) is self._cover_label):
             self.expandRequested.emit()
             e.accept()
             return

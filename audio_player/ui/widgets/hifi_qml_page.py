@@ -3,6 +3,7 @@ import bisect
 import math
 import os
 import queue
+import sys
 import tempfile
 from pathlib import Path
 from PyQt6.QtCore import (Qt, pyqtSignal, QUrl, QThread, QTimer, QObject,
@@ -126,18 +127,14 @@ class HiFiQmlPage(QQuickWidget):
         qml_path = Path(__file__).resolve().parent.parent / "qml" / "HiFiNowPlaying.qml"
         self.setSource(QUrl.fromLocalFile(str(qml_path)))
 
-        root = self.rootObject()
-        if root is not None:
-            root.collapseRequested.connect(self.collapseRequested.emit)
-            root.fullscreenRequested.connect(self.fullscreenRequested.emit)
-            root.playPauseClicked.connect(self.playPauseClicked.emit)
-            root.nextClicked.connect(self.nextClicked.emit)
-            root.prevClicked.connect(self.prevClicked.emit)
-            root.seekRequested.connect(self.seekRequested.emit)
-            root.lyricsToggled.connect(self._on_lyrics_toggled)
-            for name in ('prev', 'play', 'pause', 'next'):
-                root.setProperty(f"icon{name.capitalize()}",
-                    QUrl.fromLocalFile(os.path.join(self._icon_dir, f"{name}.png")).toString())
+        # 真实 GPU 管线下 QML 场景可能延迟就绪且根对象可能被整体重建
+        # （实测：Ready 时接线的 root 与构造结束后的 rootObject() 不是同一个，
+        # 且 Ready 投递时机不稳定）。改为自愈式接线：每次访问前校验根对象
+        # 身份，变化/未接即重连信号 + 重设图标；statusChanged + showEvent +
+        # 各属性 setter 都是触发点（播放时 set_position 每 ~500ms 自检）。
+        self._wired_root = None
+        self.statusChanged.connect(self._on_qml_status)
+        self._ensure_root_wired()
 
         self._position_ms = 0
         self._duration_ms = 0
@@ -168,6 +165,46 @@ class HiFiQmlPage(QQuickWidget):
             self._cover_worker.stop()
             self._cover_worker = None
 
+    def _on_qml_status(self, status):
+        if status == QQuickWidget.Status.Ready:
+            self._ensure_root_wired()
+        elif status == QQuickWidget.Status.Error:
+            for err in self.errors():
+                print(f"[qml] {err.toString()}", file=sys.stderr)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # 根对象可能在页面显示前后被重建，显示时再校验一次
+        self._ensure_root_wired()
+
+    def _ensure_root_wired(self):
+        """连接 QML 根对象信号并设置图标。
+
+        根对象被重建后旧连接随之失效，按身份比对幂等重做；图标每次
+        重设（代价为 4 次 setProperty，可忽略）。
+        """
+        root = self.rootObject()
+        if root is None:
+            return
+        if self._wired_root is root:
+            return
+        self._wired_root = root
+        root.collapseRequested.connect(self.collapseRequested.emit)
+        root.fullscreenRequested.connect(self.fullscreenRequested.emit)
+        root.playPauseClicked.connect(self.playPauseClicked.emit)
+        root.nextClicked.connect(self.nextClicked.emit)
+        root.prevClicked.connect(self.prevClicked.emit)
+        root.seekRequested.connect(self.seekRequested.emit)
+        root.lyricsToggled.connect(self._on_lyrics_toggled)
+        for name in ('prev', 'play', 'pause', 'next'):
+            root.setProperty(f"icon{name.capitalize()}",
+                QUrl.fromLocalFile(os.path.join(self._icon_dir, f"{name}.png")).toString())
+        if os.environ.get("VB_QML_DEBUG"):
+            print(f"[qml-wire] wired root at status={self.status()}, "
+                  f"rootid={id(root)}, "
+                  f"iconPrev={str(root.property('iconPrev'))[:40]!r}",
+                  file=sys.stderr, flush=True)
+
     def _export_icons(self):
         from audio_player.ui.icons import TRANSPORT_PREV, TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT, _icon
         icon_map = {'prev': (TRANSPORT_PREV, '#cccccc'), 'play': (TRANSPORT_PLAY, '#ffffff'),
@@ -180,6 +217,7 @@ class HiFiQmlPage(QQuickWidget):
                 pix.save(path, "PNG")
 
     def set_track_info(self, title: str, artist: str, album: str):
+        self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("trackTitle", title or "")
         if root: root.setProperty("trackArtist", artist or "")
@@ -199,6 +237,7 @@ class HiFiQmlPage(QQuickWidget):
     def _on_cover_ready(self, gen: int, cover_path: str, bg_path: str):
         if gen != self._cover_gen:
             return  # stale — a newer track already took over
+        self._ensure_root_wired()
         root = self.rootObject()
         if root:
             # Unique per-generation filenames, so no cache-buster query needed
@@ -207,21 +246,25 @@ class HiFiQmlPage(QQuickWidget):
 
     def set_position(self, ms: int):
         self._position_ms = ms
+        self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("positionMs", ms)
 
     def set_duration(self, ms: int):
         self._duration_ms = ms
+        self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("durationMs", ms)
 
     def set_playing(self, playing: bool):
         self._is_playing = playing
+        self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("isPlaying", playing)
 
 
     def set_quality(self, text: str):
+        self._ensure_root_wired()
         root = self.rootObject()
         if root:
             root.setProperty("qualityText", text or "")
@@ -232,10 +275,12 @@ class HiFiQmlPage(QQuickWidget):
 
     def set_lyrics_visible(self, visible: bool):
         self._lyrics_layout_progress = 1.0 if visible else 0.0
+        self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("lyricsLayoutProgress", self._lyrics_layout_progress)
 
     def set_lyrics(self, lines: list):
+        self._ensure_root_wired()
         root = self.rootObject()
         dict_lines = []
         for line in (lines or []):
@@ -257,6 +302,7 @@ class HiFiQmlPage(QQuickWidget):
         if new_idx == self._last_lyrics_idx:
             return
         self._last_lyrics_idx = new_idx
+        self._ensure_root_wired()
         root = self.rootObject()
         if root:
             root.setProperty("lyricsActiveIdx", new_idx)
@@ -264,6 +310,7 @@ class HiFiQmlPage(QQuickWidget):
     def refresh_accent(self):
         from audio_player.app import current_accent
         accent = current_accent()
+        self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("accentColor", accent)
 
@@ -279,6 +326,7 @@ class HiFiQmlPage(QQuickWidget):
         self._begin_transition(cover_global_rect, "out", duration, underlay)
 
     def _begin_transition(self, cover_global_rect, direction, duration, underlay):
+        self._ensure_root_wired()
         root = self.rootObject()
         if root is None:
             # QML 未就绪：直接落到终态，保证功能不中断
@@ -345,6 +393,7 @@ class HiFiQmlPage(QQuickWidget):
 
     def _push_transition_props(self):
         """把本帧的过渡数值推给 QML（背景淡化/文字错峰/封面飞行矩形）。"""
+        self._ensure_root_wired()
         root = self.rootObject()
         if root is None:
             return
@@ -394,6 +443,7 @@ class HiFiQmlPage(QQuickWidget):
         self._enter_progress = 1.0
         self._enter_global_rect = None
         self._exit_done = None
+        self._ensure_root_wired()
         root = self.rootObject()
         if root:
             root.setProperty("transitionActive", False)
@@ -413,6 +463,7 @@ class HiFiQmlPage(QQuickWidget):
                 done()
 
     def toggle_lyrics(self):
+        self._ensure_root_wired()
         root = self.rootObject()
         if root:
             to_lyrics = root.property("lyricsLayoutProgress") < 0.5

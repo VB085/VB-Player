@@ -1,1 +1,3 @@
-VB Player is already running.
+[Qt:QtMsgType.QtWarningMsg] QObject::connect: No such signal QPlatformNativeInterface::systemTrayWindowChanged(QScreen*)
+[repro] playing /home/vb/音乐/蔡琴/蔡琴 - 渡口.flac
+[repro] state=1 pos=4069 duration=227333

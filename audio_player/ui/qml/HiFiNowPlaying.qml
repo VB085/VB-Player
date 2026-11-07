@@ -169,14 +169,14 @@ Rectangle {
         opacity:root.buttonsOpacity * (1.0 - _p * 0.15) * root._ctrlGate; height:_playSz
         property real _tw: 2*_sideSz+_playSz+2*_gap; x:_ctrX-_tw/2; width:_tw
         Rectangle { id:prevBtn; width:_sideSz; height:_sideSz; radius:_sideSz/2; color:"transparent"
-            y:(_playSz-_sideSz)/2; Image { anchors.centerIn:parent; width:parent.width*0.42; height:parent.height*0.42; source:root.iconPrev; fillMode:Image.PreserveAspectFit }
+            y:(_playSz-_sideSz)/2; Image { objectName:"qPrev"; anchors.centerIn:parent; width:parent.width*0.42; height:parent.height*0.42; source:root.iconPrev; fillMode:Image.PreserveAspectFit }
             MouseArea { anchors.fill:parent; cursorShape:Qt.PointingHandCursor; onClicked:root.prevClicked() } }
         Rectangle { id:playBtn; x:_sideSz+_gap; width:_playSz; height:_playSz; radius:_playSz/2; color:root.accentColor
             Image { anchors.centerIn:parent; width:parent.width*0.45; height:parent.height*0.45
-                source:root.isPlaying?root.iconPause:root.iconPlay; fillMode:Image.PreserveAspectFit }
+                source:root.isPlaying?root.iconPause:root.iconPlay; fillMode:Image.PreserveAspectFit; objectName:"qPlay" }
             MouseArea { anchors.fill:parent; cursorShape:Qt.PointingHandCursor; onClicked:root.playPauseClicked() } }
         Rectangle { x:_sideSz+_gap+_playSz+_gap; width:_sideSz; height:_sideSz; radius:_sideSz/2; color:"transparent"
-            y:(_playSz-_sideSz)/2; Image { anchors.centerIn:parent; width:parent.width*0.42; height:parent.height*0.42; source:root.iconNext; fillMode:Image.PreserveAspectFit }
+            y:(_playSz-_sideSz)/2; Image { objectName:"qNext"; anchors.centerIn:parent; width:parent.width*0.42; height:parent.height*0.42; source:root.iconNext; fillMode:Image.PreserveAspectFit }
             MouseArea { anchors.fill:parent; cursorShape:Qt.PointingHandCursor; onClicked:root.nextClicked() } } }
 
     Item { anchors.fill:parent
