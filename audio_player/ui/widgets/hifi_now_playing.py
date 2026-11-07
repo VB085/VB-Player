@@ -555,10 +555,19 @@ class HiFiNowPlayingPage(QWidget):
         return max(0.0, min(1.0, -math.log2(1.0 - p) / 10.0))
 
     def _enter_alpha(self, delay: float = 0.0) -> float:
-        """Staggered ease for texts/controls during the hero transition."""
+        """Staggered ease for texts/controls during the hero transition.
+
+        进入按 delay 错峰淡入；退场做镜像淡出（t 从 0→1，控件在
+        t = 1-delay 前淡完）：按钮先消失、标题最后，与背景交叉淡化
+        同节奏，不会出现"瞬间消失→又淡回来→切走时硬切"。
+        """
         if self._enter_global_rect is None:
             return 1.0
         t = self._enter_time()
+        if self._enter_direction == "out":
+            span = max(0.001, 1.0 - delay)
+            a = 1.0 - max(0.0, min(1.0, t / span))
+            return a * a * (3.0 - 2.0 * a)
         a = max(0.0, min(1.0, (t - delay) / max(0.001, 1.0 - delay)))
         return a * a * (3.0 - 2.0 * a)
 
