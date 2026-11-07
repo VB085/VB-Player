@@ -1,3 +1,5 @@
+import time
+
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
@@ -59,6 +61,10 @@ class _BaseAudioEngine(QObject):
         self._audio_pad_linked = False
         self._stall_ticks = 0
         self._last_position_ms = -1
+        # flush seek 待验证目标 (target_ms, t0, retried)：并发 flush seek
+        # 会被 GStreamer 静默丢弃（seek_simple 返回 True 但不生效），由
+        # _poll 确认引擎真的到位，未到位补发一次
+        self._pending_seek: tuple[int, float, bool] | None = None
 
         self._current_file = ""
         self._app_state = PlaybackState.Stopped
@@ -566,6 +572,25 @@ class _BaseAudioEngine(QObject):
             if ms > 0 and ms != self._duration_ms:
                 self._duration_ms = ms
                 self.durationChanged.emit(ms)
+        # flush seek 验证：位置追上目标即销案；0.5s 未追上补发一次
+        # （并发 flush seek 竞态丢 seek）；2s 仍未追上则放弃（管线异常，
+        # 由 UI 超时接管，避免无限补发）
+        if self._pending_seek is not None:
+            target, t0, retried = self._pending_seek
+            now = time.monotonic()
+            if abs(self._position_ms - target) < 1500:
+                self._pending_seek = None
+            elif now - t0 > 2.0:
+                self._pending_seek = None
+            elif now - t0 > 0.5 and not retried:
+                self._pending_seek = (target, t0, True)
+                try:
+                    self._pipeline.seek_simple(
+                        Gst.Format.TIME,
+                        Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+                        target * 1000000)
+                except Exception:
+                    self._pending_seek = None
 
     # ------------------------------------------------------------------
     #  Public API — playback control
@@ -604,6 +629,7 @@ class _BaseAudioEngine(QObject):
 
     def stop(self):
         self._poll_timer.stop()
+        self._pending_seek = None
         self._teardown_pipeline()
         if self._app_state != PlaybackState.Stopped:
             self._app_state = PlaybackState.Stopped
@@ -626,11 +652,13 @@ class _BaseAudioEngine(QObject):
             return
         target = max(0, min(position_ms, self._duration_ms))
         try:
-            self._pipeline.seek_simple(
+            ok = self._pipeline.seek_simple(
                 Gst.Format.TIME,
                 Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
                 target * 1000000
             )
+            if ok:
+                self._pending_seek = (target, time.monotonic(), False)
         except Exception as e:
             import sys; print(f"[engine] seek 不支持: {e}", file=sys.stderr)
 
@@ -884,6 +912,7 @@ class _BaseAudioEngine(QObject):
         self.durationChanged.emit(0)
         self._stall_ticks = 0
         self._last_position_ms = -1
+        self._pending_seek = None  # 旧曲的 seek 验证不能带进新曲
         # Start playing the new pipeline
         self._pipeline.set_state(Gst.State.PLAYING)
         self._app_state = PlaybackState.Playing
