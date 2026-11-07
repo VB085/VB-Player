@@ -22,6 +22,7 @@ NAV_ALBUMS      = "fa6s.compact-disc"
 NAV_FAVORITES   = "fa6s.star"
 NAV_PLAYLISTS   = "fa6s.rectangle-list"
 NAV_NETWORK     = "fa6s.globe"
+NAV_ONLINE      = "fa6s.wifi"
 NAV_MANAGE      = "fa6s.gear"
 NAV_SETTINGS    = "fa6s.wrench"
 

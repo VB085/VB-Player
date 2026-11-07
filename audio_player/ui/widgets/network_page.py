@@ -30,6 +30,7 @@ class NetworkPage(QWidget):
     deviceSelected = pyqtSignal(str)
     exclusiveModeToggled = pyqtSignal(bool)
     exclusiveDeviceChanged = pyqtSignal(str)
+    bitPerfectToggled = pyqtSignal(bool)
     dsdModeChanged = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -131,6 +132,13 @@ class NetworkPage(QWidget):
         self._exclusive_cb.setToolTip(_("settings.exclusive_tooltip"))
         self._exclusive_cb.toggled.connect(self._on_exclusive_toggled)
         ao_layout.addWidget(self._exclusive_cb)
+
+        self._bit_perfect_cb = QCheckBox(_("settings.bit_perfect"))
+        self._bit_perfect_cb.setToolTip(_("settings.bit_perfect_tooltip"))
+        self._bit_perfect_cb.toggled.connect(self._on_bit_perfect_toggled)
+        from audio_player.platform import platform_info
+        self._bit_perfect_cb.setVisible(platform_info.is_linux)
+        ao_layout.addWidget(self._bit_perfect_cb)
 
         self._device_combo = _NoWheelComboBox()
         self._device_combo.setEnabled(False)
@@ -426,6 +434,8 @@ class NetworkPage(QWidget):
         self._audio_out_group.setTitle(_("settings.exclusive_mode"))
         self._exclusive_cb.setText(_("settings.exclusive_mode"))
         self._exclusive_cb.setToolTip(_("settings.exclusive_tooltip"))
+        self._bit_perfect_cb.setText(_("settings.bit_perfect"))
+        self._bit_perfect_cb.setToolTip(_("settings.bit_perfect_tooltip"))
         # DSD combo refresh
         self._dsd_combo.blockSignals(True)
         self._dsd_combo.clear()
@@ -459,8 +469,23 @@ class NetworkPage(QWidget):
         self._device_combo.setEnabled(checked)
         s = QSettings("VBPlayer", "VB Player")
         s.setValue("exclusive_mode", checked)
+        # Bit-perfect requires exclusive access; leaving exclusive leaves it too.
+        if not checked and self._bit_perfect_cb.isChecked():
+            self._bit_perfect_cb.blockSignals(True)
+            self._bit_perfect_cb.setChecked(False)
+            self._bit_perfect_cb.blockSignals(False)
+            s.setValue("bit_perfect_mode", False)
+            self.bitPerfectToggled.emit(False)
         self.refresh_device_list(exclusive_on=checked)
         self.exclusiveModeToggled.emit(checked)
+
+    def _on_bit_perfect_toggled(self, checked: bool):
+        if checked and not self._exclusive_cb.isChecked():
+            # Enabling hardware passthrough implies exclusive mode.
+            self._exclusive_cb.setChecked(True)
+        s = QSettings("VBPlayer", "VB Player")
+        s.setValue("bit_perfect_mode", checked)
+        self.bitPerfectToggled.emit(checked)
 
     def _on_device_changed(self, idx: int):
         hw = self._device_combo.itemData(idx)
@@ -503,6 +528,11 @@ class NetworkPage(QWidget):
         if idx >= 0:
             self._device_combo.setCurrentIndex(idx)
         self.refresh_device_list(exclusive_on=mode)
+
+    def set_bit_perfect_state(self, enabled: bool):
+        self._bit_perfect_cb.blockSignals(True)
+        self._bit_perfect_cb.setChecked(enabled)
+        self._bit_perfect_cb.blockSignals(False)
 
     def set_dsd_mode(self, mode: str):
         idx = self._dsd_combo.findData(mode)
@@ -646,6 +676,9 @@ class NetworkPage(QWidget):
         self._hw_loaded = False
         exclusive = str(s.value("exclusive_mode", "false")).lower() == "true"
         exclusive_dev = str(s.value("exclusive_device", "hw:0,0") or "hw:0,0")
+        bit_perfect = str(s.value("bit_perfect_mode", "false")).lower() == "true"
+        # Bit-perfect implies exclusive; keep the UI consistent with the engine.
+        exclusive = exclusive or bit_perfect
         self._exclusive_cb.blockSignals(True)
         self._exclusive_cb.setChecked(exclusive)
         self._device_combo.setEnabled(exclusive)
@@ -655,6 +688,9 @@ class NetworkPage(QWidget):
             idx = self._device_combo.findData(exclusive_dev)
             if idx >= 0:
                 self._device_combo.setCurrentIndex(idx)
+        self._bit_perfect_cb.blockSignals(True)
+        self._bit_perfect_cb.setChecked(bit_perfect)
+        self._bit_perfect_cb.blockSignals(False)
         dsd_mode = str(s.value("dsd_mode", "pcm") or "pcm")
         dsd_idx = self._dsd_combo.findData(dsd_mode)
         if dsd_idx >= 0:

@@ -6,7 +6,7 @@ from audio_player.app import current_theme_mode, current_accent
 from audio_player.i18n import _, languageChanged
 from audio_player.ui.icons import (
     NAV_SONGS, NAV_NOW_PLAYING, NAV_ALBUMS, NAV_FAVORITES, NAV_PLAYLISTS,
-    NAV_NETWORK, NAV_MANAGE, NAV_SETTINGS,
+    NAV_NETWORK, NAV_ONLINE, NAV_MANAGE, NAV_SETTINGS,
     SIDEBAR_TOGGLE, SIDEBAR_EXPAND,
     _icon, _accent_icon,
 )
@@ -16,10 +16,14 @@ NAV_ITEMS = [
     (NAV_ALBUMS,      "nav.albums",       "albums"),
     (NAV_FAVORITES,   "nav.favorites",    "favorites"),
     (NAV_PLAYLISTS,   "nav.playlists",    "playlists"),
+    (NAV_ONLINE,      "nav.online",       "online"),
     (NAV_NETWORK,     "nav.output",       "output"),
     (NAV_MANAGE,      "nav.tools",        "tools"),
     (NAV_SETTINGS,    "nav.settings",     "settings"),
 ]
+
+# Online starts hidden and only appears when a provider registers itself.
+HIDDEN_BY_DEFAULT = {"online"}
 
 
 class Sidebar(QWidget):
@@ -75,6 +79,7 @@ class Sidebar(QWidget):
 
         # Nav items — row-per-item: icon-btn + label
         self._nav_rows: list[dict] = []
+        self._nav_visible: dict[str, bool] = {}
         self._nav_layout = QVBoxLayout()
         self._nav_layout.setContentsMargins(4, 4, 4, 4)
         self._nav_layout.setSpacing(2)
@@ -102,6 +107,11 @@ class Sidebar(QWidget):
 
             self._nav_layout.addLayout(row)
             self._nav_rows.append({"key": nav_key, "tr_key": tr_key, "btn": btn, "lbl": lbl, "icon": icon_name})
+            visible = nav_key not in HIDDEN_BY_DEFAULT
+            self._nav_visible[nav_key] = visible
+            if not visible:
+                btn.hide()
+                lbl.hide()
 
         main.addLayout(self._nav_layout)
 
@@ -136,9 +146,27 @@ class Sidebar(QWidget):
         self._update_nav_highlight()
 
     def _on_nav(self, key: str):
+        if not self._nav_visible.get(key, True):
+            return
         self._current_nav = key
         self._update_nav_highlight()
         self.navChanged.emit(key)
+
+    def select_nav(self, key: str):
+        """Programmatically select a nav item (e.g. when online starts playing)."""
+        self._on_nav(key)
+
+    def set_nav_visible(self, key: str, visible: bool):
+        """Show/hide a nav entry (used by the online provider monitor)."""
+        self._nav_visible[key] = bool(visible)
+        for row in self._nav_rows:
+            if row["key"] != key:
+                continue
+            row["btn"].setVisible(visible)
+            row["lbl"].setVisible(visible and not self._collapsed)
+            if not visible and self._current_nav == key:
+                self._on_nav("songs")
+            break
 
     def _update_nav_highlight(self):
         """Highlight selected nav item. Background follows accent via inline style."""
@@ -192,7 +220,8 @@ class Sidebar(QWidget):
         # Show labels immediately when expanding
         if not self._collapsed:
             for row in self._nav_rows:
-                row["lbl"].show()
+                if self._nav_visible.get(row["key"], True):
+                    row["lbl"].show()
             self._track_count_label.show()
             self._album_count_label.show()
         self._anim_start = float(current)
@@ -225,7 +254,8 @@ class Sidebar(QWidget):
             self.setMinimumWidth(self.EXPANDED_MIN_W)
             self.setMaximumWidth(420)
             for row in self._nav_rows:
-                row["lbl"].show()
+                if self._nav_visible.get(row["key"], True):
+                    row["lbl"].show()
             self._track_count_label.show()
             self._album_count_label.show()
             self.widthToggled.emit(self._expanded_width)
