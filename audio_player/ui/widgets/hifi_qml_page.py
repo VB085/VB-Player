@@ -355,18 +355,23 @@ class HiFiQmlPage(QWidget):
             root.setProperty("lyricsModel", dict_lines)
 
     def set_lyrics_position(self, ms: int):
-        """Binary-search the active line over cached timestamps — avoids
-        re-converting the whole lyrics model on every position update."""
+        """定位歌词：二分查当前行（高亮样式）+ 行内线性插值出连续漂移
+        目标（恢复 widget 版的连续滚动感，替代逐行跳变）。"""
         if not self._lyrics_times:
             return
         new_idx = bisect.bisect_right(self._lyrics_times, ms) - 1
-        if new_idx == self._last_lyrics_idx:
-            return
-        self._last_lyrics_idx = new_idx
         self._ensure_root_wired()
         root = self.rootObject()
-        if root:
+        if root is None:
+            return
+        if new_idx != self._last_lyrics_idx:
+            self._last_lyrics_idx = new_idx
             root.setProperty("lyricsActiveIdx", new_idx)
+        i = max(0, new_idx)
+        t0 = self._lyrics_times[i]
+        t1 = self._lyrics_times[i + 1] if i + 1 < len(self._lyrics_times) else t0 + 1
+        frac = 0.0 if t1 <= t0 else max(0.0, min(1.0, (ms - t0) / (t1 - t0)))
+        root.setProperty("lyricsDrift", float(i) + frac)
 
     def refresh_accent(self):
         from audio_player.app import current_accent

@@ -9,18 +9,31 @@ Rectangle {
     anchors.fill: parent
 
     property string trackTitle: ""; property string trackArtist: ""; property string trackAlbum: ""
-    // cover/bg fade in as they arrive (black → content transitions are jarring)
+    // cover/bg 双层交叉淡化：旧图淡出的同时新图淡入（单层实现会在
+    // 切歌瞬间掉到黑底再淡入，观感为"暗一下"）
     property string coverPath: ""; property string bgPath: ""
+    property string coverPathOld: ""; property string bgPathOld: ""
+    property string _bgCurrent: ""; property string _coverCurrent: ""
     property real _bgFade: 0.0
     Behavior on _bgFade { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
     property real _coverFade: 0.0
     Behavior on _coverFade { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
-    onCoverPathChanged: { _coverFade = 0.0; if (coverPath !== "") _coverFade = 1.0 }
-    onBgPathChanged: { _bgFade = 0.0; if (bgPath !== "") _bgFade = 1.0 }
+    onCoverPathChanged: {
+        coverPathOld = _coverCurrent; _coverCurrent = coverPath
+        _coverFade = 0.0
+        if (coverPath !== "" || coverPathOld !== "") _coverFade = 1.0
+    }
+    onBgPathChanged: {
+        bgPathOld = _bgCurrent; _bgCurrent = bgPath
+        _bgFade = 0.0
+        if (bgPath !== "" || bgPathOld !== "") _bgFade = 1.0
+    }
     property int    positionMs: 0; property int    durationMs: 0
     property bool   isPlaying: false
     property string qualityText: ""; property string qualitySimple: ""
     property var    lyricsModel: []; property int    lyricsActiveIdx: -1
+    property real   lyricsDrift: 0.0
+    property real   _driftMirror: 0.0   // 调试/外部读取：当前 contentY   // 连续漂移目标（行索引 + 行内进度）
     property real   lyricsLayoutProgress: 0.0
     Behavior on lyricsLayoutProgress { NumberAnimation { duration: 400; easing.type: Easing.InOutCubic } }
 
@@ -72,11 +85,15 @@ Rectangle {
         visible: root.transitionActive && root.underlayPath !== ""
         fillMode: Image.Stretch; cache: false; asynchronous: false }
 
-    Item { anchors.fill: parent   // 背景组：切歌交叉淡化 + hero 过渡统一走 _bgGate
+    Item { anchors.fill: parent   // 背景组：双层真交叉淡化 + hero 过渡统一走 _bgGate
         opacity: root._bgGate
+        // 旧背景：淡出层（首次到达时 bgPathOld 为空 → 不可见，新图从渐变底淡入）
+        Image { anchors.fill: parent; source: root.bgPathOld; fillMode: Image.PreserveAspectCrop
+            visible: root.bgPathOld !== "" && root._bgFade < 0.999
+            opacity: 1.0 - root._bgFade }
         Image { anchors.fill: parent; source: root.bgPath; fillMode: Image.PreserveAspectCrop
             visible: root.bgPath !== ""; opacity: root._bgFade }
-        Rectangle { anchors.fill: parent; visible: root.bgPath === ""
+        Rectangle { anchors.fill: parent; visible: root.bgPath === "" && root.bgPathOld === ""
             gradient: Gradient { GradientStop { position:0.0; color:"#0d0d1a" } GradientStop { position:1.0; color:"#1a1a2e" } } }
         Rectangle { anchors.fill: parent; color: "#a0000000" }
     }
@@ -111,6 +128,11 @@ Rectangle {
                     height:(root.coverOverrideActive?root.covW:_coverH)
                     radius:(root.coverOverrideActive?root.covR:12); clip:true
             color: root.coverPath ? "transparent" : "#1e1e40"
+            // 双层交叉淡化：旧封面淡出、新封面淡入（切歌不再闪跳）
+            Image { anchors.fill:parent; source:root.coverPathOld
+                fillMode:Image.PreserveAspectCrop
+                visible:root.coverPathOld!="" && root._coverFade < 0.999
+                opacity: 1.0 - root._coverFade }
             Image { anchors.fill:parent; source:root.coverPath; fillMode:Image.PreserveAspectCrop
                 visible:root.coverPath!==""; opacity: root._coverFade }
             Text { anchors.centerIn:parent; text:"♪"; color:"#a78bfa"; font.pointSize:Math.max(8,_coverW/6); visible:root.coverPath==="" } }
@@ -194,6 +216,7 @@ Rectangle {
         property int lyricFont: Math.max(18, Math.min(26, Math.floor(layerW * 0.027)))
         property real fadeTop: Math.min(56, Math.max(28, layerH * 0.16))
         property real fadeBottom: Math.min(48, Math.max(24, layerH * 0.12))
+        property real driftY: 0   // contentY 镜像：itemAtIndex 未就绪时的回退值
         ListView {
             id: lyricsView
             x: root.width - lyricsBlock.layerW + 12; y: 64
@@ -201,12 +224,25 @@ Rectangle {
             clip: true
             model: root.lyricsModel
             spacing: Math.max(10, Math.floor(lyricsBlock.lyricFont * 0.6))
-            currentIndex: root.lyricsActiveIdx
-            preferredHighlightBegin: Math.max(0, root.height*0.44 - 64 - lyricsBlock.lyricFont)
-            preferredHighlightEnd: Math.max(1, root.height*0.44 - 64)
-            highlightRangeMode: ListView.StrictlyEnforceRange
-            highlightMoveDuration: 350
-            snapMode: ListView.SnapToItem
+            // 连续漂移：Python 按播放位置推 lyricsDrift（行索引+行内进度），
+            // contentY 绑定到行锚点插值，Behavior 平滑衔接 —— 恢复 widget 版
+            // 的连续滚动感（逐行 snap 在长间奏时静止、换行时突跳）
+            contentY: {
+                var drift = Math.max(0, root.lyricsDrift)
+                var i = Math.floor(drift)
+                var frac = drift - i
+                var a = lyricsView.itemAtIndex(i)
+                if (!a) return lyricsBlock.driftY
+                var b = lyricsView.itemAtIndex(i + 1)
+                var ya = a.y
+                var yb = (b ? b.y : a.y + a.height + lyricsView.spacing)
+                var lineCenter = ya + (yb - ya) * frac + a.height / 2
+                return lineCenter - (root.height * 0.44 - 64)
+            }
+            Behavior on contentY { NumberAnimation { duration: 220; easing.type: Easing.OutQuad } }
+            onContentYChanged: { lyricsBlock.driftY = contentY; root._driftMirror = contentY }
+            interactive: false
+            cacheBuffer: 2000
             delegate: Item {
                 width: ListView.view.width
                 height: mainText.height
