@@ -34,8 +34,9 @@
 | 专辑 | 11pt `#8899aa` | 11pt #8899aa | ✓ |
 | 音质条 | 10pt letterSpacing 1 `accent.lighter(1.2)` | 同 | ✓ |
 | 时间标签 | 10pt（widget 用 #94a3b8，后改 accent.lighter(1.3)） | accent.lighter(1.3) | QML 值 |
-| 歌词基准字号 | `max(20, min(34, w*0.038))`，**统一字号** | **18pt 活跃 / 14pt 非活跃（非统一）** | **widget：统一字号随窗宽缩放** |
-| 歌词当前行区分 | 仅加粗 + 强调色（不缩放） | 字号动画 14↔18 | **widget：加粗+强调色** |
+| 歌词基准字号 | 公式 20-34pt 随层宽；**用户验收的紧凑实态为 20pt** | 固定 18/14 非统一 | **`max(18, min(26, layerW*0.027))` — 1280 宽下 20pt** |
+| 歌词当前行区分 | 加粗 + accent 色（08 截图发白是强调色渐入未完成） | 字号动画+白色 | **加粗 + accent 色，统一字号** |
+| 歌词行距 | gap=max(12, 0.9×字号)（时序原因实态 ≈12px→行距 37px） | 8px | **`max(10, 0.6×字号)` — 20pt 下 12px** |
 | 歌词非当前行色 | `#8899aa` 系 | #8899aa | ✓ |
 | 歌词换行 | QTextLayout 词形换行 + 边缘 alpha 淡出 | WordWrap，无边缘淡出 | 需补边缘淡出 |
 | 歌词滚动 | 亚像素整体滚动 + 缓存 | ListView StrictlyEnforceRange + Snap | QML 场景图原生 |

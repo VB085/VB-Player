@@ -179,18 +179,69 @@ Rectangle {
             y:(_playSz-_sideSz)/2; Image { objectName:"qNext"; anchors.centerIn:parent; width:parent.width*0.42; height:parent.height*0.42; source:root.iconNext; fillMode:Image.PreserveAspectFit }
             MouseArea { anchors.fill:parent; cursorShape:Qt.PointingHandCursor; onClicked:root.nextClicked() } } }
 
-    Item { anchors.fill:parent
+    Item { id: lyricsBlock; anchors.fill:parent
         opacity: root.lyricsLayoutProgress * root._lyrGate; visible:root.lyricsLayoutProgress>0.01
-        ListView { id:lyricsView; anchors.centerIn:parent; width:Math.min(_w*0.6,600); height:_h*0.5
-            model:root.lyricsModel; spacing:8; currentIndex:root.lyricsActiveIdx
-            preferredHighlightBegin:height/2-24; preferredHighlightEnd:height/2+24
-            highlightRangeMode:ListView.StrictlyEnforceRange; snapMode:ListView.SnapToItem
-            delegate: Text { width:ListView.view.width; text:modelData.text||""
-                font.pointSize: index===root.lyricsActiveIdx ? 18 : 14
-                color: index===root.lyricsActiveIdx ? "#ffffff" : "#8899aa"
-                horizontalAlignment:Text.AlignHCenter; wrapMode:Text.WordWrap
-                Behavior on font.pointSize { NumberAnimation { duration:150 } }
-                Behavior on color { ColorAnimation { duration:150 } } } }
+        // 歌词视觉参数与 widget 版逐项对齐（docs/immersive-qml-port-spec.md §二）：
+        // 统一字号随层宽缩放、当前行 accent+加粗、翻译行仅当前行显示、
+        // 非当前行 #8899aa × 距离衰减 × 0.7、上下边缘 alpha 淡出
+        // 字号/行距按用户验收的紧凑版校准（1280 宽下 20pt、行距 ≈37px）
+        property real layerW: root.width * 0.58
+        property real layerH: root.height - 64
+        property int lyricFont: Math.max(18, Math.min(26, Math.floor(layerW * 0.027)))
+        property real fadeTop: Math.min(56, Math.max(28, layerH * 0.16))
+        property real fadeBottom: Math.min(48, Math.max(24, layerH * 0.12))
+        ListView {
+            id: lyricsView
+            x: root.width - lyricsBlock.layerW + 12; y: 64
+            width: lyricsBlock.layerW - 24; height: lyricsBlock.layerH
+            clip: true
+            model: root.lyricsModel
+            spacing: Math.max(10, Math.floor(lyricsBlock.lyricFont * 0.6))
+            currentIndex: root.lyricsActiveIdx
+            preferredHighlightBegin: Math.max(0, root.height*0.44 - 64 - lyricsBlock.lyricFont)
+            preferredHighlightEnd: Math.max(1, root.height*0.44 - 64)
+            highlightRangeMode: ListView.StrictlyEnforceRange
+            highlightMoveDuration: 350
+            snapMode: ListView.SnapToItem
+            delegate: Item {
+                width: ListView.view.width
+                height: mainText.height
+                        + (modelData.translation ? transText.height + 6 : 0)
+                // 双重淡出：按索引距离（widget 版 fade 公式）× 上下边缘蒙版
+                opacity: {
+                    var vy = y - lyricsView.contentY
+                    var H = lyricsBlock.layerH
+                    var a = 1.0
+                    if (vy < lyricsBlock.fadeTop)
+                        a *= Math.max(0, vy / lyricsBlock.fadeTop)
+                    if (vy + height > H - lyricsBlock.fadeBottom)
+                        a *= Math.max(0, (H - vy - height) / lyricsBlock.fadeBottom)
+                    var dist = Math.abs(index - root.lyricsActiveIdx)
+                    if (index !== root.lyricsActiveIdx)
+                        a *= Math.max(0, 1 - dist / 6 * 0.85) * 0.7
+                    return a
+                }
+                Text { id: mainText
+                    width: parent.width
+                    text: modelData.text || ""
+                    font.pointSize: lyricsBlock.lyricFont
+                    font.bold: index === root.lyricsActiveIdx
+                    color: index === root.lyricsActiveIdx ? root.accentColor : "#8899aa"
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    Behavior on color { ColorAnimation { duration: 200 } }
+                }
+                Text { id: transText
+                    anchors.top: mainText.bottom; anchors.topMargin: 6
+                    width: parent.width
+                    visible: index === root.lyricsActiveIdx && !!modelData.translation
+                    text: modelData.translation || ""
+                    font.pointSize: Math.max(16, lyricsBlock.lyricFont - 8)
+                    color: Qt.rgba(root.accentColor.r, root.accentColor.g,
+                                   root.accentColor.b, 0.55)
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                }
+            }
+        }
     }
 
     Timer { id:hideTransportTimer; interval:root.autoHideSeconds*1000; onTriggered:{ if(root.autoHideEnabled)root.buttonsOpacity=0.0 } }
