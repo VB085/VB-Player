@@ -28,6 +28,18 @@ from audio_player.ui.icons import (
 from audio_player.ui.utils import format_duration, format_size
 
 
+def _anim_running(anim) -> bool:
+    """动画对象是否仍在运行。
+
+    拆窗销毁过程中动画可能已被 C++ 侧删除而 Python 引用仍在，
+    直接访问 state() 会抛 RuntimeError（曾导致关窗崩溃），统一在此防护。
+    """
+    try:
+        return anim is not None and anim.state() == QAbstractAnimation.State.Running
+    except RuntimeError:
+        return False
+
+
 class _OpacityHelper(QObject):
     """Helper object for QPropertyAnimation on opacity."""
     def __init__(self, parent=None):
@@ -490,7 +502,13 @@ class HiFiNowPlayingPage(QWidget):
         self._exit_done = on_done
         self._underlay = underlay
         self._lyrics_layer.hide()
-        self._set_topbar_buttons_visible(False)
+        # 右上角按钮随退场淡出，而不是瞬间消失（进入时页面刚出现，
+        # 按钮本来不可见，瞬间隐藏无感，保持原样）
+        self._topbar_hide_timer.stop()
+        if self._topbar_opacity > 0.01:
+            self._animate_topbar(self._topbar_opacity, 0.0, 200)
+        else:
+            self._set_topbar_buttons_visible(False)
         self._start_enter_anim(1.0, 0.0, duration)
 
     def _set_topbar_buttons_visible(self, flag: bool):
@@ -498,8 +516,7 @@ class HiFiNowPlayingPage(QWidget):
             btn.setVisible(flag)
 
     def _start_enter_anim(self, start: float, end: float, duration: int):
-        if (self._enter_anim
-                and self._enter_anim.state() == QAbstractAnimation.State.Running):
+        if _anim_running(self._enter_anim):
             self._enter_anim.stop()
         self._enter_helper.opacity = start
         self._enter_progress = start
@@ -535,8 +552,13 @@ class HiFiNowPlayingPage(QWidget):
                 done()
         else:
             self._update_lyrics_layer()
-            if self._topbar_visible:
+            # 恢复右上角按钮。opacity 已接近 1 时动画无值变化、回调不触发，
+            # 需直接显示；从退场淡出后的低 opacity 进入则用 _show_topbar 淡入
+            if self._topbar_opacity > 0.9:
                 self._set_topbar_buttons_visible(True)
+                self._topbar_hide_timer.start()
+            else:
+                self._show_topbar()
             self.update()
 
     def _enter_time(self) -> float:
@@ -642,7 +664,7 @@ class HiFiNowPlayingPage(QWidget):
         if self._bg_fade_helper is None:
             self._bg_fade_helper = _OpacityHelper(self)
             self._bg_fade_helper._opacity = 0.0
-        if self._bg_fade_anim and self._bg_fade_anim.state() == QAbstractAnimation.State.Running:
+        if _anim_running(self._bg_fade_anim):
             self._bg_fade_anim.stop()
         self._bg_fade_progress = 0.0
         if hasattr(self, "_lyrics_layer"):
@@ -724,7 +746,7 @@ class HiFiNowPlayingPage(QWidget):
             )
         target = 1.0 if visible else 0.0
         # Animate layout morph
-        if self._lyrics_layout_anim and self._lyrics_layout_anim.state() == QAbstractAnimation.State.Running:
+        if _anim_running(self._lyrics_layout_anim):
             self._lyrics_layout_anim.stop()
         self._lyrics_layout_helper.opacity = self._lyrics_layout_progress
         self._lyrics_layout_anim = QPropertyAnimation(self._lyrics_layout_helper, b"opacity")
@@ -836,7 +858,7 @@ class HiFiNowPlayingPage(QWidget):
 
     def _animate_buttons(self, start: float, end: float, duration: int):
         """Animate buttons opacity."""
-        if self._fade_anim and self._fade_anim.state() == QAbstractAnimation.State.Running:
+        if _anim_running(self._fade_anim):
             self._fade_anim.stop()
         self._opacity_helper.opacity = start
         self._fade_anim = QPropertyAnimation(self._opacity_helper, b"opacity")
@@ -939,7 +961,7 @@ class HiFiNowPlayingPage(QWidget):
         self._topbar_hide_timer.start()
 
     def _animate_topbar(self, start: float, end: float, duration: int):
-        if self._topbar_fade_anim and self._topbar_fade_anim.state() == QAbstractAnimation.State.Running:
+        if _anim_running(self._topbar_fade_anim):
             self._topbar_fade_anim.stop()
         self._topbar_opacity_helper.opacity = start
         self._topbar_fade_anim = QPropertyAnimation(self._topbar_opacity_helper, b"opacity")
@@ -987,12 +1009,8 @@ class HiFiNowPlayingPage(QWidget):
         self._topbar_hide_timer.stop()
         # 拆窗销毁过程中动画对象可能已被 C++ 侧删除，访问前需防护
         for attr in ("_fade_anim", "_topbar_fade_anim", "_bg_fade_anim"):
-            try:
-                anim = getattr(self, attr, None)
-                if anim and anim.state() == QAbstractAnimation.State.Running:
-                    anim.stop()
-            except RuntimeError:
-                setattr(self, attr, None)
+            if _anim_running(getattr(self, attr, None)):
+                getattr(self, attr).stop()
 
     def mouseMoveEvent(self, e):
         pos = e.position()
