@@ -11,6 +11,7 @@ import os
 import queue
 import sys
 import tempfile
+import time
 from pathlib import Path
 from PyQt6.QtCore import (Qt, pyqtSignal, QUrl, QThread, QTimer, QObject,
                           QEasingCurve, QPropertyAnimation, QRect,
@@ -182,6 +183,12 @@ class HiFiQmlPage(QWidget):
         self._position_ms = 0
         self._duration_ms = 0
         self._is_playing = False
+        # seek 保持：用户松手后预览保持不动，直到引擎位置追上目标
+        # （或超时）再无缝接管——立即归还会让填充先弹回旧位置再跳到
+        # 目标（点不同进度时表现为"闪一闪"）
+        self._seek_hold_target: float | None = None
+        self._seek_hold_t = 0.0
+        self.seekRequested.connect(self._on_local_seek)
         self._cover_worker: _CoverWorker | None = None
         self._cover_gen = 0
         self._lyrics_times: list[int] = []
@@ -279,7 +286,10 @@ class HiFiQmlPage(QWidget):
 
     def set_track_info(self, title: str, artist: str, album: str):
         self._ensure_root_wired()
+        # 换曲即清除 seek 保持（旧目标的预览不能带到新曲）
+        self._seek_hold_target = None
         root = self.rootObject()
+        if root: root.setProperty("_previewRatio", -1.0)
         if root: root.setProperty("trackTitle", title or "")
         if root: root.setProperty("trackArtist", artist or "")
         if root: root.setProperty("trackAlbum", album or "")
@@ -305,11 +315,28 @@ class HiFiQmlPage(QWidget):
             root.setProperty("coverPath", QUrl.fromLocalFile(cover_path).toString())
             root.setProperty("bgPath", QUrl.fromLocalFile(bg_path).toString())
 
+    def _on_local_seek(self, ms: int):
+        """记录用户 seek 目标并保持预览画面（引擎追上后由 set_position 接管）。"""
+        if self._duration_ms > 0:
+            self._seek_hold_target = float(ms)
+            self._seek_hold_t = time.monotonic()
+            self._ensure_root_wired()
+            root = self.rootObject()
+            if root:
+                root.setProperty("_previewRatio", min(1.0, ms / self._duration_ms))
+
     def set_position(self, ms: int):
         self._position_ms = ms
         self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("positionMs", ms)
+        # seek 保持期：位置没追上目标前不交还显示控制
+        if self._seek_hold_target is not None:
+            now = time.monotonic()
+            caught = abs(ms - self._seek_hold_target) < 1500
+            if caught or now - self._seek_hold_t > 1.2:
+                self._seek_hold_target = None
+                if root: root.setProperty("_previewRatio", -1.0)
 
     def set_duration(self, ms: int):
         self._duration_ms = ms

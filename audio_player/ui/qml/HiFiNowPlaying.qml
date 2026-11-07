@@ -203,7 +203,8 @@ Rectangle {
                 progressBar._previewRatio = _mappedX(mouse) / progressBar.width
                 mouse.accepted = true } }
             onReleased:(mouse)=>{ if (_scrubbing) { _scrubbing = false
-                progressBar._previewRatio = -1.0
+                // 预览保持：由 Python 在引擎位置追上 seek 目标后清零接管，
+                // 立即清零会让填充先弹回旧位置再跳到目标（闪一闪）
                 root.seekRequested(_mappedX(mouse) / progressBar.width * root.durationMs) } } } }
 
     Item { id:transportRow; anchors.bottom:parent.bottom; anchors.bottomMargin:_btnMargin

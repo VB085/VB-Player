@@ -1,5 +1,6 @@
 """Floating pill — Apple Music-style centered playback capsule."""
 
+import time
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
                              QPushButton, QGraphicsOpacityEffect)
 from PyQt6.QtCore import (Qt, pyqtSignal, QPropertyAnimation, QEasingCurve,
@@ -264,6 +265,8 @@ class FloatingPill(QWidget):
         self._scrubbing = False
         self._scrub_preview_ratio = 0.0
         self._scrub_preview_ms = 0
+        self._hold_ratio: float | None = None   # seek 后保持的画面比例
+        self._hold_t = 0.0
         self.setMouseTracking(True)  # hover without buttons held
 
         self.setup_ui()
@@ -476,11 +479,21 @@ class FloatingPill(QWidget):
         super().showEvent(event)
 
     def set_position(self, ms: int):
-        # while scrubbing the preview drives the visuals, not the engine echo
-        if not self._scrubbing:
-            self._position_ms = ms
-            self._ratio = ms / self._duration_ms if self._duration_ms > 0 else 0
-            self.update()
+        # while scrubbing the preview drives the visuals, not the engine echo;
+        # seek 保持期同理——引擎追上目标前不回弹（否则松手瞬间闪一下）
+        if self._scrubbing:
+            return
+        if self._hold_ratio is not None:
+            new_ratio = ms / self._duration_ms if self._duration_ms > 0 else 0
+            if (abs(new_ratio - self._hold_ratio) < 0.015
+                    or time.monotonic() - self._hold_t > 1.2):
+                self._hold_ratio = None
+                self._ratio = new_ratio
+                self.update()
+            return
+        self._position_ms = ms
+        self._ratio = ms / self._duration_ms if self._duration_ms > 0 else 0
+        self.update()
 
     def set_duration(self, ms: int):
         self._duration_ms = ms if ms > 0 else 1
@@ -565,7 +578,12 @@ class FloatingPill(QWidget):
         # scrub interaction); thickening grows downward into the capsule
         radius = thick / 2
         # while scrubbing the preview drives the line, not the engine echo
-        shown_ratio = self._scrub_preview_ratio if self._scrubbing else self._ratio
+        if self._scrubbing:
+            shown_ratio = self._scrub_preview_ratio
+        elif self._hold_ratio is not None:
+            shown_ratio = self._hold_ratio   # seek 保持期：画面停在松手位置
+        else:
+            shown_ratio = self._ratio
 
         p.setPen(Qt.PenStyle.NoPen)
         # no groove — the accent fill is the whole line
@@ -677,6 +695,10 @@ class FloatingPill(QWidget):
             self._scrubbing = False
             if self.mouseGrabber() is self:
                 self.releaseMouse()
+            ratio = max(0.0, min(1.0, ratio))
+            # seek 保持：画面停在松手位置，引擎追上后由 set_position 接管
+            self._hold_ratio = ratio
+            self._hold_t = time.monotonic()
             self.seekRequested.emit(int(ratio * self._duration_ms))
             e.accept()
             self.update()
