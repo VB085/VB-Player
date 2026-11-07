@@ -29,6 +29,9 @@ Rectangle {
         if (bgPath !== "" || bgPathOld !== "") bgMixAnim.restart()
     }
     property int    positionMs: 0; property int    durationMs: 0
+    // 拖动/seek 保持预览：Python 侧清零必须写 root（原声明在 progressBar 上，
+    // root.setProperty 静默无效 → 沉浸页进度条 seek 后永久冻结）
+    property real   _previewRatio: -1.0
     property bool   isPlaying: false
     property string qualityText: ""; property string qualitySimple: ""
     property var    lyricsModel: []; property int    lyricsActiveIdx: -1
@@ -175,14 +178,13 @@ Rectangle {
         opacity: (1.0 - _p * 0.35) * root._ctrlGate
         x:_ctrX - width/2; width: Math.min(_w*0.5,500) + (_coverW - Math.min(_w*0.5,500))*_p; height:40
         // 拖动预览：scrub 期间填充/时间标签跟随手指，松手后由引擎位置接管
-        property real _previewRatio: -1.0
         Rectangle { anchors.top:parent.top; width:parent.width; height:12; radius:6
             color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.157) }
         Rectangle { anchors.top:parent.top; height:12; radius:6; color:root.accentColor
-            width: root.durationMs>0 ? parent.width*(progressBar._previewRatio >= 0 ? progressBar._previewRatio
+            width: root.durationMs>0 ? parent.width*(root._previewRatio >= 0 ? root._previewRatio
                    : root.positionMs/root.durationMs) : 0 }
         Text { anchors.left:parent.left; y:24; font.pointSize:10; color:Qt.lighter(root.accentColor,1.3)
-            text: progressBar._previewRatio >= 0 ? formatTime(progressBar._previewRatio*root.durationMs)
+            text: root._previewRatio >= 0 ? formatTime(root._previewRatio*root.durationMs)
                   : formatTime(root.positionMs) }
         Text { anchors.right:parent.right; y:24; text:formatTime(root.durationMs); font.pointSize:10; color:Qt.lighter(root.accentColor,1.3) }
         // seek on release only — a seek per mouse-move spawns a kill/restart
@@ -197,10 +199,10 @@ Rectangle {
                 return Math.max(0, Math.min(progressBar.width, mouse.x - 10))
             }
             onPressed:(mouse)=>{ _scrubbing = true
-                progressBar._previewRatio = _mappedX(mouse) / progressBar.width
+                root._previewRatio = _mappedX(mouse) / progressBar.width
                 mouse.accepted = true }
             onPositionChanged:(mouse)=>{ if (_scrubbing) {
-                progressBar._previewRatio = _mappedX(mouse) / progressBar.width
+                root._previewRatio = _mappedX(mouse) / progressBar.width
                 mouse.accepted = true } }
             onReleased:(mouse)=>{ if (_scrubbing) { _scrubbing = false
                 // 预览保持：由 Python 在引擎位置追上 seek 目标后清零接管，
