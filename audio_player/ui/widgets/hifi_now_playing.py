@@ -1244,10 +1244,15 @@ class HiFiNowPlayingPage(QWidget):
             # 真交叉淡化：底层是切换瞬间的普通界面快照，沉浸页背景在其上
             # 淡入/淡出。第一帧看到的是原界面（不是黑色），收尾时切回普通
             # 界面也无跳变。快照只在过渡的几百毫秒内使用。
-            w_px = max(1, self._underlay.width() // max(1, self._underlay.devicePixelRatio()))
-            h_px = max(1, self._underlay.height() // max(1, self._underlay.devicePixelRatio()))
-            p.drawPixmap(QRect(0, 0, w_px, h_px), self._underlay,
-                         QRect(0, 0, self._underlay.width(), self._underlay.height()))
+            # QRectF 原生接受 float：快照按自身 dpr 缩放回逻辑尺寸，
+            # HiDPI（dpr≠1）与过渡中改窗口尺寸都正确拉伸。
+            u_dpr = self._underlay.devicePixelRatio() or 1.0
+            p.drawPixmap(
+                QRectF(0, 0,
+                       self._underlay.width() / u_dpr,
+                       self._underlay.height() / u_dpr),
+                self._underlay,
+                QRectF(0, 0, self._underlay.width(), self._underlay.height()))
             if self._enter_direction == "in":
                 # 背景在前 40% 时间内淡入，与封面起飞同步
                 t = max(0.0, min(1.0, self._enter_time() / 0.4))
