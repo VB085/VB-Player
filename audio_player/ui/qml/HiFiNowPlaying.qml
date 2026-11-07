@@ -65,6 +65,8 @@ Rectangle {
 
     signal collapseRequested(); signal fullscreenRequested()
     signal playPauseClicked(); signal nextClicked(); signal prevClicked()
+    // 音质标签 → 输出详情弹窗（QML 移植时漏声明，点击曾抛 TypeError 死按钮）
+    signal outputDetailRequested()
     signal seekRequested(int positionMs); signal lyricsToggled(bool visible)
 
     property real _w: Math.max(root.width, 1); property real _h: Math.max(root.height, 1); property real _p: root.lyricsLayoutProgress

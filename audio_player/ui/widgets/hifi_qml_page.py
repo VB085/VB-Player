@@ -259,6 +259,7 @@ class HiFiQmlPage(QWidget):
         root.playPauseClicked.connect(self.playPauseClicked.emit)
         root.nextClicked.connect(self.nextClicked.emit)
         root.prevClicked.connect(self.prevClicked.emit)
+        root.outputDetailRequested.connect(self.outputDetailRequested.emit)
         root.seekRequested.connect(self.seekRequested.emit)
         root.lyricsToggled.connect(self._on_lyrics_toggled)
         for name in ('prev', 'play', 'pause', 'next'):
