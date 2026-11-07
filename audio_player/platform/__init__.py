@@ -223,6 +223,22 @@ def create_notifier() -> PlatformNotifier | None:
     return None
 
 
+def create_screen_inhibitor(parent=None):
+    """Create an idle/display inhibitor for the immersive playback page."""
+    try:
+        if _IS_LINUX:
+            from audio_player.platform.linux.screen_inhibit import ScreenInhibitor
+        elif _IS_MACOS:
+            from audio_player.platform.macos.screen_inhibit import ScreenInhibitor
+        elif _IS_WINDOWS:
+            from audio_player.platform.windows.screen_inhibit import ScreenInhibitor
+        else:
+            return None
+        return ScreenInhibitor()
+    except Exception:
+        return None
+
+
 def get_recommended_audio_sink() -> str:
     """Return the recommended GStreamer audio sink for this platform."""
     return platform_info.policy.recommended_audio_sink

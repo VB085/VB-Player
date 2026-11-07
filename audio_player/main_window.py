@@ -98,6 +98,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._mask_dirty = True
         self._engine = AudioEngine(self)
         self._playlist = PlaylistManager(self)
+        self._online_playlist = PlaylistManager(self)
+        self._providers: list = []
         self._equalizer_mgr = EqualizerManager(self)
         self._analyzer = AudioAnalyzer(self)
         self._lyrics_fetcher = LyricsFetcher(self)
@@ -123,7 +125,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._cast_ctrl.switchError.connect(lambda msg: self._sidebar.append_log(_("device.switch_error", msg=msg)))
 
         # Controllers
-        self._playback_ctrl = PlaybackController(self._local_backend, self._playlist, self._analyzer, self)
+        self._playback_ctrl = PlaybackController(
+            self._local_backend, self._playlist, self._analyzer, self,
+            online_playlist=self._online_playlist,
+        )
         self._library_ctrl = LibraryController(self._library, self._fav_playlist, self._pls_playlist, self)
         self._settings_ctrl = SettingsController(self._equalizer_mgr, self._engine, self)
 
@@ -136,11 +141,23 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._connect_analyzer()
         self._spectrum.lyrics_overlay.fullscreenRequested.connect(self._show_fullscreen_lyrics)
         self._setup_shortcuts()
+
+        # Immersive-page display inhibitor (default on)
+        from audio_player.platform import create_screen_inhibitor
+        self._screen_inhibitor = create_screen_inhibitor(self)
+        self._keep_screen_on = True
+
         self._restore_settings()
 
         # System media controls (MPRIS2 on Linux, SMTC on Windows)
         self._system_media = None
         self._init_system_media()
+
+        # Online provider discovery (tab appears only when one is registered)
+        from audio_player.player.online import ProviderMonitor
+        self._provider_monitor = ProviderMonitor(self)
+        self._provider_monitor.providersChanged.connect(self._on_providers_changed)
+        self._provider_monitor.start()
 
         # Set initial theme state on widgets that track it explicitly
         is_light = current_theme_mode() == "light"
@@ -224,7 +241,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._playlist_proxy.invalidate()
         self._playlist_view = PlaylistView()
         self._playlist_view.setModel(self._playlist_proxy)
-        self._playlist_view.trackDoubleClicked.connect(self._playback_ctrl.play_track_at)
+        self._playlist_view.trackDoubleClicked.connect(self._on_local_track_activated)
         self._playlist_view.tracksDropped.connect(self._load_paths)
         pl_layout.addWidget(self._playlist_view, 1)
         self._content_stack.addWidget(playlist_page)  # Page.SONGS
@@ -306,6 +323,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         # Settings inline page
         self._settings_page = SettingsPage()
         self._content_stack.addWidget(self._settings_page)  # Page.SETTINGS
+
+        # Online provider page (hidden until a provider registers itself)
+        from audio_player.ui.widgets.online_page import OnlinePage
+        self._online_page = OnlinePage(self._online_playlist)
+        self._online_page.playResultsRequested.connect(self._on_online_play_results)
+        self._online_page.queuePlayRequested.connect(self._on_online_queue_play)
+        self._content_stack.addWidget(self._online_page)  # Page.ONLINE
 
         # Now Playing overlay — reuses HiFi page (same design)
 
@@ -725,9 +749,16 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._system_media.cleanup()
         if self._blur_enabler:
             self._blur_enabler.cleanup()
-        for pl in [self._playlist, self._fav_playlist, self._pls_playlist]:
+        if getattr(self, "_provider_monitor", None) is not None:
+            self._provider_monitor.stop()
+        if getattr(self, "_online_page", None) is not None:
+            self._online_page.shutdown()
+        for pl in [self._playlist, self._online_playlist,
+                   self._fav_playlist, self._pls_playlist]:
             if hasattr(pl, 'shutdown'):
                 pl.shutdown()
+        if getattr(self, "_screen_inhibitor", None) is not None:
+            self._screen_inhibitor.uninhibit()
         self._tray_mgr.hide_tray()
         QApplication.quit()
 
@@ -739,6 +770,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._restore_playback_state()
 
         s = QSettings("VBPlayer", "VB Player")
+
+        self._keep_screen_on = str(
+            s.value("keep_screen_on", "true") or "true"
+        ).lower() == "true"
 
         lyrics_on = str(s.value("lyrics_enabled", "true") or "true").lower() == "true"
         self._lyrics_enabled = lyrics_on
@@ -794,8 +829,10 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
                 mode=_("log.exclusive_alsa") if enabled else _("log.exclusive_shared")))
         ))
 
-        # Playlist index → playback controller
-        self._playlist.currentIndexChanged.connect(self._playback_ctrl.on_playlist_index_changed)
+        # Playlist index → playback controller (local keeps its own context)
+        self._playlist.currentIndexChanged.connect(self._on_local_playlist_index_changed)
+        self._online_playlist.currentIndexChanged.connect(self._on_online_playlist_index_changed)
+        self._playback_ctrl.contextChanged.connect(self._on_playback_context_changed)
 
         # Album view
         self._album_view.albumClicked.connect(self._on_album_clicked)
@@ -871,6 +908,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         sp.barStyleChanged.connect(lambda v: self._apply_bar_style(v))
         sp.replaygainToggled.connect(lambda v: setattr(self._engine, 'replaygain_enabled', v))
         sp.gaplessToggled.connect(lambda v: setattr(self._engine, 'gapless_enabled', v))
+        sp.keepScreenOnToggled.connect(self._on_keep_screen_on_toggled)
         sp.onlineLyricsToggled.connect(
             lambda v: QSettings("VBPlayer", "VB Player").setValue("online_lyrics_enabled", v))
         sp.autoSaveLyricsToggled.connect(
@@ -884,12 +922,19 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             setattr(self._engine, 'exclusive_mode', v),
             self._log_message(_("log.exclusive_alsa") if v else _("log.exclusive_shared"))))
         np_.exclusiveDeviceChanged.connect(lambda v: setattr(self._engine, 'exclusive_device', v))
+        np_.bitPerfectToggled.connect(lambda v: (
+            setattr(self._engine, 'bit_perfect_mode', v),
+            self._log_message(_("log.bit_perfect_on") if v else _("log.bit_perfect_off"))))
+        self._engine.bitPerfectModeChanged.connect(lambda v: (
+            QSettings("VBPlayer", "VB Player").setValue("bit_perfect_mode", v),
+            np_.set_bit_perfect_state(v)))
         np_.dsdModeChanged.connect(lambda v: setattr(self._engine, 'dsd_mode', v))
 
     def _connect_analyzer(self):
         self._analyzer.waveformReady.connect(self._waveform.set_waveform_data)
         self._analyzer.spectrumReady.connect(self._spectrum.set_audio_data)
         self._analyzer.lyricsReady.connect(self._on_lyrics_loaded)
+        self._playback_ctrl.lyricsProvided.connect(self._on_lyrics_loaded)
         self._lyrics_fetcher.lyricsReady.connect(self._on_online_lyrics_fetched)
         self._lyrics_fetcher.stateChanged.connect(self._on_lyrics_state_changed)
         self._spectrum.lyrics_overlay.searchRequested.connect(self._manual_lyrics_search)
@@ -1014,11 +1059,58 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    # ------------------------------------------------------------------
+    #  Online provider / playback context
+    # ------------------------------------------------------------------
+
+    @property
+    def active_playlist(self):
+        return self._playback_ctrl.active_playlist
+
+    def _on_providers_changed(self, providers: list):
+        self._providers = providers
+        has_provider = bool(providers)
+        self._sidebar.set_nav_visible("online", has_provider)
+        provider = next(
+            (p for p in providers if getattr(p, "healthy", False)),
+            providers[0] if providers else None,
+        )
+        self._online_page.set_provider(provider)
+
+    def _on_playback_context_changed(self, context: str):
+        if self._system_media and hasattr(self._system_media, "set_playlist"):
+            self._system_media.set_playlist(self.active_playlist)
+        if context == "online":
+            self._sidebar.select_nav("online")
+        else:
+            if self._content_stack.currentIndex() == Page.ONLINE:
+                self._sidebar.select_nav("songs")
+        self._online_page.refresh_highlight()
+
+    def _on_local_playlist_index_changed(self, index: int):
+        self._playback_ctrl.set_active_context("local")
+        self._playback_ctrl.on_playlist_index_changed(index)
+
+    def _on_local_track_activated(self, index: int):
+        self._playback_ctrl.set_active_context("local")
+        self._playback_ctrl.play_track_at(index)
+
+    def _on_online_playlist_index_changed(self, index: int):
+        self._playback_ctrl.set_active_context("online")
+        self._playback_ctrl.on_playlist_index_changed(index)
+
+    def _on_online_play_results(self, items: list, start: int):
+        self._playback_ctrl.open_external_playlist(items, start)
+
+    def _on_online_queue_play(self, index: int):
+        self._playback_ctrl.set_active_context("online")
+        self._playback_ctrl.play_track_at(index)
+
     def _on_sidebar_nav(self, key: str):
         page_map = {
             "songs": Page.SONGS, "albums": Page.ALBUMS, "favorites": Page.FAVORITES,
             "playlists": Page.PLAYLISTS, "tools": Page.MANAGE, "output": Page.NETWORK,
-            "settings": Page.SETTINGS,
+            "settings": Page.SETTINGS, "online": Page.ONLINE,
         }
         if key in page_map:
             self._content_stack.setCurrentIndex(page_map[key])
@@ -1046,6 +1138,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             elif key == "output":
                 np_ = self._network_page
                 np_.set_exclusive_state(self._engine.exclusive_mode, self._engine.exclusive_device)
+                np_.set_bit_perfect_state(self._engine.bit_perfect_mode)
                 np_.set_dsd_mode(self._engine.dsd_mode)
 
     def closeEvent(self, event):
@@ -1066,15 +1159,26 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         if self._blur_enabler:
             self._blur_enabler.cleanup()
         self._tray_mgr.hide_tray()
+        if getattr(self, "_provider_monitor", None) is not None:
+            self._provider_monitor.stop()
+        if getattr(self, "_online_page", None) is not None:
+            self._online_page.shutdown()
         # Drain metadata worker pools before Qt destroys them
-        for pl in [self._playlist, self._fav_playlist, self._pls_playlist]:
+        for pl in [self._playlist, self._online_playlist,
+                   self._fav_playlist, self._pls_playlist]:
             if hasattr(pl, 'shutdown'):
                 pl.shutdown()
+        if getattr(self, "_screen_inhibitor", None) is not None:
+            self._screen_inhibitor.uninhibit()
         super().closeEvent(event)
 
     def _save_playback_state(self):
         """Persist current playback state so it can be restored on next launch."""
         s = QSettings("VBPlayer", "VB Player")
+        if self._playback_ctrl.active_context != "local":
+            # Online queues are provider-owned; don't restore a dead URL.
+            s.setValue("restore/enabled", False)
+            return
         s.setValue("restore/enabled", True)
         s.setValue("restore/track", self._engine.current_file)
         s.setValue("restore/position_ms", self._engine.position)
@@ -1093,6 +1197,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         track = str(s.value("restore/track", ""))
         if not track:
             return
+        self._playback_ctrl.set_active_context("local")
         # Restore playlist
         paths = s.value("restore/playlist", [])
         if isinstance(paths, list) and paths:
@@ -1185,6 +1290,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             target = paths[idx]
             for i in range(self._playlist.count):
                 if self._playlist.track_at(i).get("path") == target:
+                    self._playback_ctrl.set_active_context("local")
                     self._playback_ctrl.play_track_at(i)
                     break
 
@@ -1309,8 +1415,9 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         """Called when playback controller loads a new track — update UI."""
         import audio_player.ui.widgets.playlist_view as _pv
         _pv._current_file = filepath or ""
-        # Use already-loaded metadata from playlist model
-        meta = self._playlist.track_metadata(self._playlist.current_index)
+        # Use the active context's cached metadata (local files or online queue)
+        playlist = self.active_playlist
+        meta = playlist.track_metadata(playlist.current_index)
         if meta is None:
             meta = read_metadata(filepath)
         self._metadata_panel.show_metadata(meta, filepath)
@@ -1321,7 +1428,8 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         else:
             self._log_message(_("log.now_playing_no_artist", title=title))
         self._fullscreen_lyrics.set_meta(meta)
-        self._album_detail_page.set_current_playlist_index(self._playlist.current_index)
+        if self._playback_ctrl.active_context == "local":
+            self._album_detail_page.set_current_playlist_index(playlist.current_index)
         # Bottom bar
         self._bar_update("set_track", meta.title or "", meta.artist or "", meta.album or "")
         self._bar_update("update_cover", meta.cover_data)
@@ -1371,38 +1479,55 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         from audio_player.ui.widgets.output_spec_bar import _OutputDetailDialog
         from audio_player.player.metadata import read_metadata
         from audio_player.app import current_theme_mode
-        meta = read_metadata(self._engine.current_file) if self._engine.current_file else None
+        playlist = self.active_playlist
+        meta = playlist.track_metadata(playlist.current_index)
+        if meta is None and self._engine.current_file:
+            meta = read_metadata(self._engine.current_file)
         info = self._engine.output_info
         is_light = current_theme_mode() == "light"
         dlg = _OutputDetailDialog(meta, info, is_light, self)
         dlg.exec()
 
+    def _bar_cover_rect_global(self) -> QRect:
+        """Global rect of the playback bar's current cover thumbnail."""
+        s = QSettings("VBPlayer", "VB Player")
+        style = str(s.value("playback_bar_style", "full") or "full")
+        bar = self._pill if style == "pill" else self._now_playing_bar
+        if style == "pill" and not self._pill_wrapper.isVisible():
+            # Keep the hidden capsule's geometry current so the flying cover
+            # lands on the right spot even if the window was resized.
+            bw = self._body.width()
+            bh = self._body.height()
+            self._pill_wrapper.setGeometry(
+                0, bh - self._pill.height() - 16, bw, self._pill.height())
+        cover = getattr(bar, "_cover_label", None)
+        if cover is not None and cover.width() > 0:
+            top_left = cover.mapToGlobal(QPoint(0, 0))
+            rect = QRect(top_left, cover.size())
+            win = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
+            if win.intersects(rect):
+                return rect
+        # Fallback: where a 56px thumbnail sits above the bottom edge.
+        size = 56
+        origin = self.mapToGlobal(
+            QPoint((self.width() - size) // 2, self.height() - 100))
+        return QRect(origin, QSize(size, size))
+
     def _show_np_page(self):
-        """Open Now Playing overlay with slide-up from bottom bar."""
-        self._pill_wrapper.hide()  # hide pill during HiFi overlay
-        if self._now_playing_bar.isVisible():
-            self._now_playing_bar.hide()
-            bar_global = self._now_playing_bar.mapToGlobal(QPoint(0, 0))
-        else:
-            bar_global = self.mapToGlobal(QPoint(0, self.height()))
-        win_global = self.mapToGlobal(QPoint(0, 0))
-        from_rect = QRect(win_global.x(), bar_global.y(),
-                          self.width(), self.height())
-        self._hifi_page.show()
+        """Open the immersive page: cover flies up from the playback bar."""
+        cover_rect = self._bar_cover_rect_global()
+        self._pill_wrapper.hide()
+        self._now_playing_bar.hide()
+        self._hifi_page.begin_enter_transition(cover_rect)
         self._hifi_overlay.setCurrentWidget(self._hifi_page)
-        # Slide-up animation via geometry
-        to_rect = self.geometry()
-        self._hifi_page.setGeometry(from_rect)
-        anim = QPropertyAnimation(self._hifi_page, b"geometry")
-        anim.setDuration(350)
-        anim.setStartValue(from_rect)
-        anim.setEndValue(to_rect)
-        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        anim.start()
-        self._hifi_page._slide_anim = anim  # keep ref
+        self._update_screen_inhibit()
 
     def _collapse_hifi(self):
-        """Return from overlay to normal view."""
+        """Return from overlay to normal view: cover flies back to the bar."""
+        cover_rect = self._bar_cover_rect_global()
+        self._hifi_page.begin_exit_transition(cover_rect, self._finish_collapse)
+
+    def _finish_collapse(self):
         s = QSettings("VBPlayer", "VB Player")
         style = str(s.value("playback_bar_style", "full") or "full")
         if style == "full":
@@ -1412,6 +1537,7 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._position_pill()
         self._hifi_overlay.setCurrentWidget(self._body)
         self._hifi_page.hide()
+        self._update_screen_inhibit()
 
     def _toggle_fullscreen(self):
         """Toggle fullscreen mode."""
@@ -1447,11 +1573,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _play_from_paths(self, paths):
         """Load paths into main playlist and play."""
+        self._playback_ctrl.set_active_context("local")
         self._playback_ctrl.load_and_play(paths)
         self._update_manage_labels()
 
     def _play_stream_url(self, url: str):
-        """Play a network stream URL directly."""
+        """Play a manually entered network stream URL."""
+        self._playback_ctrl.set_active_context("local")
         self._playlist.add_url(url)
         idx = self._playlist.count - 1
         self._playback_ctrl.play_track_at(idx)
@@ -1496,10 +1624,13 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _on_repeat_mode_changed(self, mode: int):
         from audio_player.player.playlist import RepeatMode
-        self._playlist.repeat = RepeatMode(mode)
+        # Transport mode is global; apply it to both queues.
+        for playlist in (self._playlist, self._online_playlist):
+            playlist.repeat = RepeatMode(mode)
 
     def _on_shuffle_changed(self, enabled: bool):
-        self._playlist.shuffle = enabled
+        for playlist in (self._playlist, self._online_playlist):
+            playlist.shuffle = enabled
 
     def _cycle_playback_mode_shortcut(self):
         """Advance playback mode: sequential → repeat all → repeat one → shuffle."""
@@ -1713,6 +1844,11 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
         self._position_pill()
         if self._blur_enabler:
             self._blur_enabler.enable()
+        self._update_screen_inhibit()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._update_screen_inhibit()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -1720,6 +1856,33 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
             self._mask_dirty = True
             if self.isMaximized():
                 self.clearMask()
+            self._update_screen_inhibit()
+
+    # ------------------------------------------------------------------
+    #  Immersive-page screen inhibit
+    # ------------------------------------------------------------------
+
+    def _on_keep_screen_on_toggled(self, enabled: bool):
+        self._keep_screen_on = bool(enabled)
+        QSettings("VBPlayer", "VB Player").setValue("keep_screen_on", bool(enabled))
+        self._update_screen_inhibit()
+
+    def _update_screen_inhibit(self):
+        inhibitor = getattr(self, "_screen_inhibitor", None)
+        if inhibitor is None:
+            return
+        hifi = getattr(self, "_hifi_page", None)
+        active = (
+            self._keep_screen_on
+            and hifi is not None
+            and hifi.isVisible()
+            and self.isVisible()
+            and not self.isMinimized()
+        )
+        if active:
+            inhibitor.inhibit(_("settings.keep_screen_on_reason"))
+        else:
+            inhibitor.uninhibit()
 
     def _apply_mask(self):
         if not self._use_frameless:

@@ -1,16 +1,22 @@
 """HiFi Now Playing — immersive full-page playback dashboard."""
 
+import math
+
+import numpy as np
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QMenu
 )
 from PyQt6.QtCore import (
-    Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QRectF, QPoint,
-    QSize, QSettings, QAbstractAnimation, pyqtProperty, QObject
+    Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QRectF, QRect,
+    QPoint, QPointF, QSize, QSettings, QAbstractAnimation, pyqtProperty,
+    QObject, QElapsedTimer
 )
 from PyQt6.QtGui import (
     QPainter, QColor, QPixmap, QFont, QLinearGradient, QPainterPath,
-    QBrush, QPen, QFontMetrics, QImage, QGuiApplication, QAction
+    QBrush, QPen, QFontMetrics, QImage, QGuiApplication, QAction,
+    QTextLayout, QTextOption
 )
 
 from audio_player.app import current_accent
@@ -40,51 +46,269 @@ class _OpacityHelper(QObject):
 # format_duration, format_size — imported from audio_player.ui.utils
 
 
+def _box_blur_axis(arr: np.ndarray, radius: int, axis: int) -> np.ndarray:
+    """Moving-average along one axis with edge clamping (cumsum based)."""
+    if radius <= 0:
+        return arr
+    a = np.moveaxis(arr, axis, 0)
+    win = radius * 2 + 1
+    padded = np.pad(a, ((radius, radius),) + ((0, 0),) * (a.ndim - 1),
+                    mode="edge")
+    c = np.cumsum(padded, axis=0, dtype=np.float32)
+    c = np.concatenate([np.zeros_like(c[:1]), c], axis=0)
+    out = (c[win:] - c[:-win]) / win
+    return np.moveaxis(out, 0, axis)
+
+
 def _blur_pixmap(pix: QPixmap, radius: int = 40) -> QPixmap:
-    """Stack blur for background — fast enough for single image."""
+    """Triple box blur at 80×80, vectorised with numpy.
+
+    The old per-pixel Python version took ~100ms and ran on the first paint
+    after a cover change — i.e. exactly when the immersive page opened —
+    which stalled the transition's first frames.
+    """
     if pix.isNull():
         return pix
-    # Scale down first for speed
     small = pix.scaled(80, 80, Qt.AspectRatioMode.IgnoreAspectRatio,
                        Qt.TransformationMode.SmoothTransformation)
-    # Use QGraphicsBlurEffect via QImage conv — simple box blur
-    img = small.toImage()
+    img = small.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     w, h = img.width(), img.height()
-    # Multi-pass box blur (approximates gaussian)
+    stride = img.bytesPerLine()
+    buf = np.frombuffer(img.constBits().asstring(stride * h), np.uint8)
+    rgba = buf.reshape(h, stride)[:, :w * 4].reshape(h, w, 4)
+    arr = rgba[:, :, :3].astype(np.float32)
+    r = max(1, radius // 4)
     for _ in range(3):
-        # Horizontal pass
-        for y in range(h):
-            row = []
-            for x in range(w):
-                row.append(img.pixelColor(x, y))
-            for x in range(w):
-                r = g = b = cnt = 0
-                for dx in range(-radius // 4, radius // 4 + 1):
-                    nx = min(max(x + dx, 0), w - 1)
-                    c = row[nx]
-                    r += c.red()
-                    g += c.green()
-                    b += c.blue()
-                    cnt += 1
-                img.setPixelColor(x, y, QColor(r // cnt, g // cnt, b // cnt))
-        # Vertical pass
-        for x in range(w):
-            col = []
-            for y in range(h):
-                col.append(img.pixelColor(x, y))
-            for y in range(h):
-                r = g = b = cnt = 0
-                for dy in range(-radius // 4, radius // 4 + 1):
-                    ny = min(max(y + dy, 0), h - 1)
-                    c = col[ny]
-                    r += c.red()
-                    g += c.green()
-                    b += c.blue()
-                    cnt += 1
-                img.setPixelColor(x, y, QColor(r // cnt, g // cnt, b // cnt))
-    result = QPixmap.fromImage(img)
+        arr = _box_blur_axis(arr, r, axis=1)
+        arr = _box_blur_axis(arr, r, axis=0)
+    out = np.empty((h, w, 4), dtype=np.uint8)
+    np.clip(arr, 0, 255, out=arr)
+    out[:, :, :3] = arr.astype(np.uint8)
+    out[:, :, 3] = 255
+    blurred = QImage(out.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
+    result = QPixmap.fromImage(blurred)
     return result.scaled(pix.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
                          Qt.TransformationMode.SmoothTransformation)
+
+
+class _LyricsLayer(QWidget):
+    """Opaque lyrics surface with wrapped, cached text layouts.
+
+    It paints its own background crop, so a 60fps scroll never re-runs the
+    immersive page's background/cover painting. Text layouts cache wrapping
+    and shaping; frames only move pre-laid-out blocks. Top/bottom fading is
+    an alpha mask on the text layer, never a coloured bar over the backdrop.
+    """
+
+    def __init__(self, page):
+        super().__init__(page)
+        self._page = page
+        self._font_cache: dict[tuple[int, bool], QFont] = {}
+        self._layouts = []
+        self._anchors: list[float] = []
+        self._heights: list[float] = []
+        self._layout_key = None
+        self._text_layer: QPixmap | None = None
+        self._bg_surface: QPixmap | None = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
+        self.hide()
+
+    def lyrics_changed(self):
+        self._layout_key = None
+        self.update()
+
+    def _font(self, size: int, bold: bool = False) -> QFont:
+        key = (int(size), bool(bold))
+        font = self._font_cache.get(key)
+        if font is None:
+            font = QFont()
+            font.setPointSize(int(size))
+            font.setBold(bool(bold))
+            self._font_cache[key] = font
+        return font
+
+    @staticmethod
+    def _make_layout(text: str, font: QFont, width: int) -> QTextLayout:
+        layout = QTextLayout(text, font)
+        layout.setCacheEnabled(True)
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        layout.setTextOption(option)
+        layout.beginLayout()
+        y = 0.0
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            line.setPosition(QPointF(0, y))
+            y += line.height()
+        layout.endLayout()
+        return layout
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._layout_key = None
+        self._text_layer = None
+        self._bg_surface = None
+
+    def invalidate_background(self):
+        """Rebuild the cached backdrop on the next paint (cover fade, resize)."""
+        self._bg_surface = None
+
+    def _ensure_layouts(self, base: int):
+        page = self._page
+        width = max(80, self.width() - 24)
+        key = (id(page._lyrics), base, width)
+        if key == self._layout_key:
+            return
+        normal_font = self._font(base)
+        active_font = self._font(base, True)
+        trans_font = self._font(max(16, base - 8))
+        gap = max(12, int(base * 0.9))
+        layouts, anchors, heights = [], [], []
+        cursor = 0.0
+        for line in page._lyrics:
+            normal = self._make_layout(line.text, normal_font, width)
+            active = self._make_layout(line.text, active_font, width)
+            trans = (self._make_layout(line.translation, trans_font, width)
+                     if line.translation else None)
+            text_h = max(normal.boundingRect().height(),
+                         active.boundingRect().height())
+            block_h = text_h + ((trans.boundingRect().height() + 6) if trans else 0)
+            anchors.append(cursor)
+            heights.append(block_h)
+            layouts.append((normal, active, trans, text_h))
+            cursor += block_h + gap
+        self._layouts = layouts
+        self._anchors = anchors
+        self._heights = heights
+        self._layout_key = key
+
+    def _scroll_offset(self, anim_line: float) -> float:
+        n = len(self._anchors)
+        if n == 0:
+            return 0.0
+        a = max(0, min(n - 1, int(anim_line)))
+        b = min(n - 1, a + 1)
+        ca = self._anchors[a] + self._heights[a] / 2.0
+        cb = self._anchors[b] + self._heights[b] / 2.0
+        return ca + (cb - ca) * (anim_line - a)
+
+    def _paint_background(self, p: QPainter):
+        """Blit the same full-page backdrop the parent paints.
+
+        The child draws the page's backdrop with the page's own coordinates
+        (translated, clipped to this widget) instead of cropping a scaled
+        copy, so both surfaces go through the exact same painter operations
+        and their pixels match at the seam — including mid-crossfade.
+        """
+        page = self._page
+        dpr = self.devicePixelRatioF()
+        px = QSize(max(1, int(self.width() * dpr)),
+                   max(1, int(self.height() * dpr)))
+        if self._bg_surface is None or self._bg_surface.size() != px:
+            self._bg_surface = QPixmap(px)
+            self._bg_surface.setDevicePixelRatio(dpr)
+            bp = QPainter(self._bg_surface)
+            bp.save()
+            bp.translate(-self.x(), -self.y())
+            page._paint_background(bp)
+            bp.restore()
+            bp.end()
+        p.drawPixmap(0, 0, self._bg_surface)
+
+    def _render_text_layer(self, progress: float) -> QPixmap | None:
+        """Render the masked lyric text for this widget, cached per frame."""
+        page = self._page
+        if not page._lyrics or progress <= 0.01:
+            return None
+        base = max(20, min(34, int(self.width() * 0.038)))
+        self._ensure_layouts(base)
+        if not self._layouts:
+            return None
+
+        center_y = page.height() * 0.44 - self.y()
+        anim_line = page._lyrics_anim_line
+        offset = self._scroll_offset(anim_line)
+        active = page._lyrics_active_idx
+        half_visible = 5
+        accent = page._accent
+        n = len(self._layouts)
+
+        dpr = self.devicePixelRatioF()
+        px_size = QSize(max(1, int(self.width() * dpr)),
+                        max(1, int(self.height() * dpr)))
+        if self._text_layer is None or self._text_layer.size() != px_size:
+            self._text_layer = QPixmap(px_size)
+            self._text_layer.setDevicePixelRatio(dpr)
+        self._text_layer.fill(Qt.GlobalColor.transparent)
+
+        tp = QPainter(self._text_layer)
+        tp.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        tp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for i in range(max(0, active - half_visible),
+                       min(n, active + half_visible + 1)):
+            normal, active_layout, trans, text_h = self._layouts[i]
+            y = center_y + self._anchors[i] - offset
+            if i == active:
+                tp.setOpacity(progress)
+                tp.setPen(QColor(accent))
+                active_layout.draw(tp, QPointF(0, y))
+                if trans is not None:
+                    color = QColor(accent)
+                    color.setAlphaF(0.55)
+                    tp.setPen(color)
+                    trans.draw(tp, QPointF(0, y + text_h + 6))
+            else:
+                dist = abs(i - anim_line)
+                fade = max(0.0, 1.0 - dist / (half_visible + 1) * 0.85)
+                tp.setOpacity(progress * fade * 0.7)
+                tp.setPen(QColor("#8899aa"))
+                normal.draw(tp, QPointF(0, y))
+        tp.end()
+
+        hh = max(1, self.height())
+        fade_top = min(56, max(28, int(hh * 0.16)))
+        fade_bottom = min(48, max(24, int(hh * 0.12)))
+        stop_top = min(1.0, fade_top / hh)
+        stop_bottom = max(stop_top, 1.0 - fade_bottom / hh)
+        mask = QLinearGradient(0, 0, 0, hh)
+        mask.setColorAt(0.0, QColor(0, 0, 0, 0))
+        mask.setColorAt(stop_top, QColor(0, 0, 0, 255))
+        mask.setColorAt(stop_bottom, QColor(0, 0, 0, 255))
+        mask.setColorAt(1.0, QColor(0, 0, 0, 0))
+        mp = QPainter(self._text_layer)
+        mp.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        mp.fillRect(QRectF(0, 0, self.width(), hh), mask)
+        mp.end()
+        return self._text_layer
+
+    def draw_text_preview(self, p: QPainter, progress: float):
+        """Draw just the lyrics text at this layer's page position.
+
+        Used by the page during the artwork→lyrics morph, while this opaque
+        widget is still hidden so it can't cover the moving cover art.
+        """
+        layer = self._render_text_layer(progress)
+        if layer is not None:
+            p.drawPixmap(self.x(), self.y(), layer)
+
+    def paintEvent(self, event):
+        page = self._page
+        progress = page._lyrics_layout_progress
+        text = self._render_text_layer(progress)
+        if text is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._paint_background(p)
+        p.drawPixmap(0, 0, text)
+        p.end()
 
 
 class HiFiNowPlayingPage(QWidget):
@@ -99,10 +323,15 @@ class HiFiNowPlayingPage(QWidget):
         super().__init__(parent)
         self.setObjectName("hifiNowPlaying")
         self._cover_pixmap: QPixmap | None = None
+        self._cover_sprite_pix: QPixmap | None = None
+        self._cover_sprite_key = None
+        self._composed_bg: QPixmap | None = None
+        self._composed_bg_key = None
         self._blurred_bg: QPixmap | None = None
         self._cached_bg: QPixmap | None = None  # scaled-to-window cached bg
         self._old_cached_bg: QPixmap | None = None  # previous bg during crossfade
         self._bg_fade_progress: float = 1.0  # 0=old, 1=new
+        self._bg_px: tuple[int, int] | None = None  # device-pixel size of cache
         self._bg_fade_helper: _OpacityHelper | None = None
         self._bg_fade_anim: QPropertyAnimation | None = None
         self._title = ""
@@ -123,17 +352,16 @@ class HiFiNowPlayingPage(QWidget):
         self._lyrics_anim_line = 0.0  # float for sub-pixel scroll
         self._lyrics_anim_start = 0.0
         self._lyrics_anim_target = 0.0
-        self._lyrics_anim_elapsed = 0
-        self._lyrics_anim_duration = 380  # ms — smoother transition
-        self._lyrics_scale = 1.0  # current line scale (0.96→1.0)
-        self._lyrics_scale_anim_elapsed = 0
+        self._lyrics_anim_duration = 420  # ms — smoother transition
+        self._lyrics_scroll_clock = QElapsedTimer()
 
         self._lyrics_layout_helper = _OpacityHelper(self)
         self._lyrics_layout_helper.opacity = 0.0
         self._lyrics_layout_anim: QPropertyAnimation | None = None
 
         self._lyrics_scroll_timer = QTimer(self)
-        self._lyrics_scroll_timer.setInterval(33)  # ~30fps — smooth enough, less CPU
+        self._lyrics_scroll_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._lyrics_scroll_timer.setInterval(16)  # 60fps, lyrics layer only
         self._lyrics_scroll_timer.timeout.connect(self._tick_lyrics_scroll)
 
         # Hover delay timer
@@ -158,6 +386,16 @@ class HiFiNowPlayingPage(QWidget):
         self._opacity_helper = _OpacityHelper(self)
         self._opacity_helper.opacity = 1.0
         self._fade_anim: QPropertyAnimation | None = None
+
+        # Hero enter/exit transition (cover flies from/to the playback bar).
+        self._enter_progress = 1.0
+        self._enter_global_rect: QRect | None = None
+        self._exit_done = None
+        self._enter_direction = "in"
+        self._enter_helper = _OpacityHelper(self)
+        self._enter_helper.opacity = 1.0
+        self._enter_anim: QPropertyAnimation | None = None
+        self._enter_easing = QEasingCurve.Type.OutExpo
 
         # Progress bar drag state
         self._dragging = False
@@ -208,6 +446,160 @@ class HiFiNowPlayingPage(QWidget):
         self._close_btn.clicked.connect(self.collapseRequested)
         self._close_btn.setStyleSheet(btn_style)
 
+        # Dedicated lyrics surface (below the top-right buttons).
+        self._lyrics_layer = _LyricsLayer(self)
+        self._position_lyrics_layer()
+
+    def _position_lyrics_layer(self):
+        if not hasattr(self, "_lyrics_layer"):
+            return
+        w, h = self.width(), self.height()
+        left = int(w * 0.42)
+        self._lyrics_layer.setGeometry(
+            left, 64, max(1, w - left), max(1, h - 64)
+        )
+        self._lyrics_layer.raise_()
+
+    # ---- Hero enter/exit transition ----
+    #
+    # Opening from the playback bar no longer slides the whole page. The page
+    # appears at full size with its own backdrop; the cover flies from the
+    # bar's thumbnail to its immersive position and the texts rise in
+    # staggered. No cross-fade of a snapshot: compositing a full-page grab
+    # over a live page was both expensive and visually noisy (stale sizes,
+    # ghosting libraries), so the bar's cover is the only continuity device.
+
+    def begin_enter_transition(self, cover_global_rect: QRect,
+                               duration: int = 560):
+        self._enter_global_rect = QRect(cover_global_rect)
+        self._enter_direction = "in"
+        self._exit_done = None
+        self._set_topbar_buttons_visible(False)
+        self._start_enter_anim(0.0, 1.0, duration)
+
+    def begin_exit_transition(self, cover_global_rect: QRect,
+                              on_done=None,
+                              duration: int = 460):
+        self._enter_global_rect = QRect(cover_global_rect)
+        self._enter_direction = "out"
+        self._exit_done = on_done
+        self._lyrics_layer.hide()
+        self._set_topbar_buttons_visible(False)
+        self._start_enter_anim(1.0, 0.0, duration)
+
+    def _set_topbar_buttons_visible(self, flag: bool):
+        for btn in (self._lyrics_btn, self._fullscreen_btn, self._close_btn):
+            btn.setVisible(flag)
+
+    def _start_enter_anim(self, start: float, end: float, duration: int):
+        if (self._enter_anim
+                and self._enter_anim.state() == QAbstractAnimation.State.Running):
+            self._enter_anim.stop()
+        self._enter_helper.opacity = start
+        self._enter_progress = start
+        anim = QPropertyAnimation(self._enter_helper, b"opacity")
+        anim.setDuration(duration)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        self._enter_easing = (
+            QEasingCurve.Type.OutExpo if end > start
+            else QEasingCurve.Type.InCubic)
+        anim.setEasingCurve(self._enter_easing)
+        anim.valueChanged.connect(self._on_enter_tick)
+        anim.finished.connect(self._on_enter_finished)
+        anim.start()
+        self._enter_anim = anim
+        self._update_lyrics_layer()
+        self.update()
+
+    def _on_enter_tick(self):
+        self._enter_progress = self._enter_helper.opacity
+        self.update()
+
+    def _on_enter_finished(self):
+        done = self._exit_done
+        exiting = self._enter_helper.opacity <= 0.001
+        self._enter_progress = 1.0
+        self._enter_global_rect = None
+        self._exit_done = None
+        if exiting:
+            self._enter_helper.opacity = 1.0
+            if done:
+                done()
+        else:
+            self._update_lyrics_layer()
+            if self._topbar_visible:
+                self._set_topbar_buttons_visible(True)
+            self.update()
+
+    def _enter_time(self) -> float:
+        """Un-eased fraction (0→1) of the hero transition's wall-clock.
+
+        Staggers and snapshot fades use real time so the easing curve does
+        not crush them into the first few frames.
+        """
+        p = max(0.0, min(1.0, self._enter_progress))
+        if self._enter_easing == QEasingCurve.Type.InCubic:
+            return (1.0 - p) ** (1.0 / 3.0)
+        if p >= 1.0:
+            return 1.0
+        if p <= 0.0:
+            return 0.0
+        return max(0.0, min(1.0, -math.log2(1.0 - p) / 10.0))
+
+    def _enter_alpha(self, delay: float = 0.0) -> float:
+        """Staggered ease for texts/controls during the hero transition."""
+        if self._enter_global_rect is None:
+            return 1.0
+        t = self._enter_time()
+        a = max(0.0, min(1.0, (t - delay) / max(0.001, 1.0 - delay)))
+        return a * a * (3.0 - 2.0 * a)
+
+    def _cover_sprite(self) -> QPixmap | None:
+        """Square cover pre-scaled once at final device size.
+
+        The flight then only downscales this sprite with the painter's smooth
+        transform instead of re-scaling the original 1500px artwork every
+        frame.
+        """
+        src = self._cover_pixmap
+        if src is None or src.isNull():
+            return None
+        dpr = self.devicePixelRatioF()
+        target = max(8, min(int(self.height() * 0.38), int(self.width() * 0.35), 380))
+        px = max(8, int(target * dpr))
+        key = (id(src), px, dpr)
+        if self._cover_sprite_pix is not None and self._cover_sprite_key == key:
+            return self._cover_sprite_pix
+        scaled = src.scaled(px, px,
+                            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                            Qt.TransformationMode.SmoothTransformation)
+        if scaled.width() != px or scaled.height() != px:
+            scaled = scaled.copy((scaled.width() - px) // 2,
+                                 (scaled.height() - px) // 2, px, px)
+        scaled.setDevicePixelRatio(dpr)
+        self._cover_sprite_pix = scaled
+        self._cover_sprite_key = key
+        return scaled
+
+    def _cover_draw_rect(self, x: float, y: float, size: float) -> tuple[float, float, float, float]:
+        """Interpolate the cover between the bar thumbnail and its target."""
+        if self._enter_global_rect is None or self._enter_progress >= 0.999:
+            return x, y, size, 12.0
+        start = self.mapFromGlobal(self._enter_global_rect.topLeft())
+        sx, sy = float(start.x()), float(start.y())
+        sw, sh = float(self._enter_global_rect.width()), float(self._enter_global_rect.height())
+        ss = min(sw, sh) if min(sw, sh) > 0 else 56.0
+        e = self._enter_progress
+        return (sx + (x - sx) * e,
+                sy + (y - sy) * e,
+                ss + (size - ss) * e,
+                6.0 + 6.0 * e)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_lyrics_layer()
+
     # ---- Public API ----
 
     def set_cover(self, data: bytes | None):
@@ -237,6 +629,8 @@ class HiFiNowPlayingPage(QWidget):
         if self._bg_fade_anim and self._bg_fade_anim.state() == QAbstractAnimation.State.Running:
             self._bg_fade_anim.stop()
         self._bg_fade_progress = 0.0
+        if hasattr(self, "_lyrics_layer"):
+            self._lyrics_layer.invalidate_background()
         self._bg_fade_anim = QPropertyAnimation(self._bg_fade_helper, b"opacity")
         self._bg_fade_anim.setDuration(500)
         self._bg_fade_anim.setStartValue(0.0)
@@ -247,6 +641,8 @@ class HiFiNowPlayingPage(QWidget):
 
     def _on_bg_fade_tick(self):
         self._bg_fade_progress = self._bg_fade_helper._opacity
+        self._lyrics_layer.invalidate_background()
+        self._lyrics_layer.update()
         self.update()
 
     def set_track_info(self, title: str, artist: str, album: str):
@@ -261,15 +657,21 @@ class HiFiNowPlayingPage(QWidget):
 
     def refresh_accent(self):
         self._accent = current_accent()
+        self._lyrics_layer.update()
         self.update()
+
+    def _progress_region(self) -> QRect:
+        h = self.height()
+        top = max(0, int(h * 0.62))
+        return QRect(0, top, self.width(), h - top)
 
     def set_position(self, ms: int):
         self._position_ms = ms
-        self.update()
+        self.update(self._progress_region())
 
     def set_duration(self, ms: int):
         self._duration_ms = ms
-        self.update()
+        self.update(self._progress_region())
 
     def set_playing(self, playing: bool):
         self._is_playing = playing
@@ -281,6 +683,9 @@ class HiFiNowPlayingPage(QWidget):
         self._lyrics = lines if lines else []
         self._lyrics_active_idx = -1
         self._lyrics_anim_line = 0.0
+        self._lyrics_scroll_timer.stop()
+        self._lyrics_layer.lyrics_changed()
+        self._update_lyrics_layer()
         self.update()
 
     def set_lyrics_visible(self, visible: bool):
@@ -313,10 +718,28 @@ class HiFiNowPlayingPage(QWidget):
         self._lyrics_layout_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._lyrics_layout_anim.valueChanged.connect(self._on_layout_progress_changed)
         self._lyrics_layout_anim.start()
+        self._update_lyrics_layer()
         self.lyricsToggled.emit(visible)
+
+    def _update_lyrics_layer(self):
+        """Only hand rendering to the opaque child once the morph has settled.
+
+        During the artwork→lyrics transition the lyrics text is painted by the
+        page itself (fading with the same progress as the cover/title morph),
+        so the child's opaque surface never covers the moving cover art.
+        """
+        settled = (
+            self._lyrics_mode
+            and bool(self._lyrics)
+            and self._lyrics_layout_progress >= 0.999
+            and self._enter_global_rect is None
+        )
+        self._lyrics_layer.setVisible(settled)
 
     def _on_layout_progress_changed(self):
         self._lyrics_layout_progress = self._lyrics_layout_helper.opacity
+        self._update_lyrics_layer()
+        self._lyrics_layer.update()
         self.update()
 
     def set_lyrics_position(self, ms: int):
@@ -339,30 +762,28 @@ class HiFiNowPlayingPage(QWidget):
                 # Normal playback: animate
                 self._lyrics_anim_start = self._lyrics_anim_line
                 self._lyrics_anim_target = float(new_idx)
-                self._lyrics_anim_elapsed = 0
+                self._lyrics_scroll_clock.start()
                 self._lyrics_scroll_timer.start()
-                # Trigger scale animation for current line
-                self._lyrics_scale = 0.96
-                self._lyrics_scale_anim_elapsed = 0
-        if self._lyrics_mode and self._lyrics_layout_progress > 0.01:
-            self.update()
+            if self._lyrics_mode and self._lyrics_layout_progress > 0.01:
+                if self._lyrics_layer.isVisible():
+                    self._lyrics_layer.update()
+                else:
+                    self.update()  # morph-time preview is painted by the page
 
     def _tick_lyrics_scroll(self):
-        self._lyrics_anim_elapsed += 33
-        self._lyrics_scale_anim_elapsed += 33
-        t = min(1.0, self._lyrics_anim_elapsed / self._lyrics_anim_duration)
-        ease = 1.0 - (1.0 - t) ** 3
+        elapsed = self._lyrics_scroll_clock.elapsed()
+        t = min(1.0, elapsed / self._lyrics_anim_duration)
+        # smoothstep: zero velocity at both ends
+        ease = t * t * (3.0 - 2.0 * t)
         self._lyrics_anim_line = self._lyrics_anim_start + (self._lyrics_anim_target - self._lyrics_anim_start) * ease
-        # Scale animation: 0.96 → 1.0
-        scale_t = min(1.0, self._lyrics_scale_anim_elapsed / 150)
-        self._lyrics_scale = 0.96 + 0.04 * (1.0 - (1.0 - scale_t) ** 3)
         if t >= 1.0:
             self._lyrics_scroll_timer.stop()
-            self._lyrics_scale = 1.0
-        # Only redraw lyrics area, not the entire widget
-        w = self.width()
-        lyrics_rect = QRectF(w * 0.35, 0, w * 0.6, self.height())
-        self.update(lyrics_rect.toRect())
+        # Only the dedicated lyrics layer repaints; during the morph the
+        # page owns the preview and repaints itself.
+        if self._lyrics_layer.isVisible():
+            self._lyrics_layer.update()
+        else:
+            self.update()
 
     def toggle_lyrics(self):
         self.set_lyrics_visible(not self._lyrics_mode)
@@ -548,10 +969,14 @@ class HiFiNowPlayingPage(QWidget):
         # Stop timers when page is hidden
         self._hide_timer.stop()
         self._topbar_hide_timer.stop()
-        if self._fade_anim and self._fade_anim.state() == QAbstractAnimation.State.Running:
-            self._fade_anim.stop()
-        if self._topbar_fade_anim and self._topbar_fade_anim.state() == QAbstractAnimation.State.Running:
-            self._topbar_fade_anim.stop()
+        # 拆窗销毁过程中动画对象可能已被 C++ 侧删除，访问前需防护
+        for attr in ("_fade_anim", "_topbar_fade_anim", "_bg_fade_anim"):
+            try:
+                anim = getattr(self, attr, None)
+                if anim and anim.state() == QAbstractAnimation.State.Running:
+                    anim.stop()
+            except RuntimeError:
+                setattr(self, attr, None)
 
     def mouseMoveEvent(self, e):
         pos = e.position()
@@ -719,6 +1144,146 @@ class HiFiNowPlayingPage(QWidget):
 
     # ---- Painting ----
 
+    def _ensure_bg_cache(self):
+        """Scale the blurred cover once per page size, in device pixels."""
+        dpr = self.devicePixelRatioF()
+        px = (max(1, int(self.width() * dpr)),
+              max(1, int(self.height() * dpr)))
+        if (self._cached_bg is not None and self._bg_px == px
+                and self._cached_bg.devicePixelRatio() == dpr):
+            return
+        if self._blurred_bg is None:
+            return
+        self._cached_bg = self._blurred_bg.scaled(
+            px[0], px[1],
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._cached_bg.setDevicePixelRatio(dpr)
+        self._bg_px = px
+
+    def _scaled_old_bg(self) -> QPixmap | None:
+        old = self._old_cached_bg
+        if old is None or old.isNull():
+            return None
+        dpr = self.devicePixelRatioF()
+        px = (max(1, int(self.width() * dpr)),
+              max(1, int(self.height() * dpr)))
+        if (old.devicePixelRatio() != dpr
+                or (old.width(), old.height()) != px):
+            old = old.scaled(px[0], px[1],
+                             Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                             Qt.TransformationMode.SmoothTransformation)
+            old.setDevicePixelRatio(dpr)
+            self._old_cached_bg = old
+        return old
+
+    def _compose_background(self) -> QPixmap:
+        """Render gradient + blurred cover + dark overlay once per state."""
+        w, h = self.width(), self.height()
+        dpr = self.devicePixelRatioF()
+        pxw, pxh = max(1, int(w * dpr)), max(1, int(h * dpr))
+        pix = self._composed_bg
+        if pix is None or pix.width() != pxw or pix.height() != pxh:
+            pix = QPixmap(pxw, pxh)  # reuse the buffer across fade ticks
+        pix.setDevicePixelRatio(dpr)
+        cp = QPainter(pix)
+        grad = QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, QColor("#0d0d1a"))
+        grad.setColorAt(1.0, QColor("#1a1a2e"))
+        cp.fillRect(0, 0, w, h, grad)
+
+        has_cover = bool(self._cover_pixmap and not self._cover_pixmap.isNull())
+        if has_cover:
+            if self._blurred_bg is None:
+                self._blurred_bg = _blur_pixmap(self._cover_pixmap)
+            self._ensure_bg_cache()
+
+        old = self._scaled_old_bg()
+        new = self._cached_bg if has_cover else None
+        t = self._bg_fade_progress
+        if old is not None or new is not None:
+            if t < 1.0 and old is not None:
+                cp.setOpacity(1.0 - t)
+                cp.drawPixmap(0, 0, old)
+                cp.setOpacity(1.0)
+            if t > 0 and new is not None:
+                cp.setOpacity(t)
+                cp.drawPixmap(0, 0, new)
+                cp.setOpacity(1.0)
+            cp.fillRect(0, 0, w, h, QColor(0, 0, 0, 160))
+        cp.end()
+        self._composed_bg = pix
+        self._composed_bg_key = (
+            id(self._cover_pixmap), id(self._blurred_bg), id(self._cached_bg),
+            id(self._old_cached_bg), round(t, 3), w, h, dpr)
+        return pix
+
+    def _paint_background(self, p: QPainter):
+        """Paint the full-page backdrop with a single blit when idle.
+
+        Shared verbatim by paintEvent and the lyrics child (which translates
+        by its own offset and lets the clip restrict it), so the two never
+        drift apart by a resampling or opacity-compositing step.
+        """
+        w, h = self.width(), self.height()
+        key = (id(self._cover_pixmap), id(self._blurred_bg),
+               id(self._cached_bg), id(self._old_cached_bg),
+               round(self._bg_fade_progress, 3), w, h,
+               self.devicePixelRatioF())
+        if self._composed_bg is None or self._composed_bg_key != key:
+            self._compose_background()
+        # On the way in the backdrop starts slightly dimmed and brightens over
+        # ~150ms. It is never hidden behind a black overlay: a fade from black
+        # reads as a black mask flashing over the whole window.
+        alpha = 1.0
+        if self._enter_global_rect is not None:
+            if self._enter_direction == "in":
+                t = max(0.0, min(1.0, self._enter_time() / 0.4))
+                alpha = 0.6 + 0.4 * (t * t * (3.0 - 2.0 * t))
+            else:
+                # Closing: dim with the descending cover, mirroring the open.
+                travel = max(0.0, min(1.0, 1.0 - self._enter_progress))
+                alpha = 1.0 - 0.4 * (travel * travel * (3.0 - 2.0 * travel))
+        if alpha < 0.999:
+            p.fillRect(0, 0, w, h, QColor("#07070c"))
+            p.setOpacity(alpha)
+            p.drawPixmap(0, 0, self._composed_bg)
+            p.setOpacity(1.0)
+        else:
+            p.drawPixmap(0, 0, self._composed_bg)
+
+    def _draw_meta_line(self, p: QPainter, text: str, font: QFont, color: QColor,
+                        y: float, line_h: int, progress: float,
+                        cover_x: float, cover_size: float,
+                        alpha: float = 1.0, rise: float = 0.0):
+        """One metadata line, gliding from page-centered to under-cover-left.
+
+        The rect's left edge and max width both interpolate with the layout
+        morph, so the title block travels with the cover instead of jumping
+        at the half-way point. `alpha`/`rise` drive the hero entry stagger.
+        """
+        if alpha <= 0.002:
+            return
+        prev_opacity = p.opacity()
+        p.setOpacity(prev_opacity * alpha)
+        p.setFont(font)
+        p.setPen(color)
+        y += rise
+        fm = QFontMetrics(font)
+        max_w = 500.0 + (cover_size - 500.0) * progress
+        elided = fm.elidedText(text or "", Qt.TextElideMode.ElideRight,
+                               max(10, int(max_w) - 10))
+        text_w = fm.horizontalAdvance(elided)
+        # Stay glued to the cover: centered under it while in artwork mode,
+        # left-aligned with it in lyrics mode, blending between the two.
+        x_centered = cover_x + cover_size / 2.0 - text_w / 2.0
+        x = x_centered + (cover_x - x_centered) * progress
+        p.drawText(QRectF(x, y, max(10, max_w), line_h),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   elided)
+        p.setOpacity(prev_opacity)
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -727,35 +1292,17 @@ class HiFiNowPlayingPage(QWidget):
         w, h = self.width(), self.height()
 
         # ---- Background: blurred cover with crossfade ----
-        if self._cover_pixmap and not self._cover_pixmap.isNull():
-            if self._blurred_bg is None:
-                self._blurred_bg = _blur_pixmap(self._cover_pixmap)
-            if self._cached_bg is None or self._cached_bg.size() != self.size():
-                self._cached_bg = self._blurred_bg.scaled(
-                    w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation)
+        self._paint_background(p)
 
-            t = self._bg_fade_progress
-            # Draw old background (fading out) if crossfade in progress
-            if t < 1.0 and self._old_cached_bg and not self._old_cached_bg.isNull():
-                old_scaled = self._old_cached_bg.scaled(w, h,
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation)
-                p.setOpacity(1.0 - t)
-                p.drawPixmap(0, 0, old_scaled)
-                p.setOpacity(1.0)
-            # Draw new background
-            if t > 0:
-                p.setOpacity(t)
-                p.drawPixmap(0, 0, self._cached_bg)
-                p.setOpacity(1.0)
-            # Dark overlay on top
-            p.fillRect(0, 0, w, h, QColor(0, 0, 0, 160))
-        else:
-            grad = QLinearGradient(0, 0, 0, h)
-            grad.setColorAt(0.0, QColor("#0d0d1a"))
-            grad.setColorAt(1.0, QColor("#1a1a2e"))
-            p.fillRect(0, 0, w, h, grad)
+        # ---- Lyrics: morph-time preview until the settled layer takes over ----
+        # Painted under the cover/metadata so the cover glides over the
+        # emerging lyrics instead of having text stamped on top of it.
+        # Not gated on _lyrics_mode: on the way out the flag is already
+        # False while progress is still fading 1→0, and the fade must play.
+        if (self._lyrics_layout_progress > 0.01
+                and not self._lyrics_layer.isVisible()):
+            self._lyrics_layer.draw_text_preview(
+                p, self._lyrics_layout_progress * self._enter_alpha(0.25))
 
         # ---- Top-right buttons position ----
         self._close_btn.move(w - 50, 16)
@@ -791,49 +1338,59 @@ class HiFiNowPlayingPage(QWidget):
         controls_opacity = 1.0 - progress * 0.15
 
         # ---- Layer 1: Cover art ----
+        # During the hero transition the cover is drawn at the interpolated
+        # rect between the playback bar thumbnail and this page's cover.
+        d_x, d_y, d_sz, d_radius = self._cover_draw_rect(cover_x, cover_y, cover_size)
+        d_sz = max(8, int(round(d_sz)))
+        d_x = int(round(d_x))
+        d_y = int(round(d_y))
+        hero = 1.0 if self._enter_global_rect is None else self._enter_progress
         if self._cover_pixmap and not self._cover_pixmap.isNull():
             # Shadow
             shadow = QPainterPath()
-            shadow.addRoundedRect(QRectF(cover_x + 3, cover_y + 5,
-                                         cover_size, cover_size), 12, 12)
+            shadow.addRoundedRect(QRectF(d_x + 3, d_y + 5,
+                                         d_sz, d_sz), d_radius, d_radius)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0, shadow_alpha))
+            p.setBrush(QColor(0, 0, 0, int(10 + (shadow_alpha - 10) * hero)))
             p.drawPath(shadow)
 
             # Cover with rounded corners
             clip = QPainterPath()
-            clip.addRoundedRect(QRectF(cover_x, cover_y,
-                                       cover_size, cover_size), 12, 12)
+            clip.addRoundedRect(QRectF(d_x, d_y, d_sz, d_sz),
+                                d_radius, d_radius)
             p.setClipPath(clip)
 
-            scaled = self._cover_pixmap.scaled(
-                cover_size, cover_size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            src_x = (scaled.width() - cover_size) / 2
-            src_y = (scaled.height() - cover_size) / 2
-            p.drawPixmap(int(cover_x), int(cover_y), scaled,
-                         int(src_x), int(src_y), cover_size, cover_size)
+            sprite = self._cover_sprite()
+            if sprite is not None:
+                # 1:1 at rest; during the flight the painter downscales the
+                # cached device-size sprite with smoothing (no per-frame
+                # QPixmap.scaled of the full artwork).
+                # Source rect is in *device* pixels here, not logical ones:
+                # Qt does not divide it by the pixmap's DPR, so using the
+                # logical size would take only the top-left quarter of the
+                # sprite (and clip the album title off the bottom).
+                p.drawPixmap(
+                    QRectF(d_x, d_y, d_sz, d_sz), sprite,
+                    QRectF(0, 0, sprite.width(), sprite.height()))
             p.setClipping(False)
 
             # Subtle border
             p.setPen(QPen(QColor(255, 255, 255, 20), 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(cover_x, cover_y,
-                                     cover_size, cover_size), 12, 12)
+            p.drawRoundedRect(QRectF(d_x, d_y, d_sz, d_sz),
+                              d_radius, d_radius)
         else:
             # Placeholder
-            rect = QRectF(cover_x, cover_y, cover_size, cover_size)
-            grad = QLinearGradient(cover_x, cover_y,
-                                   cover_x + cover_size, cover_y + cover_size)
+            rect = QRectF(d_x, d_y, d_sz, d_sz)
+            grad = QLinearGradient(d_x, d_y,
+                                   d_x + d_sz, d_y + d_sz)
             grad.setColorAt(0.0, QColor("#1e1e40"))
             grad.setColorAt(1.0, QColor("#2d1b69"))
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(grad)
-            p.drawRoundedRect(rect, 12, 12)
+            p.drawRoundedRect(rect, d_radius, d_radius)
             font = QFont()
-            font.setPointSize(cover_size // 4)
+            font.setPointSize(max(6, d_sz // 4))
             p.setFont(font)
             p.setPen(QColor("#a78bfa"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "♪")
@@ -841,58 +1398,38 @@ class HiFiNowPlayingPage(QWidget):
         # ---- Layer 1: Track info (with metadata opacity) ----
         p.setOpacity(meta_ease)
         text_y = cover_y + cover_size + 32
-
-        # Alignment: centered in Artwork, left-aligned in Lyrics
-        if progress > 0.5:
-            text_align = Qt.AlignmentFlag.AlignLeft
-            text_x = cover_x
-            text_w = cover_size
-        else:
-            text_align = Qt.AlignmentFlag.AlignHCenter
-            text_x = cx - 250
-            text_w = 500
+        title_alpha = self._enter_alpha(0.20)
+        meta_alpha = self._enter_alpha(0.28)
+        title_rise = (1.0 - title_alpha) * 16.0
+        meta_rise = (1.0 - meta_alpha) * 16.0
 
         # Title
         title_font = QFont()
         title_font.setPointSize(22)
         title_font.setBold(True)
-        p.setFont(title_font)
-        p.setPen(QColor("#ffffff"))
-        title_h = 36
-        title_rect = QRectF(text_x, text_y, text_w, title_h)
-        fm = QFontMetrics(title_font)
-        elided = fm.elidedText(self._title, Qt.TextElideMode.ElideRight, text_w - 10)
-        p.drawText(title_rect, text_align | Qt.AlignmentFlag.AlignVCenter, elided)
-        text_y += title_h + 8
+        self._draw_meta_line(p, self._title, title_font, QColor("#ffffff"),
+                             text_y, 36, progress, cover_x, cover_size,
+                             alpha=title_alpha, rise=title_rise)
+        text_y += 36 + 8
 
         # Artist
         artist_font = QFont()
         artist_font.setPointSize(14)
-        p.setFont(artist_font)
-        p.setPen(QColor(self._accent.lighter(130).name()))
-        artist_h = 24
-        artist_rect = QRectF(text_x, text_y, text_w, artist_h)
-        fm2 = QFontMetrics(artist_font)
-        elided2 = fm2.elidedText(self._artist, Qt.TextElideMode.ElideRight, text_w - 10)
-        p.drawText(artist_rect, text_align | Qt.AlignmentFlag.AlignVCenter, elided2)
-        text_y += artist_h + 4
+        self._draw_meta_line(p, self._artist, artist_font,
+                             QColor(self._accent.lighter(130).name()),
+                             text_y, 24, progress, cover_x, cover_size,
+                             alpha=meta_alpha, rise=meta_rise)
+        text_y += 24 + 4
 
         # Album
         album_font = QFont()
         album_font.setPointSize(11)
-        p.setFont(album_font)
-        p.setPen(QColor("#8899aa"))
-        album_h = 20
-        album_rect = QRectF(text_x, text_y, text_w, album_h)
-        fm3 = QFontMetrics(album_font)
-        elided3 = fm3.elidedText(self._album, Qt.TextElideMode.ElideRight, text_w - 10)
-        p.drawText(album_rect, text_align | Qt.AlignmentFlag.AlignVCenter, elided3)
-        text_y += album_h
+        self._draw_meta_line(p, self._album, album_font, QColor("#8899aa"),
+                             text_y, 20, progress, cover_x, cover_size,
+                             alpha=meta_alpha, rise=meta_rise)
         p.setOpacity(1.0)
 
-        # ---- Layer 1.5: Lyrics (right side, visible in Lyrics mode) ----
-        if progress > 0.01 and self._lyrics:
-            self._paint_lyrics(p, w, h, progress)
+        # Lyrics are rendered by the dedicated _LyricsLayer child widget.
 
         # ---- Layer 2+3: Progress bar + Transport buttons + Quality info ----
         # Match TransportBar sizes: play=72, side=56
@@ -932,8 +1469,10 @@ class HiFiNowPlayingPage(QWidget):
         bar_x = max(20, min(controls_cx - bar_w / 2, w - bar_w - 20))
         bar_y = btn_center_y - play_size / 2 - 24 - groove_h
 
-        # Apply auto-hide + lyrics mode opacity to transport buttons
-        combined_btn_opacity = self._buttons_opacity * controls_opacity
+        # Apply auto-hide + lyrics mode + hero-entry opacity to controls
+        ctrl_alpha = self._enter_alpha(0.38)
+        combined_btn_opacity = self._buttons_opacity * controls_opacity * ctrl_alpha
+        progress_opacity *= ctrl_alpha
         if combined_btn_opacity > 0.01:
             p.setOpacity(combined_btn_opacity)
             # Previous
@@ -952,10 +1491,12 @@ class HiFiNowPlayingPage(QWidget):
             p.setOpacity(progress_opacity)
             ratio = self._position_ms / self._duration_ms
 
-            # Groove background (#252540) — fully rounded ends
+            # Groove background — translucent album accent (follows dynamic accent)
             groove_r = groove_h // 2
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#252540"))
+            groove_color = QColor(self._accent)
+            groove_color.setAlpha(70)
+            p.setBrush(groove_color)
             p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, groove_h), groove_r, groove_r)
 
             # Sub-page (accent color fill) — fully rounded ends
@@ -981,7 +1522,8 @@ class HiFiNowPlayingPage(QWidget):
             p.setOpacity(1.0)
 
         # ---- Layer 2: HiFi quality info (above progress bar) ----
-        if self._quality_text:
+        if self._quality_text and ctrl_alpha > 0.002:
+            p.setOpacity(ctrl_alpha)
             qy = bar_y - 28
             q_font = QFont()
             q_font.setPointSize(10)
@@ -1001,107 +1543,11 @@ class HiFiNowPlayingPage(QWidget):
                 q_rect = QRectF(controls_cx - 200, qy, 400, 20)
                 p.drawText(q_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
                            self._quality_text)
+            p.setOpacity(1.0)
 
         p.end()
 
     # ---- Lyrics rendering ----
-
-    def _paint_lyrics(self, p: QPainter, w: int, h: int, progress: float):
-        """Render lyrics in the right area with scrolling and focus shifting."""
-        accent = self._accent
-        # Lyrics area: right side with breathing room
-        lyrics_x = w * 0.42
-        lyrics_w = w * 0.50
-
-        if lyrics_w < 100:
-            return
-
-        # Visual center Y (slightly above true center)
-        visual_center_y = h * 0.44
-
-        # Font size: dynamic based on window width
-        base_font_size = max(28, min(40, int(w * 0.022)))
-
-        # Soft fade masks at top and bottom
-        fade_h = int(h * 0.12)
-
-        p.setOpacity(progress)
-
-        n = len(self._lyrics)
-        half_visible = 5
-
-        for i in range(max(0, self._lyrics_active_idx - half_visible),
-                       min(n, self._lyrics_active_idx + half_visible + 1)):
-            line = self._lyrics[i]
-            dist = i - self._lyrics_anim_line  # float for sub-pixel
-
-            abs_dist = abs(dist)
-            if abs_dist > half_visible + 1:
-                continue
-
-            # Current line
-            if abs_dist < 0.5:
-                # Scale animation
-                font_size = int(base_font_size * self._lyrics_scale)
-                font = QFont()
-                font.setPointSize(font_size)
-                font.setBold(True)
-                p.setFont(font)
-                # Color: accent with scale-linked opacity
-                line_opacity = 0.75 + 0.25 * self._lyrics_scale
-                color = QColor(accent)
-                color.setAlphaF(line_opacity)
-                p.setPen(color)
-
-                y = int(visual_center_y)
-                # Draw text at point — no rect clipping
-                p.drawText(int(lyrics_x), y, line.text)
-
-                # Translation (below current line, same visual unit)
-                if line.translation:
-                    t_font = QFont()
-                    t_font.setPointSize(max(14, base_font_size - 6))
-                    p.setFont(t_font)
-                    t_color = QColor(accent)
-                    t_color.setAlphaF(0.55)
-                    p.setPen(t_color)
-                    p.drawText(int(lyrics_x), y + 52, line.translation)
-
-            else:
-                # Non-current lines: fade + shrink with distance
-                fade = max(0.0, 1.0 - abs_dist / (half_visible + 1) * 0.85)
-                font_size = max(14, base_font_size - int(abs_dist * 3))
-                font = QFont()
-                font.setPointSize(font_size)
-                p.setFont(font)
-
-                color = QColor("#8899aa")
-                color.setAlphaF(fade * 0.7)
-                p.setPen(color)
-
-                # Y offset from center (sub-pixel) — generous spacing
-                line_height = int(base_font_size * 3.0)
-                y_offset = dist * line_height
-                # Add extra space for translation lines
-                if (i > 0 and i <= self._lyrics_active_idx and
-                    self._lyrics[i - 1].translation and i - 1 == self._lyrics_active_idx):
-                    y_offset += 30
-                y = int(visual_center_y + y_offset)
-
-                # Draw text at point — no rect clipping
-                p.drawText(int(lyrics_x), y, line.text)
-
-        # No lyrics message
-        if not self._lyrics:
-            font = QFont()
-            font.setPointSize(14)
-            p.setFont(font)
-            color = QColor("#556677")
-            color.setAlphaF(0.5)
-            p.setPen(color)
-            p.drawText(int(lyrics_x), int(visual_center_y), "No synced lyrics")
-
-        p.setOpacity(1.0)
 
     def _draw_transport_btn(self, p: QPainter, x: float, y: float,
                             size: int, icon_name: str, dim: bool):
