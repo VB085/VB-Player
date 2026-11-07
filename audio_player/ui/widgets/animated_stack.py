@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QStackedWidget, QLabel, QGraphicsOpacityEffect
-from PyQt6.QtCore import QPropertyAnimation, QEasingCurve, Qt
+from PyQt6.QtCore import QPropertyAnimation, QEasingCurve, Qt, QTimer
 
 
 class AnimatedStackedWidget(QStackedWidget):
@@ -11,6 +11,11 @@ class AnimatedStackedWidget(QStackedWidget):
         self._overlay: QLabel | None = None
         self._animating = False
         self._pending_index: int | None = None
+        # finished-signal insurance: if the animation never reports done
+        # (hidden window, event-loop stall), unblock switching anyway
+        self._watchdog = QTimer(self)
+        self._watchdog.setSingleShot(True)
+        self._watchdog.timeout.connect(self._on_anim_done)
 
     def animate_to(self, index: int):
         if self._animating:
@@ -51,6 +56,7 @@ class AnimatedStackedWidget(QStackedWidget):
             self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
             self._anim.finished.connect(self._on_anim_done)
             self._anim.start()
+            self._watchdog.start(self._duration + 400)
         else:
             self._animating = False
             self._process_pending()

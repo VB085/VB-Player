@@ -1,9 +1,18 @@
 import gi
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst
+gi.require_version('GstApp', '1.0')
+from gi.repository import Gst, GstApp
+
+from PyQt6.QtCore import QTimer
 
 from audio_player.player.engine_base import _BaseAudioEngine, BAND_FREQUENCIES
+from audio_player.player._types import PlaybackState
 from audio_player.i18n import _
+import sys as _sys
+if _sys.platform == "win32":
+    import audio_player.platform.windows.asio_bridge as _a
+else:
+    _a = None  # Linux/macOS — no ASIO backend
 
 
 def enumerate_hw_devices() -> list[dict]:
@@ -32,9 +41,12 @@ def enumerate_hw_devices() -> list[dict]:
             clsid = props.get_string('device.clsid') or ''
 
             if api == 'asio':
-                name = props.get_string('asio.device.description') or d.get_display_name()
-                hw = f"asio:{clsid}" if clsid else ""
-                driver_tag = "ASIO"
+                # Skip — GStreamer's ASIO probe may corrupt driver state
+                # (we use native COM backend instead)
+                continue
+                # name = props.get_string('asio.device.description') or d.get_display_name()
+                # hw = f"asio:{clsid}" if clsid else ""
+                # driver_tag = "ASIO"
             else:
                 name = props.get_string('device.description') or d.get_display_name()
                 if name and 'microphone' in name.lower():
@@ -58,6 +70,35 @@ def enumerate_hw_devices() -> list[dict]:
             })
 
         mon.stop()
+
+        # Add ASIO devices from registry (GStreamer probe may corrupt driver)
+        if _sys.platform == "win32":
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                     r"SOFTWARE\ASIO")
+                i = 0
+                while True:
+                    try:
+                        key_name = winreg.EnumKey(key, i)
+                        sub = winreg.OpenKey(key, key_name)
+                        clsid = winreg.QueryValueEx(sub, "CLSID")[0]  # the actual GUID
+                        driver_name = winreg.QueryValueEx(sub, "Description")[0]
+                        devices.append({
+                            "card": len(devices),
+                            "device": 0,
+                            "hw": f"asio:{clsid}",
+                            "name": driver_name,
+                            "driver": "ASIO",
+                            "api": "asio",
+                        })
+                        winreg.CloseKey(sub)
+                        i += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
+            except Exception:
+                pass
     except Exception as _e:
         import sys; print(f"[{__name__}] {_e}", file=sys.stderr)
 
@@ -77,9 +118,73 @@ class AudioEngine(_BaseAudioEngine):
     def _default_exclusive_device(self) -> str:
         return ""
 
+    def pause(self):
+        super().pause()
+
+    def stop(self):
+        super().stop()
+
+    def play(self):
+        if not self._current_file:
+            return
+        # ASIO: use GStreamer appsink pipeline + ASIO feed thread
+        if getattr(self, '_is_asio_gst', False):
+            # Start GStreamer pipeline
+            if self._pipeline is not None:
+                self._pipeline.set_state(Gst.State.PLAYING)
+            # Start ASIO feed thread if not already running
+            if not getattr(self, '_asio_started', False):
+                if self._start_asio():
+                    self._asio_started = True
+                else:
+                    # ASIO failed - fall back to standard pipeline
+                    import sys as _s
+                    print("[asio] Falling back to standard pipeline", file=_s.stderr)
+                    self._is_asio_gst = False
+                    self._teardown_pipeline()
+                    # Rebuild as standard pipeline
+                    if self._current_file:
+                        self._build_pipeline(self._current_file)
+                        if self._pipeline is not None:
+                            self._pipeline.set_state(Gst.State.PLAYING)
+                    return
+            if not self._poll_timer.isActive():
+                self._poll_timer.setInterval(50)
+                self._poll_timer.start()
+            return
+        super().play()
+
     def _teardown_pipeline(self):
         self._kill_ffmpeg_proc()
+        if getattr(self, '_is_asio_gst', False):
+            self._stop_asio()
+        self._asio_started = False
+        self._is_asio_gst = False
+        self._appsink = None
         super()._teardown_pipeline()
+
+    def _poll(self):
+        # For ASIO with GStreamer pipeline: use GStreamer's position query
+        if getattr(self, '_is_asio_gst', False) and self._pipeline is not None:
+            bus = self._pipeline.get_bus()
+            while True:
+                msg = bus.pop()
+                if msg is None:
+                    break
+                self._handle_message(msg)
+            ok, pos_ns = self._pipeline.query_position(Gst.Format.TIME)
+            if ok:
+                ms = pos_ns // 1000000
+                if ms != self._position_ms:
+                    self._position_ms = ms
+                    self.positionChanged.emit(ms)
+            if self._duration_ms <= 0:
+                ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
+                if ok:
+                    self._duration_ms = dur_ns // 1000000
+                    self.durationChanged.emit(self._duration_ms)
+            return
+        super()._poll()
 
     def _cleanup_preloaded(self):
         """Kill any ffmpeg subprocess from the preloaded pipeline."""
@@ -99,18 +204,31 @@ class AudioEngine(_BaseAudioEngine):
             hw = self._exclusive_device or ""
             if hw.startswith("asio:"):
                 clsid = hw[5:]
+                # Wrap asiosink in a bin with audioconvert+resample+capsfilter→48kHz
+                # Most ASIO drivers only support specific rates via GStreamer
+                bin = Gst.Bin.new("asio-sink-bin")
+                conv = Gst.ElementFactory.make("audioconvert", None)
+                resample = Gst.ElementFactory.make("audioresample", None)
+                capsf = Gst.ElementFactory.make("capsfilter", None)
                 sink = Gst.ElementFactory.make("asiosink", None)
-                if sink is None:
+                if any(x is None for x in [conv, resample, capsf, sink]):
                     raise RuntimeError(_("engine.asio_unavailable"))
+                capsf.set_property("caps", Gst.Caps.from_string("audio/x-raw,rate=48000"))
                 sink.set_property("device-clsid", clsid)
+                # Link bin elements
+                ghost = Gst.GhostPad.new("sink", conv.get_static_pad("sink"))
+                bin.add_pad(ghost)
+                bin.add(conv); bin.add(resample); bin.add(capsf); bin.add(sink)
+                conv.link(resample); resample.link(capsf); capsf.link(sink)
+                return bin
             else:
                 sink = Gst.ElementFactory.make("wasapi2sink", None)
                 if sink is None:
                     raise RuntimeError(_("engine.wasapi_unavailable"))
                 sink.set_property("exclusive", True)
-                sink.set_property("low-latency", True)
-                sink.set_property("buffer-time", 10000)
-                sink.set_property("latency-time", 3333)
+                sink.set_property("low-latency", False)
+                sink.set_property("buffer-time", 50000)
+                sink.set_property("latency-time", 10000)
                 if hw:
                     sink.set_property("device", hw)
         else:
@@ -545,7 +663,217 @@ class AudioEngine(_BaseAudioEngine):
             self._ffmpeg_stop_flag = None
             self._ffmpeg_playing_event = None
 
-    # ── Override _build_pipeline to add DSD support ──────────────────
+    # ── ASIO: ffmpeg → pipe → asio_write (zero GStreamer threads) ────
+
+    # ── ASIO via GStreamer decodebin → appsink → threading.Thread ─────
+
+    def _build_asio_gst_pipeline(self, filepath: str) -> bool:
+        """Build GStreamer decodebin→appsink pipeline for ASIO output.
+
+        GStreamer handles all decoding (verified clean with WASAPI).
+        Python thread pulls from appsink → asio_write → ring buffer.
+        """
+        from audio_player.player.metadata import read_metadata
+        import sys as _s
+
+        self._teardown_pipeline()
+
+        try:
+            meta = read_metadata(filepath)
+            target_rate = meta.sample_rate if meta.sample_rate > 0 else 44100
+            duration_ms = int(meta.duration_seconds * 1000) if meta.duration_seconds > 0 else 0
+        except Exception:
+            target_rate = 44100; duration_ms = 0
+
+        ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
+        if ext in ("dsf", "dff"): target_rate = 88200
+
+        pipeline = Gst.Pipeline.new("asio-gst-pipeline")
+        try:
+            filesrc = Gst.ElementFactory.make("filesrc", None)
+            filesrc.set_property("location", filepath)
+            decodebin = Gst.ElementFactory.make("decodebin", None)
+            decodebin.connect("pad-added", self._on_decodebin_pad_added)
+            queue = Gst.ElementFactory.make("queue", None)
+            conv = Gst.ElementFactory.make("audioconvert", None)
+            resample = Gst.ElementFactory.make("audioresample", None)
+            volume = Gst.ElementFactory.make("volume", None)
+            volume.set_property("volume", self._volume_level)
+            eq = Gst.ElementFactory.make("equalizer-nbands", None)
+            eq.set_property("num-bands", 10)
+            for i, freq in enumerate(BAND_FREQUENCIES):
+                band = eq.get_child_by_index(i)
+                band.set_property("freq", float(freq))
+                band.set_property("gain", self._eq_gains[i] if self._eq_enabled else 0.0)
+            capsf = Gst.ElementFactory.make("capsfilter", None)
+            appsink = Gst.ElementFactory.make("appsink", None)
+
+            if any(x is None for x in [filesrc, decodebin, queue, conv, resample, volume, eq, capsf, appsink]):
+                raise RuntimeError("GStreamer plugins missing")
+
+            caps_str = f"audio/x-raw,format=F32LE,rate={target_rate},channels=2,layout=interleaved"
+            capsf.set_property("caps", Gst.Caps.from_string(caps_str))
+            appsink.set_property("caps", Gst.Caps.from_string(caps_str))
+            appsink.set_property("sync", False)
+            appsink.set_property("max-buffers", 8)  # deeper buffer for GIL contention
+            appsink.set_property("drop", False)
+
+            for e in [filesrc, decodebin, queue, conv, resample, volume, eq, capsf, appsink]:
+                pipeline.add(e)
+            filesrc.link(decodebin)
+            queue.link(conv); conv.link(resample); resample.link(volume); volume.link(eq); eq.link(capsf); capsf.link(appsink)
+
+            self._pipeline = pipeline
+            self._appsink = appsink
+            self._filesrc = filesrc; self._decodebin = decodebin
+            self._audio_queue = queue; self._conv1 = conv
+            self._sink = appsink; self._audio_pad_linked = False
+            self._pipeline_sample_rate = target_rate
+            self._pipeline_output_format = caps_str
+            self._source_is_dsd = (ext in ("dsf", "dff"))
+            self._duration_ms = duration_ms
+            if duration_ms > 0: self.durationChanged.emit(duration_ms)
+            self._is_asio_gst = True
+            self._asio_bytes_total = 0
+            self._volume_elem = volume
+            self._eq_elem = eq
+            return True
+        except Exception as e:
+            self._teardown_pipeline()
+            self.errorOccurred.emit(str(e))
+            return False
+
+    def _start_asio(self) -> bool:
+        """Open ASIO device and start GStreamer pipeline + feed thread."""
+        hw = self._exclusive_device or ""
+        if not hw.startswith("asio:"): return False
+        clsid = hw[5:]
+        rate = self._pipeline_sample_rate or 44100
+        _a.asio_close()
+        result = _a.asio_open(clsid, rate, self._asio_sample_type)
+        if result is None:
+            self.errorOccurred.emit(f"ASIO: failed to open at {rate}Hz")
+            return False
+        import sys as _s
+        print(f"[asio] Opened at {rate}Hz, {result[0]}ch, buffer={result[1]}", file=_s.stderr)
+
+        # Start GStreamer pipeline → PAUSED (preroll)
+        if self._pipeline is not None:
+            self._pipeline.set_state(Gst.State.PLAYING)
+
+        # Start feed thread (Python thread, not Qt/QTimer)
+        import threading
+        self._asio_stop = threading.Event()
+        self._asio_thread = threading.Thread(target=self._asio_feed_thread, daemon=True)
+        self._asio_thread.start()
+        return True
+
+    def _stop_asio(self):
+        """Stop feed thread and close ASIO."""
+        stop = getattr(self, '_asio_stop', None)
+        if stop is not None: stop.set()
+        t = getattr(self, '_asio_thread', None)
+        if t is not None and t.is_alive(): t.join(timeout=2)
+        self._asio_stop = None; self._asio_thread = None
+        _a.asio_close()
+
+    def _asio_feed_thread(self):
+        """Feed thread: pull from GStreamer appsink, write to ASIO ring buffer."""
+        import time
+        appsink = self._appsink
+        stop = self._asio_stop
+        sample = None  # reduce GC pressure
+
+        while not stop.is_set():
+            if not _a._running: time.sleep(0.005); continue
+            try:
+                _a._rpos = _a.rpos()  # sync from callback cell (real-time rpos)
+                bs = getattr(_a, '_bs', 2048)
+                used = (_a._wpos - _a._rpos) % _a.RING_SAMPLES
+                if used >= bs * 8:
+                    time.sleep(0.005)
+                    continue
+
+                # Pull from appsink
+                sample = appsink.emit("pull-sample")
+                if sample is None:
+                    time.sleep(0.005)
+                    continue
+                    continue
+
+                buf = sample.get_buffer()
+                ok, info = buf.map(Gst.MapFlags.READ)
+                if ok:
+                    _a.asio_write(info.data)
+                    buf.unmap(info)
+            except Exception:
+                time.sleep(0.01)
+
+        # EOS handled by _poll timer (GStreamer bus message), not here.
+        # Feed thread just waits for ASIO buffer to drain before closing.
+        while _a._running and _a._wpos != _a._rpos:
+            time.sleep(0.05)
+
+    # ── Override _build_pipeline ───────────────────────────────────────
+
+    def _build_asio_ffmpeg_pipe(self, filepath: str) -> bool:
+        """Decode audio via ffmpeg → asio_write (no GStreamer at all).
+
+        ffmpeg subprocess stdout → QTimer reads → asio_write → ring buffer.
+        Duration from metadata, position from byte counting.
+        """
+        import subprocess
+        from audio_player.player.metadata import read_metadata
+
+        self._teardown_pipeline()
+
+        ffmpeg = self._find_ffmpeg()
+        if not ffmpeg:
+            self.errorOccurred.emit(_("engine.ffmpeg_not_found"))
+            return False
+
+        # Read metadata for duration
+        try:
+            meta = read_metadata(filepath)
+            duration_ms = int(meta.duration_seconds * 1000) if meta.duration_seconds > 0 else 0
+        except Exception:
+            duration_ms = 0
+
+        # Force 44100 — same as verified standalone beep test
+        target_rate = 44100
+        ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
+
+        # Build ffmpeg command — explicit format, no stdin interaction
+        ffmpeg_cmd = [
+            ffmpeg, "-nostdin", "-i", filepath,
+            "-f", "f32le",
+            "-ar", str(target_rate), "-ac", "2",
+            "-loglevel", "error",
+            "pipe:1",
+        ]
+
+        try:
+            self._ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception as e:
+            import sys as _s; print(f"[asio] ffmpeg start failed: {e}", file=_s.stderr)
+            return False
+
+        # No GStreamer pipeline needed — use metadata for duration
+        self._pipeline = None
+        self._current_file = filepath
+        self._pipeline_sample_rate = target_rate
+        self._pipeline_output_format = f"F32LE,{target_rate}Hz,stereo"
+        self._source_is_dsd = (ext in ("dsf", "dff"))
+        self._duration_ms = duration_ms
+        if duration_ms > 0:
+            self.durationChanged.emit(duration_ms)
+
+        self._is_asio_gst = True
+        self._asio_bytes_total = 0
+        return True
+
+    # ── Override _build_pipeline to add DSD support + ASIO native ─────
 
     def _build_pipeline(self, filepath: str):
         # URL streams — delegate to base class playbin pipeline
@@ -574,6 +902,13 @@ class AudioEngine(_BaseAudioEngine):
                 return
             import sys
             print("[engine] DSD playback requires ffmpeg with DSD support", file=sys.stderr)
+
+        # ASIO: GStreamer decodebin → appsink → thread → asio_write
+        if self._exclusive_mode:
+            hw = self._exclusive_device or ""
+            if hw.startswith("asio:"):
+                self._build_asio_gst_pipeline(filepath)
+                return
 
         # Standard PCM pipeline (decodebin-based, used for non-DSD files)
         self._teardown_pipeline()

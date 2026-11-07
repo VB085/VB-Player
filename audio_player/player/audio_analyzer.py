@@ -1,4 +1,5 @@
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
+import threading
 import numpy as np
 from dataclasses import dataclass
 
@@ -18,6 +19,11 @@ class _DecoderWorker(QThread):
         self._filepath = filepath
         self._bins = bins
         self._snapshots_per_sec = snapshots_per_sec
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        """Ask the decode loop to stop ASAP (checked between chunks/phases)."""
+        self._cancelled.set()
 
     def run(self):
         waveform = None
@@ -25,6 +31,9 @@ class _DecoderWorker(QThread):
         lyrics = []
         try:
             samples = self._decode_to_pcm()
+            if self._cancelled.is_set():
+                self.finished.emit(None, None, [])
+                return
             if samples is not None and len(samples) > 0:
                 waveform = self._compute_waveform(samples)
                 spectrum = self._compute_spectrum(samples, self._bins, self._snapshots_per_sec)
@@ -38,16 +47,21 @@ class _DecoderWorker(QThread):
         """Decode audio to F32LE mono 22.05kHz PCM.
 
         Tries gst-launch first, falls back to ffmpeg on failure.
+        On MSVC Python, skips gst-launch entirely (no GStreamer available).
         """
-        samples = self._decode_via_gst()
-        if samples is not None:
-            return samples
+        import sys
+        _MSVC = hasattr(sys, 'getwindowsversion') and 'MSC' in sys.version
+        if not _MSVC:
+            samples = self._decode_via_gst()
+            if samples is not None:
+                return samples
         return self._decode_via_ffmpeg()
 
     def _decode_via_gst(self) -> np.ndarray | None:
         import subprocess
         import shutil
         import os
+        import time
 
         gst_launch = shutil.which("gst-launch-1.0")
         gst_root = None
@@ -102,7 +116,13 @@ class _DecoderWorker(QThread):
                 return None  # silent — temp file race, not an error
             with open(tmp_path, "rb") as f:
                 data = f.read()
-            os.unlink(tmp_path)
+            # Windows: GStreamer may still hold the file; retry unlink
+            for _ in range(5):
+                try:
+                    os.unlink(tmp_path)
+                    break
+                except PermissionError:
+                    time.sleep(0.05)
             return np.frombuffer(data, dtype=np.float32).copy()
         except Exception:
             import sys, traceback
@@ -139,24 +159,40 @@ class _DecoderWorker(QThread):
         if not ffmpeg:
             return None
 
+        proc = None
         try:
-            result = subprocess.run(
+            # Stream instead of subprocess.run so cancel() can kill a decode
+            # in progress — a track switch used to leave the old full-file
+            # decode running to completion (up to the 120 s timeout).
+            proc = subprocess.Popen(
                 [ffmpeg, "-i", self._filepath,
                  "-f", "f32le", "-ac", "1", "-ar", "22050",
                  "-loglevel", "quiet", "pipe:1"],
-                capture_output=True, timeout=120,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-            if result.returncode != 0 or len(result.stdout) == 0:
-                if result.stderr:
+            chunks = []
+            while True:
+                d = proc.stdout.read(1 << 20)
+                if not d:
+                    break
+                chunks.append(d)
+                if self._cancelled.is_set():
+                    proc.kill()
+                    return None
+            if proc.wait(timeout=120) != 0 or not chunks:
+                err = proc.stderr.read() if proc.stderr else b""
+                if err:
                     import sys
-                    err = result.stderr.decode(errors='ignore')[:500]
-                    sys.stderr.write(f"[ffmpeg] {err}\n")
+                    sys.stderr.write(f"[ffmpeg] {err[:500].decode(errors='ignore')}\n")
                     sys.stderr.flush()
                 return None
-            return np.frombuffer(result.stdout, dtype=np.float32).copy()
+            return np.frombuffer(b"".join(chunks), dtype=np.float32).copy()
         except Exception:
             import sys, traceback
             traceback.print_exc(file=sys.stderr)
+            if proc is not None:
+                try: proc.kill()
+                except Exception: pass
             return None
 
     def _compute_waveform(self, samples: np.ndarray, num_bars: int = 2000) -> np.ndarray:
@@ -198,6 +234,8 @@ class _DecoderWorker(QThread):
                 spec = spec / max_val
             spec = np.log1p(spec * 3) / np.log1p(3)
             spectrum[i] = spec
+            if i % 50 == 0:  # yield GIL every 50 FFTs (~1.5s of audio)
+                self.msleep(1)
         return spectrum
 
     def _load_lyrics(self) -> list[LyricsLine]:
@@ -237,9 +275,18 @@ class _DecoderWorker(QThread):
                 return None
 
             tags = mf.tags
+            # Guard: some mutagen versions return tags as non-dict iterables
+            if not hasattr(tags, 'items'):
+                return None
+
             # Prioritised keys: USLT (ID3), ©lyr (MP4), LYRICS (Vorbis/FLAC)
-            for key in tags:
-                key_s = str(key)
+            for key in list(tags.keys()):
+                try:
+                    key_s = str(key)
+                except Exception:
+                    key_s = str(key[0]) if isinstance(key, tuple) and len(key) > 0 else ""
+                if not key_s:
+                    continue
                 if any(k in key_s.upper() for k in ('USLT', '©LYR', 'LYRICS', 'UNSYNCEDLYRICS')):
                     val = tags[key]
                     if isinstance(val, list):
@@ -250,11 +297,16 @@ class _DecoderWorker(QThread):
                         t = val.text
                         if isinstance(t, list):
                             t = t[0] if t else None
+                        # ID3 USLT: val.text may be a tuple ('lang', 'text')
+                        if isinstance(t, tuple) and len(t) >= 2:
+                            t = t[1]
+                        if isinstance(t, str):
+                            return t
                         return str(t) if t else None
                     return str(val)
             return None
         except Exception as e:
-            import sys; print(f"[analyzer] 元数据读取失败: {e}", file=sys.stderr)
+            import sys; print(f"[analyzer] lyrics tag read skipped: {e}", file=sys.stderr)
             return None
 
     def _parse_lrc(self, text: str) -> list[LyricsLine]:
@@ -278,9 +330,25 @@ class AudioAnalyzer(QObject):
         if filepath.startswith(("http://", "https://", "smb://")):
             return
         req_id = self._request_id
+        # Stop and join the previous worker — without this, rapid track
+        # changes piled up concurrent full-file decodes, and destroying a
+        # still-running QThread (window close) aborted the whole process.
+        old = self._worker
+        if old is not None and old.isRunning():
+            old.cancel()
+            old.wait(1000)
         self._worker = _DecoderWorker(filepath, parent=self)
         self._worker.finished.connect(lambda *args: self._on_finished(req_id, *args))
         self._worker.start()
+
+    def shutdown(self):
+        """Cancel and join the decode thread. Call before teardown — a
+        QThread destroyed while running triggers a hard Qt abort."""
+        w = self._worker
+        if w is not None and w.isRunning():
+            w.cancel()
+            w.wait(3000)
+        self._worker = None
 
     def _cancel(self):
         """Mark current worker as stale — its results will be ignored."""

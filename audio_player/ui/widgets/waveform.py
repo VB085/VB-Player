@@ -16,6 +16,8 @@ class WaveformWidget(QWidget):
         self.setStyleSheet("")
         self.setMouseTracking(True)
         self._waveform: np.ndarray | None = None
+        self._resampled: np.ndarray | None = None  # cached at display resolution
+        self._resampled_width: int = 0
         self._position_ratio = 0.0
         self._hover_ratio = -1.0
         self._loading = False
@@ -25,6 +27,7 @@ class WaveformWidget(QWidget):
         if data is not None and len(data) > 0:
             self._waveform = data
             self._loading = False
+            self._resampled = None  # invalidate cache
             self.update()
 
     def set_position(self, ratio: float):
@@ -33,8 +36,13 @@ class WaveformWidget(QWidget):
 
     def clear(self):
         self._waveform = None
+        self._resampled = None
         self._position_ratio = 0.0
         self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resampled = None  # width changed → invalidate resample cache
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and self._waveform is not None:
@@ -74,16 +82,22 @@ class WaveformWidget(QWidget):
             painter.end()
             return
 
-        # Resample waveform data to match widget pixel width so progress aligns visually
-        data = self._waveform
+        # Use cached resample — only recompute when width changes or data changes
         num_bars = max(1, w)
-        if len(data) != num_bars:
-            indices = np.linspace(0, len(data) - 1, num_bars, dtype=int)
-            data = data[indices]
+        if self._resampled is None or self._resampled_width != num_bars:
+            if len(self._waveform) != num_bars:
+                indices = np.linspace(0, len(self._waveform) - 1, num_bars, dtype=int)
+                self._resampled = self._waveform[indices]
+            else:
+                self._resampled = self._waveform
+            self._resampled_width = num_bars
+        data = self._resampled
 
         bar_w = 1.0
         played_idx = int(self._position_ratio * num_bars)
         accent = current_accent()
+        accent_played = accent.lighter(115)  # single shared color for played region
+        unplayed_color = QColor(37, 37, 64, 130)  # cached — build once
 
         for i in range(num_bars):
             amp = data[i]
@@ -91,10 +105,10 @@ class WaveformWidget(QWidget):
 
             if i < played_idx:
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(accent.lighter(100 + int(30 * i / num_bars)))
+                painter.setBrush(accent_played)
             else:
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(37, 37, 64, 130))
+                painter.setBrush(unplayed_color)
 
             rect = QRectF(i, center_y - bar_h, bar_w, bar_h * 2)
             painter.drawRect(rect)

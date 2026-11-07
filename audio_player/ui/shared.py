@@ -5,7 +5,7 @@ where playlist_browse.py imported private symbols from album_view.py.
 """
 
 from PyQt6.QtWidgets import (
-    QLayout, QStyledItemDelegate, QStyle, QListView,
+    QLayout, QMenu, QStyledItemDelegate, QStyle, QListView,
 )
 from PyQt6.QtCore import Qt, QRect, QSize, QModelIndex, QAbstractListModel
 from PyQt6.QtGui import QPainter, QColor, QFont
@@ -296,3 +296,71 @@ QListView::item {
     border: none;
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# Shared context menu for track containers
+# ---------------------------------------------------------------------------
+
+def build_track_menu(parent, paths: list[str], *, is_favorite_fn=None,
+                     playlist_names_fn=None, on_favorite=None,
+                     on_play_next=None, on_add_to_playlist=None,
+                     on_edit_tags=None, on_show_in_explorer=None,
+                     extra_actions: list | None = None) -> QMenu:
+    """One context menu for every container that shows tracks.
+
+    actions: 收藏 toggle, 下一首播放, 加入歌单 submenu, 编辑标签(单曲),
+    在文件夹中显示. Missing callbacks simply hide their entry — callers
+    wire only what their container supports.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QAction
+    from audio_player.i18n import _
+    from audio_player.ui.theme_helpers import menu_style
+
+    menu = QMenu(parent)
+    menu.setStyleSheet(menu_style())
+
+    if on_favorite is not None and is_favorite_fn is not None and paths:
+        all_fav = all(is_favorite_fn(p) for p in paths)
+        act = QAction(_("context.unfavorite") if all_fav else _("context.favorite"), menu)
+        act.triggered.connect(lambda: (on_favorite(paths, all_fav)))
+        menu.addAction(act)
+
+    if on_play_next is not None and paths:
+        menu.addSeparator()
+        act = QAction(_("context.play_next"), menu)
+        act.triggered.connect(lambda: on_play_next(paths))
+        menu.addAction(act)
+
+    if on_add_to_playlist is not None and playlist_names_fn is not None and paths:
+        names = playlist_names_fn()
+        if names:
+            menu.addSeparator()
+            pls_menu = menu.addMenu(_("context.add_to_playlist"))
+            pls_menu.setStyleSheet(menu.styleSheet())
+            for name in names:
+                act = QAction(name, menu)
+                act.triggered.connect(lambda checked, n=name: on_add_to_playlist(n, paths))
+                pls_menu.addAction(act)
+            pls_menu.addSeparator()
+            new_act = QAction(_("context.new_playlist"), menu)
+            new_act.triggered.connect(lambda: on_add_to_playlist("", paths))
+            pls_menu.addAction(new_act)
+
+    if on_edit_tags is not None and len(paths) == 1:
+        menu.addSeparator()
+        act = QAction(_("context.edit_tags"), menu)
+        act.triggered.connect(lambda: on_edit_tags(paths[0]))
+        menu.addAction(act)
+
+    if on_show_in_explorer is not None and len(paths) == 1:
+        menu.addSeparator()
+        act = QAction(_("context.show_in_explorer"), menu)
+        act.triggered.connect(lambda: on_show_in_explorer(paths[0]))
+        menu.addAction(act)
+
+    for act in (extra_actions or []):
+        menu.addAction(act)
+
+    return menu

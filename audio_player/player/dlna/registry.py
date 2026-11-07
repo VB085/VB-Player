@@ -44,6 +44,11 @@ class DeviceRegistry(QObject):
         if self._thread is not None:
             return
 
+        # SSDP multicast socket crashes on MSYS2 Python 3.14 / Windows — skip
+        import sys as _sys2
+        if _sys2.platform == "win32":
+            return
+
         self._stop_event.clear()
 
         # Start SSDP NOTIFY listener
@@ -93,7 +98,8 @@ class DeviceRegistry(QObject):
         try:
             results = discover_renderers(timeout=3)
         except Exception as e:
-            import sys; pass
+            import sys
+            print(f"[dlna] SSDP discovery failed: {e}", file=sys.stderr)
             return
 
         seen_udns = set()
@@ -116,8 +122,6 @@ class DeviceRegistry(QObject):
             desc = fetch_description(location, timeout=5)
             if desc is None:
                 self._failed[location] = now
-                continue
-            if desc is None:
                 continue
 
             # Must have UDN and friendly name

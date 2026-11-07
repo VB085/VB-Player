@@ -1,13 +1,17 @@
+import sys as _sys
 from PyQt6.QtCore import (
     QAbstractListModel, QModelIndex, Qt, pyqtSignal, QThread, QObject
 )
 from PyQt6.QtGui import QIcon
 from pathlib import Path
+
+_MSYS2 = _sys.platform == "win32" and "MSC" not in _sys.version  # QThread bugs on MSYS2 only
 from urllib.parse import urlparse
 import random
 import json
 from enum import IntEnum
-from queue import Queue
+from queue import PriorityQueue
+from itertools import count
 
 from .metadata import read_metadata, TrackMetadata
 
@@ -25,37 +29,56 @@ class RepeatMode(IntEnum):
 
 
 class _MetaLoader(QThread):
-    """Single persistent thread for metadata loading. Queue-based, no repeated create/destroy."""
+    """Single persistent thread for metadata loading. Queue-based, no repeated create/destroy.
+
+    Two priority classes: priority 0 (visible-region rows, jumped to the
+    front) and priority 1 (background bulk load). Without this, scrolling to
+    row 800 of a large playlist waited for every earlier row to load first —
+    covers took tens of seconds to appear.
+    """
     loaded = pyqtSignal(int, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._queue: Queue = Queue()
+        self._queue: PriorityQueue = PriorityQueue()
+        self._pending: set[int] = set()   # rows currently queued (dedupe)
         self._running = True
+        self._seq = count()               # C-atomic — keeps FIFO within a class
 
-    def enqueue(self, row: int, filepath: str):
-        self._queue.put((row, filepath))
+    def enqueue(self, row: int, filepath: str, priority: int = 1):
+        if not self._running or row in self._pending:
+            return
+        self._pending.add(row)
+        self._queue.put((priority, next(self._seq), row, filepath))
         if not self.isRunning():
             self.start()
+
+    def enqueue_priority(self, rows_paths: list):
+        """Put (row, path) pairs at the front — the visible region after scroll."""
+        for row, filepath in rows_paths:
+            self.enqueue(row, filepath, priority=0)
 
     def run(self):
         while self._running:
             try:
-                row, filepath = self._queue.get(timeout=1)
+                _prio, _seq, row, filepath = self._queue.get(timeout=1)
             except Exception:
                 continue
+            self._pending.discard(row)
             if not self._running:
                 break
             try:
-                meta = read_metadata(filepath)
+                # priority 0 (visible region) carries cover bytes; the bulk
+                # pass skips them — covers arrive via prewarm/ensure_cover
+                meta = read_metadata(filepath, load_cover=(_prio == 0))
             except Exception:
                 meta = TrackMetadata()
             self.loaded.emit(row, meta)
-            self.msleep(20)  # throttle — avoid flooding main thread with repaints
+            self.msleep(0)  # yield — repaints are coalesced by the flush timer
 
     def stop(self):
         self._running = False
-        self._queue.put((-1, ""))  # unblock get()
+        self._queue.put((0, next(self._seq), -1, ""))  # unblock get()
         self.wait(3000)
 
 
@@ -108,6 +131,7 @@ class PlaylistManager(QAbstractListModel):
 
     currentIndexChanged = pyqtSignal(int)
     metadataLoaded = pyqtSignal(int, object)
+    loadProgress = pyqtSignal(int, int)   # (done, total) during bulk loads
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,10 +140,18 @@ class PlaylistManager(QAbstractListModel):
         self._shuffle = False
         self._repeat = RepeatMode.Off
         self._shuffle_order: list[int] = []
-        self._loader = _MetaLoader(self)
-        self._loader.loaded.connect(self._on_meta_loaded)
+        self._loader = None if _MSYS2 else _MetaLoader(self)
+        if self._loader is not None:
+            self._loader.loaded.connect(self._on_meta_loaded)
         from audio_player.player.cover_service import get_cover_service
         get_cover_service().coverReady.connect(self._on_cover_ready)
+        # coalesced repaints during bulk loads
+        from PyQt6.QtCore import QTimer
+        self._dirty_rows: list[int] = []
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(80)
+        self._flush_timer.timeout.connect(self._flush_dirty_rows)
 
     def track_metadata(self, index: int):
         """Return cached TrackMetadata for row *index*, or None if not loaded yet."""
@@ -129,7 +161,8 @@ class PlaylistManager(QAbstractListModel):
 
     def shutdown(self):
         """Stop the metadata loader thread cleanly."""
-        self._loader.stop()
+        if self._loader is not None:
+            self._loader.stop()
 
     def _on_cover_ready(self, url: str, data: bytes):
         """Fill lazily loaded thumbnails into every matching row."""
@@ -146,13 +179,55 @@ class PlaylistManager(QAbstractListModel):
             self.dataChanged.emit(index, index, [self.CoverDataRole])
 
     def _on_meta_loaded(self, row: int, meta):
-        """Receive metadata from loader thread, update model."""
+        """Receive metadata from loader thread: store now, repaint batched."""
         if 0 <= row < len(self._tracks):
             self._tracks[row]["metadata"] = meta
             self._tracks[row]["has_metadata"] = True
-            idx = self.index(row, 0)
-            self.dataChanged.emit(idx, idx, [])
-            self.metadataLoaded.emit(row, meta)
+            self._dirty_rows.append(row)
+            if not self._flush_timer.isActive():
+                self._flush_timer.start(80)
+
+    _FLUSH_CHUNK = 150   # rows per repaint tick — a 1400-row single
+                         # dataChanged once froze the GUI for 2.3 s
+
+    def _flush_dirty_rows(self):
+        """Coalesced repaint: one dataChanged per contiguous range (~12 Hz
+        max regardless of loader speed), then progress."""
+        if not self._dirty_rows:
+            return
+        rows = sorted(set(self._dirty_rows))
+        self._dirty_rows.clear()
+        if len(rows) > self._FLUSH_CHUNK:
+            # keep the tail for the next tick — a single huge range repaint
+            # stalls the main thread (and starves every timer behind it)
+            self._dirty_rows = rows[self._FLUSH_CHUNK:]
+            rows = rows[:self._FLUSH_CHUNK]
+            self._flush_timer.start()
+        start = prev = rows[0]
+        for r in rows[1:]:
+            if r == prev + 1:
+                prev = r
+                continue
+            self.dataChanged.emit(self.index(start, 0), self.index(prev, 0), [])
+            start = prev = r
+        self.dataChanged.emit(self.index(start, 0), self.index(prev, 0), [])
+        for r in rows:
+            self.metadataLoaded.emit(r, self._tracks[r].get("metadata"))
+        pending = sum(1 for t in self._tracks
+                      if not t.get("is_url") and not t.get("has_metadata"))
+        done = sum(1 for t in self._tracks if t.get("has_metadata"))
+        self.loadProgress.emit(done, done + pending)
+
+    def prioritize_rows(self, rows):
+        """Jump *rows* to the front of the metadata queue (visible region)."""
+        if self._loader is None or not rows:
+            return
+        pairs = []
+        for r in rows:
+            if 0 <= r < len(self._tracks) and not self._tracks[r].get("has_metadata"):
+                pairs.append((r, self._tracks[r]["path"]))
+        if pairs:
+            self._loader.enqueue_priority(pairs)
 
     def refresh_metadata_for(self, filepath: str):
         """Re-read metadata for a single file and update the model."""
@@ -237,7 +312,19 @@ class PlaylistManager(QAbstractListModel):
             self.endResetModel()
             for i in range(start, len(self._tracks)):
                 if self._tracks[i].get("source_type") != "url":
-                    self._loader.enqueue(i, self._tracks[i]["path"])
+                    if self._loader is not None:
+                        self._loader.enqueue(i, self._tracks[i]["path"])
+                    else:
+                        # MSYS2: load synchronously in main thread + emit signal
+                        try:
+                            meta = read_metadata(self._tracks[i]["path"])
+                            self._tracks[i]["metadata"] = meta
+                            self._tracks[i]["has_metadata"] = True
+                            idx = self.index(i, 0)
+                            self.dataChanged.emit(idx, idx, [])
+                            self.metadataLoaded.emit(i, meta)
+                        except Exception:
+                            pass
 
     def add_url(self, url: str, title: str = None, metadata: dict | None = None):
         """Add a single stream URL to the playlist.
@@ -342,7 +429,18 @@ class PlaylistManager(QAbstractListModel):
             self._current_index += 1
 
         if entry["source_type"] != "url":
-            self._loader.enqueue(pos, filepath)
+            if self._loader is not None:
+                self._loader.enqueue(pos, filepath)
+            else:
+                try:
+                    meta = read_metadata(filepath)
+                    self._tracks[pos]["metadata"] = meta
+                    self._tracks[pos]["has_metadata"] = True
+                    idx = self.index(pos, 0)
+                    self.dataChanged.emit(idx, idx, [])
+                    self.metadataLoaded.emit(pos, meta)
+                except Exception:
+                    pass
 
     def add_folder(self, path: str):
         folder = Path(path)
@@ -390,6 +488,15 @@ class PlaylistManager(QAbstractListModel):
                 self._current_index = -1
             elif row < self._current_index:
                 self._current_index -= 1
+
+    def restore_tracks(self, snapshots: list[tuple[int, dict]]):
+        """Undo for remove_indices: reinsert (original_row, track_dict)
+        pairs in ascending original order so relative order is preserved."""
+        for row, track in sorted(snapshots, key=lambda s: s[0]):
+            row = max(0, min(row, len(self._tracks)))
+            self.beginInsertRows(QModelIndex(), row, row)
+            self._tracks.insert(row, track)
+            self.endInsertRows()
 
     def clear(self):
         self.beginResetModel()

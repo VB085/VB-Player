@@ -152,8 +152,8 @@ class Sidebar(QWidget):
         self._update_nav_highlight()
         self.navChanged.emit(key)
 
-    def select_nav(self, key: str):
-        """Programmatically select a nav item (e.g. when online starts playing)."""
+    def select(self, key: str):
+        """Programmatically activate a nav item (Ctrl+1..7 shortcuts, online page)."""
         self._on_nav(key)
 
     def set_nav_visible(self, key: str, visible: bool):
@@ -189,7 +189,7 @@ class Sidebar(QWidget):
             else:
                 btn.setStyleSheet(
                     "QPushButton{background:transparent;border:none;border-radius:8px;}"
-                    "QPushButton:hover{background:rgba(255,255,255,0.06);}"
+                    "QPushButton:hover{background:#0fffffff;}"
                 )
 
     def toggle(self):

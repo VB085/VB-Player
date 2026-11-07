@@ -2,7 +2,9 @@
 
 ## Project
 
-PyQt6 desktop audio player with spectrum visualization, scrolling lyrics, album management, and frameless window. Runs on Linux/Windows/macOS via GStreamer.
+PyQt6 desktop audio player with spectrum visualization, scrolling lyrics, album management, frameless window, and native ASIO support. Runs on Linux/Windows/macOS via GStreamer.
+
+ASIO development details: [docs/ASIO_DEVELOPMENT.md](docs/ASIO_DEVELOPMENT.md)
 
 ## Build & Run
 

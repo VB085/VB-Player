@@ -95,8 +95,8 @@ def _build_policy(caps: CapabilityMatrix) -> UIBehaviorPolicy:
         policy = UIBehaviorPolicy(
             titlebar_style="frameless",
             material="mica",
-            font_family="Segoe UI Variable",
-            font_size=10,
+            font_family="HarmonyOS Sans SC",
+            font_size=11,
             system_accent_available=True,
             dark_titlebar_supported=True,
             notification_backend="toast",
@@ -156,6 +156,7 @@ def get_system_font() -> QFont:
     font = QFont(family, platform_info.policy.font_size)
     font.setStyleHint(QFont.StyleHint.SansSerif)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     return font
 
 

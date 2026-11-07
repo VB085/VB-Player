@@ -4,7 +4,15 @@ __pycache__/
 .vscode/
 .scratch/
 .agents/
+.claude/
 build/
 dist/
 *.pyc
 __pycache__/
+build_new/
+build_tmp/
+out/
+dist_old/
+*.exe
+!main.py
+.backup/

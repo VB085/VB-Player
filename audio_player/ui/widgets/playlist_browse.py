@@ -113,7 +113,7 @@ class PlaylistCardWidget(QFrame):
         cover.setFixedSize(152, 152)
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
-        if info.cover_data:
+        if info and info.cover_data:
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
@@ -235,7 +235,7 @@ class PlaylistListDelegate(QStyledItemDelegate):
         cover_size = 44
         cover_bg = QColor("#e0e0e0") if is_light else QColor("#1a1a2e")
         cover_drawn = False
-        if info.cover_data:
+        if info and info.cover_data:
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
@@ -360,6 +360,7 @@ class PlaylistGridView(QWidget):
     playlistClicked = pyqtSignal(object)
     editRequested = pyqtSignal(object)
     deleteRequested = pyqtSignal(object)
+    createRequested = pyqtSignal()
 
     CARD_W = 172
     CARD_SPACING = 8
@@ -392,10 +393,12 @@ class PlaylistGridView(QWidget):
         self._grid_layout.setSpacing(self.CARD_SPACING)
         self._grid_scroll.setWidget(self._grid_container)
 
-        # No-playlists label
-        self._empty_label = QLabel(_("playlist.no_playlists"))
-        self._empty_label.setObjectName("emptyState")
-        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # No-playlists empty state
+        from audio_player.ui.widgets.empty_state import EmptyStateWidget
+        self._empty_label = EmptyStateWidget(
+            "fa6s.rectangle-list", _("playlist.no_playlists_title"),
+            _("playlist.no_playlists_hint"), _("playlist.new"))
+        self._empty_label.actionClicked.connect(self.createRequested.emit)
         self._empty_label.setVisible(False)
 
         # List page
@@ -460,9 +463,11 @@ class PlaylistGridView(QWidget):
                 w.hide()
 
         if not self._cards:
-            self._empty_label.setVisible(True)
-            self._empty_label.setParent(self._grid_container)
-            self._grid_layout.addWidget(self._empty_label, 0, 0)
+            vp = self._grid_scroll.viewport()
+            self._empty_label.setParent(vp)
+            self._empty_label.setGeometry(vp.rect())
+            self._empty_label.show()
+            self._empty_label.raise_()
             return
 
         self._empty_label.setVisible(False)
@@ -506,6 +511,9 @@ class PlaylistGridView(QWidget):
         super().resizeEvent(event)
         if self._view_mode == "grid" and self._playlists:
             self._relayout_grid()
+        elif self._empty_label.isVisible():
+            # keep the empty state filling the viewport
+            self._empty_label.setGeometry(self._grid_scroll.viewport().rect())
 
 
 # ---------------------------------------------------------------------------
@@ -545,9 +553,9 @@ class PlaylistDetailPage(QWidget):
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.setToolTip(_("album.back"))
         back_btn.setStyleSheet(
-            "QPushButton{background:rgba(255,255,255,0.06);color:#94a3b8;border:none;"
+            "QPushButton{background:#0fffffff;color:#94a3b8;border:none;"
             "border-radius:16px;font-size:16px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
+            "QPushButton:hover{background:#1effffff;color:#e2e8f0;}"
         )
         back_btn.clicked.connect(self.backRequested)
         header.addWidget(back_btn)
@@ -556,9 +564,9 @@ class PlaylistDetailPage(QWidget):
         edit_btn = QPushButton(_("playlist.edit"))
         self._edit_btn = edit_btn
         edit_btn.setStyleSheet(
-            "QPushButton{background:transparent;color:#94a3b8;border:1px solid rgba(255,255,255,0.10);"
+            "QPushButton{background:transparent;color:#94a3b8;border:1px solid #19ffffff;"
             "font-size:12px;padding:5px 14px;border-radius:6px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.06);color:#e2e8f0;}"
+            "QPushButton:hover{background:#0fffffff;color:#e2e8f0;}"
         )
         edit_btn.clicked.connect(self._on_edit)
         header.addWidget(edit_btn)
@@ -646,7 +654,7 @@ class PlaylistDetailPage(QWidget):
         cover_radius = str(QSettings("VBPlayer", "VB Player").value("album_cover_radius", "true")).lower() == "true"
         radius_px = "12px" if cover_radius else "2px"
         self._cover_label.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
-        if info.cover_data:
+        if info and info.cover_data:
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
@@ -695,51 +703,25 @@ class PlaylistDetailPage(QWidget):
         filepath = idx.data(PlaylistManager.FilePathRole)
         if not filepath:
             return
-
-        from audio_player.ui.theme_helpers import menu_style
-        menu = QMenu(self)
-        menu.setStyleSheet(menu_style())
-
-        # Favorites
-        is_fav = self._is_favorite_fn and self._is_favorite_fn(filepath)
-        fav_text = _("context.unfavorite") if is_fav else _("context.favorite")
-        fav_action = QAction(fav_text, self)
-        fav_action.triggered.connect(lambda: (
-            self.removeFromFavorites.emit([filepath]) if is_fav
-            else self.addToFavorites.emit([filepath])
-        ))
-        menu.addAction(fav_action)
-
-        # Add to playlist
-        if self._get_playlist_names_fn:
-            names = self._get_playlist_names_fn()
-            if names:
-                menu.addSeparator()
-                pls_menu = menu.addMenu(_("context.add_to_playlist"))
-                pls_menu.setStyleSheet(menu.styleSheet())
-                for name in names:
-                    act = QAction(name, self)
-                    act.triggered.connect(lambda checked, n=name: self.addToPlaylist.emit(n, [filepath]))
-                    pls_menu.addAction(act)
-                pls_menu.addSeparator()
-                new_act = QAction(_("context.new_playlist"), self)
-                new_act.triggered.connect(lambda: self.addToPlaylist.emit("", [filepath]))
-                pls_menu.addAction(new_act)
-
-        # Remove from playlist
-        if self._info:
-            menu.addSeparator()
-            rm_act = QAction(_("context.remove"), self)
+        from audio_player.ui.shared import build_track_menu
+        from PyQt6.QtGui import QAction
+        extra = []
+        if self._info:   # removing from THIS playlist is detail-page specific
             row = idx.row()
-            rm_act.triggered.connect(lambda: self.removeFromPlaylist.emit([int(row)]))
-            menu.addAction(rm_act)
-
-        # Edit tags
-        menu.addSeparator()
-        edit_tags_act = QAction(_("context.edit_tags"), self)
-        edit_tags_act.triggered.connect(lambda: self.editTags.emit(filepath))
-        menu.addAction(edit_tags_act)
-
+            rm = QAction(_("context.remove"), self)
+            rm.triggered.connect(lambda: self.removeFromPlaylist.emit([int(row)]))
+            extra.append(rm)
+        menu = build_track_menu(
+            self, [filepath],
+            is_favorite_fn=self._is_favorite_fn,
+            playlist_names_fn=self._get_playlist_names_fn,
+            on_favorite=lambda p, unfav: (
+                self.removeFromFavorites.emit(p) if unfav
+                else self.addToFavorites.emit(p)),
+            on_add_to_playlist=lambda n, p: self.addToPlaylist.emit(n, p),
+            on_edit_tags=self.editTags.emit,
+            extra_actions=extra,
+        )
         menu.exec(self._track_view.viewport().mapToGlobal(pos))
 
     def set_current_playlist_index(self, playlist_idx: int | None):
@@ -750,9 +732,9 @@ class PlaylistDetailPage(QWidget):
         """Update inline accent-styled elements."""
         accent = current_accent()
         self._back_btn.setStyleSheet(
-            f"QPushButton{{background:rgba(255,255,255,0.06);color:{accent.lighter(130).name()};border:none;"
+            f"QPushButton{{background:#0fffffff;color:{accent.lighter(130).name()};border:none;"
             f"border-radius:16px;font-size:16px;}}"
-            "QPushButton:hover{background:rgba(255,255,255,0.12);color:#e2e8f0;}"
+            "QPushButton:hover{background:#1effffff;color:#e2e8f0;}"
         )
         self._track_view.update()
         self._track_view.repaint()
@@ -823,11 +805,11 @@ class PlaylistDetailPage(QWidget):
 # ---------------------------------------------------------------------------
 
 class PlaylistEditDialog(QDialog):
-    def __init__(self, info: PlaylistInfo, parent=None):
+    def __init__(self, info: PlaylistInfo | None, parent=None):
         super().__init__(parent)
         self._info = info
         self._cover_path = ""
-        self._cover_data = info.cover_data
+        self._cover_data = info.cover_data if info else None
         self.setWindowTitle(_("playlist.edit_title"))
         self.setMinimumWidth(400)
         from audio_player.platform import platform_info
@@ -843,6 +825,7 @@ class PlaylistEditDialog(QDialog):
         input_bg = "#f8f8f8" if is_light else "#141418"
         accent = current_accent()
 
+        self._panel_bg = bg
         self.setStyleSheet(
             f"QDialog{{background:{bg};border:1px solid {border};border-radius:12px;}}"
         )
@@ -860,7 +843,7 @@ class PlaylistEditDialog(QDialog):
         name_lbl = QLabel(_("playlist.name_label"))
         name_lbl.setStyleSheet(f"color:{sub_c};font-size:11px;")
         layout.addWidget(name_lbl)
-        self._name_edit = QLineEdit(info.name)
+        self._name_edit = QLineEdit(info.name if info else "")
         self._name_edit.setStyleSheet(
             f"QLineEdit{{background:{input_bg};color:{text_c};border:1px solid {border};"
             f"border-radius:6px;padding:8px 10px;font-size:13px;}}"
@@ -873,7 +856,7 @@ class PlaylistEditDialog(QDialog):
         desc_lbl.setStyleSheet(f"color:{sub_c};font-size:11px;")
         layout.addWidget(desc_lbl)
         self._desc_edit = QTextEdit()
-        self._desc_edit.setPlainText(info.description)
+        self._desc_edit.setPlainText(info.description if info else "")
         self._desc_edit.setMaximumHeight(80)
         self._desc_edit.setStyleSheet(
             f"QTextEdit{{background:{input_bg};color:{text_c};border:1px solid {border};"
@@ -897,7 +880,7 @@ class PlaylistEditDialog(QDialog):
         self._cover_preview.mousePressEvent = self._pick_cover
         cover_row.addWidget(self._cover_preview)
 
-        if info.cover_data:
+        if info and info.cover_data:
             rm_btn = QPushButton(_("playlist.cover_remove"))
             rm_btn.setStyleSheet(
                 f"QPushButton{{background:transparent;color:{sub_c};border:none;font-size:11px;}}"
@@ -980,6 +963,17 @@ class PlaylistEditDialog(QDialog):
         self._update_cover_preview()
         if self._rm_cover_btn:
             self._rm_cover_btn.setVisible(False)
+
+    def paintEvent(self, event):
+        """WA_TranslucentBackground swallows the stylesheet background —
+        the panel must be drawn here (same as the tag editor)."""
+        from PyQt6.QtCore import QRectF
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 12, 12)
+        painter.fillPath(path, QColor(self._panel_bg))
+        painter.end()
 
     def get_name(self) -> str:
         return self._name_edit.text().strip()

@@ -1,10 +1,10 @@
 # VB Player
 
-[![Version](https://img.shields.io/badge/version-0.6.3-7c3aed)](https://github.com/VB085/VB-Player)
-[![License](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-10b981)]()
+[![Version](https://img.shields.io/badge/version-0.7.0-7c3aed)](https://github.com/VB085/VB-Player)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux-10b981)]()
 
-跨平台 HiFi 音乐播放器，基于 PyQt6 + GStreamer，为高解析度音频回放设计。
+Linux HiFi 音乐播放器，基于 PyQt6 + GStreamer，为高解析度音频回放设计。
 
 <p align="center">
   <img src="https://github.com/VB085/VB-Player/raw/main/assets/screenshot.png" alt="screenshot" width="800"/>
@@ -13,8 +13,8 @@
 ## 功能亮点
 
 ### 音频引擎
-- **跨平台后端** — Windows (WASAPI/ASIO)、macOS (CoreAudio)、Linux (ALSA/PipeWire)
-- **独占模式** — bit-perfect DAC 直通
+- **Linux 原生后端** — ALSA / PipeWire，bit-perfect 直通
+- **独占模式** — DAC 直通，无重采样
 - **DSD 解码** — .dsf / .dff 支持，PCM 软解 / Native 硬解 / DoP
 - **10 段参数均衡器** — 6 组预设，实时调节
 - **ReplayGain** — 音量标准化
@@ -24,7 +24,7 @@
 ### 界面
 - **沉浸式播放页** — 封面模糊背景 + 切歌 crossfade 过渡
 - **动态强调色** — 从专辑封面提取主色，800ms 渐变扩散到全界面（可开关）
-- **悬浮胶囊播控栏** — Apple Music 风格，环形/线性进度可选
+- **悬浮胶囊播控栏** — 环形/线性进度可选
 - **窗口材质** — 玻璃半透明 / 毛玻璃噪点纹理，不透明度+纹理强度可调
 - **暗/亮双主题** — 6 种强调色，标题栏风格可选
 - **多语言** — 简体中文 / 繁體中文 / English / 日本語
@@ -47,7 +47,7 @@
 - 双语翻译显示
 
 ### 系统集成
-- MPRIS2 / SMTC / macOS Now Playing 系统媒体控制
+- MPRIS2 系统媒体控制
 - 系统托盘，关闭到托盘可选
 - DLNA 设备发现与输出切换
 - 内嵌 HTTP 服务器（局域网串流）
@@ -70,23 +70,6 @@ python main.py
 # Arch
 sudo pacman -S python-pyqt6 gst-plugins-good gst-plugins-bad gst-plugins-ugly
 pip install pyqt6 mutagen numpy
-python main.py
-```
-
-### macOS
-
-```bash
-brew install gstreamer gst-plugins-good gst-plugins-bad gst-plugins-ugly
-pip install pyqt6 mutagen numpy PyGObject
-python main.py
-```
-
-### Windows
-
-从 [gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/) 下载安装 GStreamer MSVC runtime + development。
-
-```powershell
-pip install pyqt6 mutagen numpy PyGObject
 python main.py
 ```
 

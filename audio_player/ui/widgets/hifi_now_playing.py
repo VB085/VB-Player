@@ -1,6 +1,7 @@
 """HiFi Now Playing — immersive full-page playback dashboard."""
 
 import math
+import sys
 
 import numpy as np
 
@@ -342,9 +343,12 @@ class HiFiNowPlayingPage(QWidget):
         self._blurred_bg: QPixmap | None = None
         self._cached_bg: QPixmap | None = None  # scaled-to-window cached bg
         self._old_cached_bg: QPixmap | None = None  # previous bg during crossfade
+        self._old_cached_scaled: QPixmap | None = None  # scaled copy of the above (per-size cache)
         self._bg_fade_progress: float = 1.0  # 0=old, 1=new
         self._bg_px: tuple[int, int] | None = None  # device-pixel size of cache
         self._bg_fade_helper: _OpacityHelper | None = None
+        self._macos_vibrancy = False  # True on macOS: use NSVisualEffectView instead of blur
+        self._macos_vibrancy_view = None
         self._bg_fade_anim: QPropertyAnimation | None = None
         self._title = ""
         self._artist = ""
@@ -432,9 +436,9 @@ class HiFiNowPlayingPage(QWidget):
 
         # Top-right buttons style
         btn_style = (
-            "QPushButton{background:rgba(255,255,255,0.1);color:#aaa;border:none;"
+            "QPushButton{background:#19ffffff;color:#aaa;border:none;"
             "border-radius:18px;font-size:16px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.2);color:#fff;}"
+            "QPushButton:hover{background:#33ffffff;color:#fff;}"
         )
 
         # Lyrics button (ghost style)
@@ -650,6 +654,7 @@ class HiFiNowPlayingPage(QWidget):
                     self._old_cached_bg = self._cached_bg
                 else:
                     self._old_cached_bg = None
+                self._old_cached_scaled = None  # invalidate scaled cache
                 self._cover_pixmap = pix
                 self._blurred_bg = None  # invalidate
                 self._cached_bg = None
@@ -658,6 +663,7 @@ class HiFiNowPlayingPage(QWidget):
         self._cover_pixmap = None
         self._blurred_bg = None
         self._old_cached_bg = self._cached_bg  # fade old to empty
+        self._old_cached_scaled = None  # invalidate scaled cache
         self._start_bg_crossfade()
 
     def _start_bg_crossfade(self):
@@ -740,9 +746,9 @@ class HiFiNowPlayingPage(QWidget):
             )
         else:
             self._lyrics_btn.setStyleSheet(
-                "QPushButton{background:rgba(255,255,255,0.1);color:#aaa;border:none;"
+                "QPushButton{background:#19ffffff;color:#aaa;border:none;"
                 "border-radius:18px;font-size:16px;}"
-                "QPushButton:hover{background:rgba(255,255,255,0.2);color:#fff;}"
+                "QPushButton:hover{background:#33ffffff;color:#fff;}"
             )
         target = 1.0 if visible else 0.0
         # Animate layout morph
@@ -975,15 +981,14 @@ class HiFiNowPlayingPage(QWidget):
 
     def _on_topbar_opacity_changed(self):
         self._topbar_opacity = self._topbar_opacity_helper.opacity
-        # Hide buttons when nearly invisible, show when visible
+        # Close button always visible — user must be able to exit
         if self._topbar_opacity < 0.1:
             self._fullscreen_btn.hide()
-            self._close_btn.hide()
             self._lyrics_btn.hide()
         else:
             self._fullscreen_btn.show()
-            self._close_btn.show()
             self._lyrics_btn.show()
+        self._close_btn.show()  # always
         self.update()
 
     def _on_topbar_fade_finished(self):
@@ -998,6 +1003,7 @@ class HiFiNowPlayingPage(QWidget):
         self._buttons_opacity = 1.0
         self._topbar_visible = True
         self._topbar_opacity = 1.0
+        self._close_btn.show()  # always visible — exit must be reachable
         if self._auto_hide_enabled:
             self._hide_timer.start()
             self._topbar_hide_timer.start()
@@ -1346,6 +1352,14 @@ class HiFiNowPlayingPage(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
+        # macOS vibrancy: apply once after first show
+        if sys.platform == "darwin" and not self._macos_vibrancy and self.isVisible() and self.width() > 0:
+            self._macos_vibrancy = True
+            try:
+                from audio_player.platform.macos.materials import enable_vibrancy
+                self._macos_vibrancy_view = enable_vibrancy(self, material="hudWindow")
+            except Exception:
+                self._macos_vibrancy = False  # fall back to software blur
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
@@ -1551,27 +1565,27 @@ class HiFiNowPlayingPage(QWidget):
             p.setOpacity(progress_opacity)
             ratio = self._position_ms / self._duration_ms
 
-            # Groove background — translucent album accent (follows dynamic accent)
+            # Groove background — muted accent, very subtle
             groove_r = groove_h // 2
             p.setPen(Qt.PenStyle.NoPen)
-            groove_color = QColor(self._accent)
-            groove_color.setAlpha(70)
-            p.setBrush(groove_color)
+            muted_accent = QColor(self._accent)
+            muted_accent.setAlpha(40)
+            p.setBrush(muted_accent)
             p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, groove_h), groove_r, groove_r)
 
-            # Sub-page (accent color fill) — fully rounded ends
+            # Played portion — full accent color
             accent_color = QColor(self._accent)
             p.setBrush(accent_color)
             fill_w = bar_w * ratio
             if fill_w > 0:
                 p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, groove_h), groove_r, groove_r)
 
-            # Time labels — only in Artwork mode
+            # Time labels — muted accent, same as artist name
             if progress < 0.5:
                 time_font = QFont()
                 time_font.setPointSize(10)
                 p.setFont(time_font)
-                p.setPen(QColor("#94a3b8"))
+                p.setPen(self._accent.lighter(130))
                 time_y = bar_y + groove_h + 12
                 p.drawText(QRectF(bar_x, time_y, 48, 16),
                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,

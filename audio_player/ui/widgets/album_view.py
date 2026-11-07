@@ -4,12 +4,82 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSplitter, QSizePolicy, QListView, QStyledItemDelegate,
                              QStyle, QLayout, QMenu)
 from PyQt6.QtCore import (Qt, pyqtSignal, QSettings, QSize, QRect,
-                         QModelIndex, QAbstractListModel, QTimer)
+                         QModelIndex, QAbstractListModel, QTimer, QThread)
 from typing import Callable
 from PyQt6.QtGui import (QPainter, QColor, QFont, QPen, QPixmap, QFontMetrics,
-                         QPainterPath, QAction)
+                         QPainterPath, QAction, QImage)
 from audio_player.app import current_accent, current_theme_mode
 import os
+import threading
+
+
+class _AlbumThumbDecoder(QThread):
+    """Decodes album-cover pixmaps (142px rounded) off the GUI thread and
+    delivers them via signal — a synchronous loadFromData per album card
+    (3-8 ms × 123 albums) was multi-second GUI stall territory."""
+
+    ready = pyqtSignal(str, QImage)       # (album key, image)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._queue: list = []   # (album, key, radius_px)
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+
+    def request_pixmap(self, album, key: str, radius_px: str):
+        with self._lock:
+            self._queue.append((album, key, radius_px))
+        self._wake.set()
+        if not self.isRunning():
+            self.start()
+
+    def run(self):
+        from PyQt6.QtGui import QImage
+        while True:
+            self._wake.wait(timeout=2.0)
+            self._wake.clear()
+            with self._lock:
+                batch = self._queue
+                self._queue = []
+            if not batch:
+                continue
+            for album, key, radius_px in batch:
+                # QImage in this thread — QPixmap creation is GUI-bound
+                img = QImage()
+                ok = img.loadFromData(album.cover_data) if album.cover_data else False
+                if not ok or img.isNull():
+                    continue
+                scaled = img.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)
+                radius = 12 if radius_px == "12px" else 2
+                rounded = QImage(142, 142, QImage.Format.Format_ARGB32)
+                rounded.fill(Qt.GlobalColor.transparent)
+                pt = QPainter(rounded)
+                pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+                path = QPainterPath()
+                path.addRoundedRect(0, 0, 142, 142, radius, radius)
+                pt.setClipPath(path)
+                pt.drawImage(0, 0, scaled)
+                pt.end()
+                self.ready.emit(key, rounded)
+
+
+_album_thumb_decoder = _AlbumThumbDecoder()
+# key → cover QLabel of the live card; the decoder's ready signal looks the
+# label up here on the GUI thread (labels die with their cards — passing
+# the widget itself through the queue delivered to dead objects)
+_album_cover_registry: dict[str, QLabel] = {}
+
+
+def _on_album_cover_ready(key: str, img):
+    cover = _album_cover_registry.get(key)
+    if cover is None:
+        return   # card was rebuilt/destroyed meanwhile — drop
+    from PyQt6.QtGui import QPixmap
+    cover.setPixmap(QPixmap.fromImage(img))
+
+
+_album_thumb_decoder.ready.connect(_on_album_cover_ready)
 
 from audio_player.player.album_manager import AlbumInfo
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
@@ -28,6 +98,7 @@ from audio_player.ui.utils import (
 
 class AlbumCardWidget(QFrame):
     clicked = pyqtSignal(object)
+    playRequested = pyqtSignal(object)   # album → play from the top
 
     def __init__(self, album: AlbumInfo, parent=None):
         super().__init__(parent)
@@ -46,7 +117,11 @@ class AlbumCardWidget(QFrame):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Cover art
+        # Cover art — placeholder now; the real pixmap is decoded by
+        # _AlbumThumbDecoder off the GUI thread and delivered via the
+        # key registry (a synchronous loadFromData here is 3-8 ms per
+        # album × 123 albums = multi-second GUI stalls on grid rebuilds)
+        key = album.name or "\u0001"
         cover_radius = str(QSettings("VBPlayer", "VB Player").value("album_cover_radius", "true")).lower() == "true"
         radius_px = "12px" if cover_radius else "2px"
         cover = QLabel()
@@ -54,27 +129,8 @@ class AlbumCardWidget(QFrame):
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
         if album.cover_data:
-            pix = QPixmap()
-            ok = pix.loadFromData(album.cover_data)
-            if ok and not pix.isNull():
-                scaled_pix = pix.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
-                                        Qt.TransformationMode.SmoothTransformation)
-                if cover_radius:
-                    rounded = QPixmap(142, 142)
-                    rounded.fill(Qt.GlobalColor.transparent)
-                    pt = QPainter(rounded)
-                    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                    path = QPainterPath()
-                    path.addRoundedRect(0, 0, 142, 142, 12, 12)
-                    pt.setClipPath(path)
-                    pt.drawPixmap(0, 0, scaled_pix)
-                    pt.end()
-                    cover.setPixmap(rounded)
-                else:
-                    cover.setPixmap(scaled_pix)
-            else:
-                _set_placeholder_icon(cover)
-                cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
+            _album_cover_registry[key] = cover
+            _album_thumb_decoder.request_pixmap(album, key, radius_px)
         else:
             _set_placeholder_icon(cover)
             cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
@@ -129,6 +185,24 @@ class AlbumCardWidget(QFrame):
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
         self.clicked.emit(self._album)
+
+    def contextMenuEvent(self, event):
+        """右键: 播放专辑 / 在文件夹中显示."""
+        from PyQt6.QtGui import QAction
+        from audio_player.ui.theme_helpers import menu_style
+        menu = QMenu(self)
+        menu.setStyleSheet(menu_style())
+        play_act = QAction(_("album.play"), self)
+        play_act.triggered.connect(lambda: self.playRequested.emit(self._album))
+        menu.addAction(play_act)
+        if self._album.tracks:
+            fp = self._album.tracks[0][1]
+            folder = os.path.dirname(fp) if fp else ""
+            if folder:
+                act = QAction(_("context.show_in_explorer"), self)
+                act.triggered.connect(lambda: os.startfile(folder))
+                menu.addAction(act)
+        menu.exec(event.globalPos())
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +387,8 @@ class AlbumListView(QListView):
 class AlbumGridView(QWidget):
     albumClicked = pyqtSignal(object)
     trackDoubleClicked = pyqtSignal(int)
+    importRequested = pyqtSignal()
+    albumPlayRequested = pyqtSignal(object)
 
     CARD_W = 172
     CARD_SPACING = 8
@@ -325,6 +401,7 @@ class AlbumGridView(QWidget):
         self._cards: list[AlbumCardWidget] = []
         self._view_mode = "grid"
         self._filter_text = ""
+        self._empty_state = None
 
         # Debounce timer for resize
         self._relayout_timer = QTimer(self)
@@ -399,14 +476,24 @@ class AlbumGridView(QWidget):
                 item.widget().hide()
 
         if not self._albums:
-            empty = QLabel(_("album.no_albums"))
-            empty.setObjectName("emptyState")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._grid.addWidget(empty, 0, 0)
+            if self._empty_state is None:
+                from audio_player.ui.widgets.empty_state import EmptyStateWidget
+                self._empty_state = EmptyStateWidget(
+                    "fa6s.compact-disc", _("album.no_albums_title"),
+                    _("album.no_albums_hint"), _("album.import_action"))
+                self._empty_state.actionClicked.connect(self.importRequested.emit)
+            vp = self._scroll.viewport()
+            self._empty_state.setParent(vp)
+            self._empty_state.setGeometry(vp.rect())
+            self._empty_state.show()
+            self._empty_state.raise_()
             # Hide cached cards
             for card in self._cards:
                 card.hide()
             return
+
+        if self._empty_state is not None:
+            self._empty_state.hide()
 
         avail_w = self._scroll.viewport().width() if self._scroll.viewport() else self.width()
         cols = max(1, (avail_w + self.CARD_SPACING) // (self.CARD_W + self.CARD_SPACING))
@@ -433,6 +520,10 @@ class AlbumGridView(QWidget):
         self._filter_text = text.lower()
         self._apply_filter()
 
+    _CARD_SLICE = 8    # cards per tick — one loadFromData+smooth-scale is
+                       # 3-8 ms, so a slice must stay under a frame; ticks
+                       # are spaced 30 ms to leave the loop to interaction
+
     def _apply_filter(self):
         if self._filter_text:
             p = self._filter_text
@@ -441,29 +532,72 @@ class AlbumGridView(QWidget):
         else:
             self._albums = list(self._all_albums)
 
-        # Destroy old cards
-        for card in self._cards:
-            card.setParent(None)
-            card.deleteLater()
-        self._cards.clear()
-
-        # Create new cards (once)
+        # Reuse cards by key — second visit is instant
+        old = {(c._album.name or ""): c for c in self._cards}
+        kept = set()
+        new = []
+        pending = []
         for album in self._albums:
-            card = AlbumCardWidget(album)
-            card.clicked.connect(self.albumClicked)
-            self._cards.append(card)
+            key = album.name or ""
+            card = old.get(key)
+            if card is not None:
+                kept.add(id(card))
+            else:
+                pending.append(album)
+                continue
+            new.append(card)
+        # build only a slice now; remaining albums keep their grid slots and
+        # get cards on the next event-loop tick(s)
+        from PyQt6.QtCore import QTimer
+        self._pending_albums = pending
+        if pending:
+            QTimer.singleShot(30, self._build_pending_slice)
+        for card in self._cards:
+            if id(card) not in kept and id(card) not in {id(c) for c in new}:
+                gone = card._album.name or ""
+                if _album_cover_registry.get(gone) is card:
+                    _album_cover_registry.pop(gone, None)
+                card.setParent(None); card.deleteLater()
+        self._cards = new
 
         if self._view_mode == "grid":
             self._relayout_grid()
         else:
             self._list_view.set_albums(self._albums)
 
-    def refresh_from_playlist(self):
+    def _build_pending_slice(self):
+        """Create up to _CARD_SLICE album cards per tick — keeps the GUI
+        responsive while a full grid rebuild streams in."""
+        pending = getattr(self, "_pending_albums", None)
+        if not pending:
+            return
+        from PyQt6.QtCore import QTimer
+        # aborted by a newer _apply_filter run?
+        if self._cards and len(self._cards) + len(pending) != len(self._albums):
+            self._pending_albums = None
+            return
+        slice_ = pending[:self._CARD_SLICE]
+        self._pending_albums = pending[self._CARD_SLICE:]
+        for album in slice_:
+            card = AlbumCardWidget(album)
+            card.clicked.connect(self.albumClicked)
+            card.playRequested.connect(self.albumPlayRequested.emit)
+            self._cards.append(card)
+        if self._view_mode == "grid":
+            self._relayout_grid()
+        else:
+            self._list_view.set_albums(self._albums)
+        if self._pending_albums:
+            QTimer.singleShot(30, self._build_pending_slice)
+        else:
+            self._pending_albums = None
+
+    def refresh_from_playlist(self, read_missing: bool = True):
         if self._playlist is None:
             return
         from audio_player.player.album_manager import AlbumManager
         mgr = AlbumManager()
-        albums = mgr.group_by_album(self._playlist._tracks)
+        albums = mgr.group_by_album(self._playlist._tracks, read_missing=read_missing)
         self.set_albums(albums)
 
     def refresh_theme_mode(self, is_light: bool):
@@ -483,6 +617,8 @@ class AlbumGridView(QWidget):
         super().resizeEvent(event)
         if self._view_mode == "grid" and self._albums:
             self._relayout_grid()
+        elif self._empty_state is not None and self._empty_state.isVisible():
+            self._empty_state.setGeometry(self._scroll.viewport().rect())
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +700,7 @@ class AlbumDetailPage(QWidget):
 
         self._artist_label = QLabel()
         self._artist_label.setObjectName("detailArtist")
+        self._artist_label.setWordWrap(True)
         info_wrap.addWidget(self._artist_label)
 
         info_wrap.addSpacing(8)
@@ -665,43 +802,17 @@ class AlbumDetailPage(QWidget):
         filepath = idx.data(self._track_model.FilePathRole)
         if not filepath:
             return
-
-        from audio_player.ui.theme_helpers import menu_style
-        menu = QMenu(self)
-        menu.setStyleSheet(menu_style())
-
-        # Favorites toggle
-        is_fav = self._is_favorite_fn and self._is_favorite_fn(filepath)
-        fav_text = _("context.unfavorite") if is_fav else _("context.favorite")
-        fav_action = QAction(fav_text, self)
-        fav_action.triggered.connect(lambda: (
-            self.removeFromFavorites.emit([filepath]) if is_fav
-            else self.addToFavorites.emit([filepath])
-        ))
-        menu.addAction(fav_action)
-
-        # Add to playlist submenu
-        if self._get_playlist_names_fn:
-            names = self._get_playlist_names_fn()
-            if names:
-                menu.addSeparator()
-                pls_menu = menu.addMenu(_("context.add_to_playlist"))
-                pls_menu.setStyleSheet(menu.styleSheet())
-                for name in names:
-                    act = QAction(name, self)
-                    act.triggered.connect(lambda checked, n=name: self.addToPlaylist.emit(n, [filepath]))
-                    pls_menu.addAction(act)
-                pls_menu.addSeparator()
-                new_act = QAction(_("context.new_playlist"), self)
-                new_act.triggered.connect(lambda: self.addToPlaylist.emit("", [filepath]))
-                pls_menu.addAction(new_act)
-
-        # Edit tags
-        menu.addSeparator()
-        edit_tags_act = QAction(_("context.edit_tags"), self)
-        edit_tags_act.triggered.connect(lambda: self.editTags.emit(filepath))
-        menu.addAction(edit_tags_act)
-
+        from audio_player.ui.shared import build_track_menu
+        menu = build_track_menu(
+            self, [filepath],
+            is_favorite_fn=self._is_favorite_fn,
+            playlist_names_fn=self._get_playlist_names_fn,
+            on_favorite=lambda p, unfav: (
+                self.removeFromFavorites.emit(p) if unfav
+                else self.addToFavorites.emit(p)),
+            on_add_to_playlist=lambda n, p: self.addToPlaylist.emit(n, p),
+            on_edit_tags=self.editTags.emit,
+        )
         menu.exec(self._track_view.viewport().mapToGlobal(pos))
 
     def set_current_playlist_index(self, playlist_idx: int | None):

@@ -25,9 +25,6 @@ audio_player/
 │   ├── settings_dialog.py — SettingsDialog: QListWidget+QStackedWidget nav
 │   ├── animations.py     — Animation helpers
 │   └── widgets/
-│       ├── transport_bar.py — TransportBar: play/pause/prev/next buttons
-│       ├── seek_slider.py   — SeekSlider with accent coloring
-│       ├── volume_control.py — VolumeControl with mute toggle
 │       ├── playlist_view.py  — PlaylistView: QListView on PlaylistManager model
 │       ├── spectrum.py       — SpectrumWidget: bars/line/circular viz + lyrics overlay
 │       ├── waveform.py       — WaveformWidget: waveform display with seek

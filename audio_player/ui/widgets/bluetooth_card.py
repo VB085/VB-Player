@@ -29,11 +29,11 @@ class _Chip(QLabel):
             )
         else:
             is_light = current_theme_mode() == "light"
-            bg = "rgba(0,0,0,0.06)" if not is_light else "rgba(0,0,0,0.04)"
+            bg = "#0f000000" if not is_light else "#0a000000"
             fg = "#e2e8f0" if not is_light else "#333"
             self.setStyleSheet(
                 f"QLabel{{background:{bg};color:{fg};"
-                f"border:1px solid rgba(255,255,255,0.08);"
+                f"border:1px solid #14ffffff;"
                 f"border-radius:4px;padding:2px 8px;font-size:11px;}}"
             )
 
@@ -65,7 +65,7 @@ class _ProgressMixin:
         bar.setTextVisible(False)
         bar.setFixedHeight(8)
         bar.setStyleSheet(
-            f"QProgressBar{{background:rgba(255,255,255,0.06);border:none;border-radius:4px;}}"
+            f"QProgressBar{{background:#0fffffff;border:none;border-radius:4px;}}"
             f"QProgressBar::chunk{{background:{accent.name()};border-radius:4px;}}"
         )
 
@@ -96,7 +96,7 @@ class BluetoothCard(QFrame):
         self._icon_label.setFixedSize(44, 44)
         self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         is_light = current_theme_mode() == "light"
-        icon_bg = "rgba(0,0,0,0.06)" if not is_light else "rgba(0,0,0,0.04)"
+        icon_bg = "#0f000000" if not is_light else "#0a000000"
         self._icon_label.setStyleSheet(
             f"QLabel{{background:{icon_bg};border-radius:10px;font-size:22px;}}"
         )
@@ -117,7 +117,7 @@ class BluetoothCard(QFrame):
         # ── Separator ──
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("QFrame{background:rgba(255,255,255,0.06);max-height:1px;}")
+        sep.setStyleSheet("QFrame{background:#0fffffff;max-height:1px;}")
         layout.addWidget(sep)
 
         # ── Current codec highlight box ──
