@@ -6,6 +6,7 @@
 |---|---|
 | GStreamer 后端 | Linux: ALSA (独占) / PipeWire+PulseAudio (共享)。Windows: WASAPI。macOS: CoreAudio。 |
 | 独占模式 | ALSA `hw:X,Y` 直通。切换时重建 pipeline + 等 GStreamer 状态同步。 |
+| Bit-perfect 直通 | 独占 + 音量 100% 时跳过 EQ、音量、ReplayGain、resample，链路为 `decodebin ! audioconvert ! alsasink`。调音量或开 EQ 自动退出。 |
 | DSD 解码 | PCM 软解 / Native 硬解 / DoP，不支持时自动回退。设置中可选。 |
 | ReplayGain | 读取文件标签自动音量标准化，开关在高级设置。 |
 | 无缝播放 | 曲末 2s 预加载下一首 pipeline，EOS 瞬间切换。 |
@@ -89,6 +90,7 @@
 |---|---|
 | 模糊背景 | 封面图 → `_blur_pixmap()`（80×80 缩略 → 3 遍 box blur → SmoothTransformation 放大）→ 全窗铺满 + 40% 黑色遮罩。 |
 | 切歌过渡 | 旧背景存 `_old_cached_bg`，新背景重算 → `QPropertyAnimation` (500ms OutCubic) → `_bg_fade_progress` 双图混合。 |
+| 歌词滚动 | 独立不透明歌词子控件（自带背景裁切），QTextLayout 缓存换行与字形；60fps 只刷歌词层，父页面滚动期间零重绘。统一字号 + 亚像素整体滚动，当前行靠加粗/强调色区分；长行自动换行，上下边缘用文本 alpha 蒙版淡出，不裁字、不压背景。 |
 | 封面 | 默认 380px 居中，带阴影。歌词模式缩小到 240px 左移。 |
 | 进度条 | 底部圆角 groove + accent fill。可点击/拖拽 seek。 |
 | 控件 | 中间播放/暂停 + 上下曲按钮 + 收藏。右上：全屏/歌词/收起。质量文字：单击弹出 `_OutputDetailDialog`。 |
@@ -105,12 +107,26 @@
 | 输出设备 | 设备名/音频 API/驱动/工作模式/延迟。 |
 | 外观 | 拖拽栏 (40px) + 滚动体。frameless 圆角遮罩。QSS `#outputGroup` / `#outputLabel` / `#outputValue`。分组框边框: `@ACCENT@` 跟随。 |
 
+### 在线页（条件显示）
+
+| 功能 | 详情 |
+|---|---|
+| Provider 发现 | 读取 `~/.config/vbplayer/providers/*.json`，定时检查 `/health`；没有在线源时 tab 隐藏。 |
+| 搜索 / 歌单 | 调用 provider 的 `/search`、`/playlists`、`/playlist/<id>`。 |
+| 推荐流 | 每日30首（当天缓存）、个性电台（分页去重）、刷歌雷达（分页）；支持换一批。 |
+| 在线封面 | 列表懒加载 150×150 缩略图（仅可见行）；播放/沉浸页使用 QQ 原始封面（`T002M000…`），结果列表与在线队列共用缩略图缓存。 |
+| 预加载 | 当前在线曲目开始时预取后 3 首的封面/歌词/规格；切歌无需等待。原图仅保留当前前后各 4 首。 |
+| 独立队列 | 在线使用独立 `PlaylistManager`，本地歌曲/歌单不被覆盖；上下曲在在线队列内工作。 |
+| 上下文 | `active_context = local \| online`；MPRIS、随机/循环跟随当前播放上下文。 |
+| 懒加载元数据 | 非当前曲目通过 provider `/meta/<mid>` 获取封面/歌词/格式/采样率/位深/码率。 |
+
 ### 网络页
 
 | 功能 | 详情 |
 |---|---|
-| 流媒体 | URL 输入 → Enter 或播放按钮。http/https 自动补齐。历史列表双击回放。 |
+| 流媒体 | URL 输入 → Enter 或播放按钮。http/https 自动补齐。历史列表双击回放。播放走独占 sink（可挂 EQ），阳性时长下支持 seek。 |
 | 输出设备 | 设备列表，当前设备 ✓ 标记，单击切换。`DeviceRegistry` 自动发现。 |
+| 独占 / Bit-perfect | 独占模式开关 + ALSA 设备选择；Linux 下额外提供 Bit-perfect 直通开关（强制独占 + 音量 100%）。 |
 | NAS | SMB 服务器/用户名/密码 → 连接 → 共享文件夹树。双击浏览。 |
 | UI | 分组框玻璃 bg + accent 边框 10px 圆角。输入/列表 rgba 底。`refresh_theme()` 注册到 `on_anim_tick`。 |
 
@@ -122,7 +138,7 @@
 | 账户 | 头像（点击选图 → 128px base64 存 QSettings）。显示名称（标题栏显示 "VB Player — 名字"）。资料库统计（歌曲/专辑/歌单数，来自 MainWindow）。 |
 | 外观 | 主题模式（暗/亮）。强调色（6 色圆形 Swatch）。动态强调色开关。窗口/UI 圆角 SpinBox。标题栏风格（ComboBox + 重启提示）。窗口材质（ComboBox + 不透明度滑块 + 纹理滑块）。播控栏样式（完整底栏/悬浮胶囊）。胶囊进度样式（顶线/绕圈）。当前曲目高亮风格（封面发光/左侧竖线）。专辑封面圆角开关。 |
 | 歌词 | 启用开关。行间距/全屏行间距。全屏字号/字间距。音频规格信息开关。在线歌词开关 + LRCLIB/自定义 API/Token。自动保存开关。测试连接按钮。 |
-| 播放 | 可视化模式（柱状图/折线图/圆形）。默认音量 (0-100%)。均衡器（10 段滑块 + 预设菜单 + 启用开关）。独占模式开关 + 设备选择。DSD 解码模式。ReplayGain 开关。无缝播放开关。 |
+| 播放 | 可视化模式（柱状图/折线图/圆形）。默认音量 (0-100%)。均衡器（10 段滑块 + 预设菜单 + 启用开关）。独占模式开关 + 设备选择。DSD 解码模式。ReplayGain 开关。无缝播放开关。屏幕常亮开关（默认开启，仅沉浸播放页生效）。 |
 | 高级 | 运行日志开关。 |
 | 关于 | 版本号 + 应用完整性检查。 |
 
