@@ -196,17 +196,15 @@ class NowPlayingBar(QWidget):
             pix = QPixmap()
             pix.loadFromData(cover_data)
             if not pix.isNull():
-                raw = pix.scaled(56, 56, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
+                from audio_player.ui.utils import fill_cover_image
                 from PyQt6.QtGui import QPainterPath
                 r = cover_corner_radius()
+                # 56 网格内 48 圆角封面（原几何），非方形封面铺满不再留边
+                inner = QPixmap.fromImage(fill_cover_image(pix.toImage(), 48, r))
                 rounded = QPixmap(56, 56)
                 rounded.fill(Qt.GlobalColor.transparent)
                 p = QPainter(rounded); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(0, 0, 48, 48, r, r)
-                p.setClipPath(path)
-                p.drawPixmap((56 - raw.width()) // 2, (56 - raw.height()) // 2, raw)
+                p.drawPixmap(0, 0, inner)
                 p.end()
                 self._cover_label.setPixmap(rounded)
                 return

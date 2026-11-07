@@ -434,19 +434,10 @@ class FloatingPill(QWidget):
             except Exception:
                 self._cover_label.clear(); return
             if not pix.isNull():
-                scaled = pix.scaled(COVER_SIZE, COVER_SIZE,
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation)
-                # Rounded clip
-                rounded = QPixmap(COVER_SIZE, COVER_SIZE)
-                rounded.fill(Qt.GlobalColor.transparent)
-                p = QPainter(rounded); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(0, 0, COVER_SIZE, COVER_SIZE, 6, 6)
-                p.setClipPath(path)
-                p.drawPixmap((COVER_SIZE - scaled.width()) // 2,
-                             (COVER_SIZE - scaled.height()) // 2, scaled)
-                p.end()
+                from audio_player.ui.utils import fill_cover_image
+                # 铺满 + 圆角（非方形封面不再留边）
+                rounded = QPixmap.fromImage(
+                    fill_cover_image(pix.toImage(), COVER_SIZE, 6))
                 self._cover_label.setPixmap(rounded)
                 return
         self._cover_label.clear()

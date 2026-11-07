@@ -137,22 +137,9 @@ class _ThumbDecoder(QThread):
                 # QImage only in this thread — QPixmap is GUI-thread-bound
                 img = QImage()
                 if img.loadFromData(data) and not img.isNull():
-                    scaled = img.scaled(THUMB_SIZE, THUMB_SIZE,
-                                        Qt.AspectRatioMode.KeepAspectRatio,
-                                        Qt.TransformationMode.SmoothTransformation)
-                    rounded = QImage(THUMB_SIZE, THUMB_SIZE,
-                                     QImage.Format.Format_ARGB32)
-                    rounded.fill(Qt.GlobalColor.transparent)
-                    pp = QPainter(rounded)
-                    pp.setRenderHint(QPainter.RenderHint.Antialiasing)
-                    path = QPainterPath()
-                    path.addRoundedRect(0, 0, THUMB_SIZE, THUMB_SIZE,
-                                        THUMB_RADIUS, THUMB_RADIUS)
-                    pp.setClipPath(path)
-                    pp.drawImage((THUMB_SIZE - scaled.width()) // 2,
-                                 (THUMB_SIZE - scaled.height()) // 2, scaled)
-                    pp.end()
-                    _cover_cache[filepath] = rounded
+                    from audio_player.ui.utils import fill_cover_image
+                    _cover_cache[filepath] = fill_cover_image(
+                        img, THUMB_SIZE, THUMB_RADIUS)
                     if len(_cover_cache) > _COVER_CACHE_MAX:
                         for k in list(_cover_cache.keys())[:500]:
                             del _cover_cache[k]

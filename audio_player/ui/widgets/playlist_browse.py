@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QApplication,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSettings, QSize, QRect, QModelIndex, QAbstractListModel, QTimer
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QPixmap, QFontMetrics, QPainterPath, QAction
+from PyQt6.QtGui import (QPainter, QColor, QFont, QPen, QPixmap, QFontMetrics,
+                         QPainterPath, QAction, QImage)
 from audio_player.app import current_accent, current_theme_mode
 from audio_player.i18n import _
 from audio_player.player.metadata import read_metadata
@@ -117,21 +118,10 @@ class PlaylistCardWidget(QFrame):
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
-                scaled = pix.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation)
-                if cover_radius:
-                    rounded = QPixmap(142, 142)
-                    rounded.fill(Qt.GlobalColor.transparent)
-                    pt = QPainter(rounded)
-                    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                    path = QPainterPath()
-                    path.addRoundedRect(0, 0, 142, 142, 12, 12)
-                    pt.setClipPath(path)
-                    pt.drawPixmap(0, 0, scaled)
-                    pt.end()
-                    cover.setPixmap(rounded)
-                else:
-                    cover.setPixmap(scaled)
+                from audio_player.ui.utils import fill_cover_image
+                radius = 12 if cover_radius else 2
+                cover.setPixmap(QPixmap.fromImage(
+                    fill_cover_image(pix.toImage(), 152, radius)))
             else:
                 _set_placeholder_icon(cover)
                 cover.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
@@ -236,18 +226,11 @@ class PlaylistListDelegate(QStyledItemDelegate):
         cover_bg = QColor("#e0e0e0") if is_light else QColor("#1a1a2e")
         cover_drawn = False
         if info and info.cover_data:
-            pix = QPixmap()
-            ok = pix.loadFromData(info.cover_data)
-            if ok and not pix.isNull():
-                scaled = pix.scaled(cover_size, cover_size, Qt.AspectRatioMode.KeepAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                clip_path = QPainterPath()
-                clip_path.addRoundedRect(cover_x, cover_y, cover_size, cover_size, 4, 4)
-                painter.setClipPath(clip_path)
-                painter.drawPixmap(cover_x, cover_y, scaled)
-                painter.setClipping(False)
+            img = QImage()
+            if img.loadFromData(info.cover_data) and not img.isNull():
+                from audio_player.ui.utils import fill_cover_image
+                painter.drawImage(cover_x, cover_y,
+                                  fill_cover_image(img, cover_size, 4))
                 cover_drawn = True
 
         if not cover_drawn:
@@ -658,21 +641,10 @@ class PlaylistDetailPage(QWidget):
             pix = QPixmap()
             ok = pix.loadFromData(info.cover_data)
             if ok and not pix.isNull():
-                scaled = pix.scaled(170, 170, Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation)
-                if cover_radius:
-                    rounded = QPixmap(170, 170)
-                    rounded.fill(Qt.GlobalColor.transparent)
-                    pt = QPainter(rounded)
-                    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                    path = QPainterPath()
-                    path.addRoundedRect(0, 0, 170, 170, 12, 12)
-                    pt.setClipPath(path)
-                    pt.drawPixmap(0, 0, scaled)
-                    pt.end()
-                    self._cover_label.setPixmap(rounded)
-                else:
-                    self._cover_label.setPixmap(scaled)
+                from audio_player.ui.utils import fill_cover_image
+                radius = 12 if cover_radius else 2
+                self._cover_label.setPixmap(QPixmap.fromImage(
+                    fill_cover_image(pix.toImage(), 170, radius)))
             else:
                 _set_placeholder_icon(self._cover_label)
                 self._cover_label.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")
@@ -922,18 +894,9 @@ class PlaylistEditDialog(QDialog):
         if self._cover_data:
             pix = QPixmap()
             if pix.loadFromData(self._cover_data) and not pix.isNull():
-                scaled = pix.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation)
-                rounded = QPixmap(64, 64)
-                rounded.fill(Qt.GlobalColor.transparent)
-                pt = QPainter(rounded)
-                pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(0, 0, 64, 64, 6, 6)
-                pt.setClipPath(path)
-                pt.drawPixmap(0, 0, scaled)
-                pt.end()
-                self._cover_preview.setPixmap(rounded)
+                from audio_player.ui.utils import fill_cover_image
+                self._cover_preview.setPixmap(QPixmap.fromImage(
+                    fill_cover_image(pix.toImage(), 64, 6)))
                 return
         is_light = _is_light_mode()
         bg = "#e0e0e0" if is_light else "#1a1a2e"

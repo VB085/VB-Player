@@ -49,23 +49,9 @@ class _AlbumThumbDecoder(QThread):
                 ok = img.loadFromData(album.cover_data) if album.cover_data else False
                 if not ok or img.isNull():
                     continue
-                size = _ALBUM_COVER_PX
-                # ByExpanding + 居中绘制：封面铺满整个卡片（裁掉溢出），
-                # 否则非 152 的边会露出 cover_bg 底色（暗色主题下即"黑边"）
-                scaled = img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                    Qt.TransformationMode.SmoothTransformation)
                 radius = 12 if radius_px == "12px" else 2
-                rounded = QImage(size, size, QImage.Format.Format_ARGB32)
-                rounded.fill(Qt.GlobalColor.transparent)
-                pt = QPainter(rounded)
-                pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(0, 0, size, size, radius, radius)
-                pt.setClipPath(path)
-                pt.drawImage((size - scaled.width()) // 2,
-                             (size - scaled.height()) // 2, scaled)
-                pt.end()
-                self.ready.emit(key, rounded)
+                from audio_player.ui.utils import fill_cover_image
+                self.ready.emit(key, fill_cover_image(img, _ALBUM_COVER_PX, radius))
 
 
 _ALBUM_COVER_PX = 152   # 与封面 QLabel setFixedSize 保持一致
@@ -266,18 +252,11 @@ class AlbumListDelegate(QStyledItemDelegate):
         album = index.data(Qt.ItemDataRole.UserRole)
         cover_drawn = False
         if album and album.cover_data:
-            pix = QPixmap()
-            ok = pix.loadFromData(album.cover_data)
-            if ok and not pix.isNull():
-                scaled = pix.scaled(cover_size, cover_size, Qt.AspectRatioMode.KeepAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                clip_path = QPainterPath()
-                clip_path.addRoundedRect(cover_x, cover_y, cover_size, cover_size, 4, 4)
-                painter.setClipPath(clip_path)
-                painter.drawPixmap(cover_x, cover_y, scaled)
-                painter.setClipping(False)
+            img = QImage()
+            if img.loadFromData(album.cover_data) and not img.isNull():
+                from audio_player.ui.utils import fill_cover_image
+                painter.drawImage(cover_x, cover_y,
+                                  fill_cover_image(img, cover_size, 4))
                 cover_drawn = True
 
         if not cover_drawn:
@@ -766,21 +745,10 @@ class AlbumDetailPage(QWidget):
             pix = QPixmap()
             ok = pix.loadFromData(album.cover_data)
             if ok and not pix.isNull():
-                scaled = pix.scaled(170, 170, Qt.AspectRatioMode.KeepAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation)
-                if cover_radius:
-                    rounded = QPixmap(170, 170)
-                    rounded.fill(Qt.GlobalColor.transparent)
-                    pt = QPainter(rounded)
-                    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-                    path = QPainterPath()
-                    path.addRoundedRect(0, 0, 170, 170, 12, 12)
-                    pt.setClipPath(path)
-                    pt.drawPixmap(0, 0, scaled)
-                    pt.end()
-                    self._cover_label.setPixmap(rounded)
-                else:
-                    self._cover_label.setPixmap(scaled)
+                from audio_player.ui.utils import fill_cover_image
+                radius = 12 if cover_radius else 2
+                self._cover_label.setPixmap(QPixmap.fromImage(
+                    fill_cover_image(pix.toImage(), 170, radius)))
             else:
                 _set_placeholder_icon(self._cover_label)
                 self._cover_label.setStyleSheet(f"background:{cover_bg};border-radius:{radius_px};")

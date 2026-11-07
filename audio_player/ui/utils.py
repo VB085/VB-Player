@@ -1,9 +1,36 @@
 """Shared utility functions used across UI widgets."""
 
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtGui import QImage, QPainter, QPainterPath
 from audio_player.app import current_theme_mode
 
 _cached_cover_radius: int | None = None
+
+
+def fill_cover_image(source: QImage, size: int, radius: int) -> QImage:
+    """封面铺满 size×size 圆角图（ByExpanding 居中裁切 + 圆角蒙版）。
+
+    统一各处封面缩放：KeepAspectRatio 在非方形封面上会留边、露出底色
+    形成黑框/色带；drawImage 画在 (0,0) 会造成偏侧空隙。返回 QImage
+    （ARGB32），可在工作线程安全使用。
+    """
+    if source.isNull():
+        return source
+    scaled = source.scaled(size, size,
+                           Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                           Qt.TransformationMode.SmoothTransformation)
+    out = QImage(size, size, QImage.Format.Format_ARGB32)
+    out.fill(Qt.GlobalColor.transparent)
+    pt = QPainter(out)
+    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(0.0, 0.0, float(size), float(size),
+                        float(radius), float(radius))
+    pt.setClipPath(path)
+    pt.drawImage((size - scaled.width()) // 2,
+                 (size - scaled.height()) // 2, scaled)
+    pt.end()
+    return out
 
 
 def cover_radius_enabled() -> bool:
