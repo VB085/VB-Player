@@ -9,24 +9,24 @@ Rectangle {
     anchors.fill: parent
 
     property string trackTitle: ""; property string trackArtist: ""; property string trackAlbum: ""
-    // cover/bg 双层交叉淡化：旧图淡出的同时新图淡入（单层实现会在
-    // 切歌瞬间掉到黑底再淡入，观感为"暗一下"）
+    // cover/bg 双层交叉淡化：旧图淡出的同时新图淡入。用显式动画实例
+    // （onXxxChanged 里 restart）而非 Behavior——同一事件循环内
+    // "置 0 再置 1" 会被 Behavior 直接从当前值(1)重定向到 1，动画
+    // 瞬间完成 → 交叉淡化从未真正播放，只剩黑底空窗
     property string coverPath: ""; property string bgPath: ""
     property string coverPathOld: ""; property string bgPathOld: ""
     property string _bgCurrent: ""; property string _coverCurrent: ""
-    property real _bgFade: 0.0
-    Behavior on _bgFade { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
-    property real _coverFade: 0.0
-    Behavior on _coverFade { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
+    property real _bgMix: 1.0   // 0=旧背景, 1=新背景
+    NumberAnimation on _bgMix { id: bgMixAnim; duration: 450; easing.type: Easing.OutCubic; from: 0; to: 1 }
+    property real _coverMix: 1.0
+    NumberAnimation on _coverMix { id: coverMixAnim; duration: 350; easing.type: Easing.OutCubic; from: 0; to: 1 }
     onCoverPathChanged: {
         coverPathOld = _coverCurrent; _coverCurrent = coverPath
-        _coverFade = 0.0
-        if (coverPath !== "" || coverPathOld !== "") _coverFade = 1.0
+        if (coverPath !== "" || coverPathOld !== "") coverMixAnim.restart()
     }
     onBgPathChanged: {
         bgPathOld = _bgCurrent; _bgCurrent = bgPath
-        _bgFade = 0.0
-        if (bgPath !== "" || bgPathOld !== "") _bgFade = 1.0
+        if (bgPath !== "" || bgPathOld !== "") bgMixAnim.restart()
     }
     property int    positionMs: 0; property int    durationMs: 0
     property bool   isPlaying: false
@@ -89,10 +89,11 @@ Rectangle {
         opacity: root._bgGate
         // 旧背景：淡出层（首次到达时 bgPathOld 为空 → 不可见，新图从渐变底淡入）
         Image { anchors.fill: parent; source: root.bgPathOld; fillMode: Image.PreserveAspectCrop
-            visible: root.bgPathOld !== "" && root._bgFade < 0.999
-            opacity: 1.0 - root._bgFade }
+            visible: root.bgPathOld !== "" && root._bgMix < 0.999
+            opacity: 1.0 - root._bgMix; asynchronous: false; cache: false }
         Image { anchors.fill: parent; source: root.bgPath; fillMode: Image.PreserveAspectCrop
-            visible: root.bgPath !== ""; opacity: root._bgFade }
+            visible: root.bgPath !== ""; opacity: root._bgMix
+            asynchronous: false; cache: false }
         Rectangle { anchors.fill: parent; visible: root.bgPath === "" && root.bgPathOld === ""
             gradient: Gradient { GradientStop { position:0.0; color:"#0d0d1a" } GradientStop { position:1.0; color:"#1a1a2e" } } }
         Rectangle { anchors.fill: parent; color: "#a0000000" }
@@ -131,10 +132,11 @@ Rectangle {
             // 双层交叉淡化：旧封面淡出、新封面淡入（切歌不再闪跳）
             Image { anchors.fill:parent; source:root.coverPathOld
                 fillMode:Image.PreserveAspectCrop
-                visible:root.coverPathOld!="" && root._coverFade < 0.999
-                opacity: 1.0 - root._coverFade }
+                visible:root.coverPathOld!="" && root._coverMix < 0.999
+                opacity: 1.0 - root._coverMix; asynchronous: false; cache: false }
             Image { anchors.fill:parent; source:root.coverPath; fillMode:Image.PreserveAspectCrop
-                visible:root.coverPath!==""; opacity: root._coverFade }
+                visible:root.coverPath!==""; opacity: root._coverMix
+                asynchronous: false; cache: false }
             Text { anchors.centerIn:parent; text:"♪"; color:"#a78bfa"; font.pointSize:Math.max(8,_coverW/6); visible:root.coverPath==="" } }
         Rectangle { x:(root.coverOverrideActive?root.covX:_coverX)
                     y:(root.coverOverrideActive?root.covY:_coverY)
