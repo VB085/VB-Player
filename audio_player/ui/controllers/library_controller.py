@@ -41,6 +41,7 @@ class LibraryController(QObject):
             if hasattr(parent, '_playlist') and hasattr(parent, '_playback_ctrl'):
                 self._add_new_only(parent._playlist, paths)
                 target = paths[idx]
+                parent._playback_ctrl.set_active_context("local")
                 for i in range(parent._playlist.count):
                     if parent._playlist.track_at(i).get("path") == target:
                         parent._playback_ctrl.play_track_at(i)
@@ -90,6 +91,7 @@ class LibraryController(QObject):
             if hasattr(parent, '_playlist') and hasattr(parent, '_playback_ctrl'):
                 self._add_new_only(parent._playlist, paths)
                 target = paths[idx]
+                parent._playback_ctrl.set_active_context("local")
                 for i in range(parent._playlist.count):
                     if parent._playlist.track_at(i).get("path") == target:
                         parent._playback_ctrl.play_track_at(i)

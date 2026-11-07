@@ -44,6 +44,17 @@ MPRIS2_XML = """
       <arg direction="in" name="TrackId" type="o"/>
       <arg direction="in" name="Position" type="x"/>
     </method>
+    <method name="OpenUri">
+      <arg direction="in" name="Uri" type="s"/>
+    </method>
+    <method name="OpenUriWithMetadata">
+      <arg direction="in" name="Uri" type="s"/>
+      <arg direction="in" name="Metadata" type="a{sv}"/>
+    </method>
+    <method name="OpenPlaylistWithMetadata">
+      <arg direction="in" name="Items" type="a(sa{sv})"/>
+      <arg direction="in" name="StartIndex" type="u"/>
+    </method>
     <property name="PlaybackStatus" type="s" access="read"/>
     <property name="Metadata" type="a{sv}" access="read"/>
     <property name="Volume" type="d" access="readwrite"/>
@@ -63,6 +74,29 @@ MPRIS2_XML = """
 _INTERFACE_INFO = Gio.DBusNodeInfo.new_for_xml(MPRIS2_XML)
 _IFACE_PLAYER = _INTERFACE_INFO.lookup_interface("org.mpris.MediaPlayer2.Player")
 _IFACE_ROOT = _INTERFACE_INFO.lookup_interface("org.mpris.MediaPlayer2")
+def _as_double(value) -> float:
+    """PyGObject may hand back a GLib.Variant or an already-unpacked float."""
+    try:
+        return float(value.get_double())
+    except AttributeError:
+        return float(value)
+
+
+def _unpack_metadata(meta) -> dict:
+    """Normalize the a{sv} payload from OpenUriWithMetadata."""
+    out = {}
+    for key, value in (meta or {}).items():
+        if hasattr(value, "unpack"):
+            try:
+                value = value.unpack()
+            except Exception:
+                pass
+        if key == "cover_data" and isinstance(value, (list, tuple)):
+            value = bytes(value)
+        out[str(key)] = value
+    return out
+
+
 _IFACE_PROPERTIES = Gio.DBusNodeInfo.new_for_xml(
     '<node><interface name="org.freedesktop.DBus.Properties">'
     '<method name="Get"><arg direction="in" name="interface" type="s"/>'
@@ -195,6 +229,23 @@ class Mpris2Service(QObject):
                 _, pos_us = parameters.unpack()
                 self._engine.seek(max(0, pos_us // 1000))
                 self._emit_position_immediate()
+            elif method_name == "OpenUri":
+                uri = parameters.unpack()[0]
+                if uri.startswith(("http://", "https://", "smb://")):
+                    self._playlist.add_url(uri)
+                    self._controller.play_track_at(self._playlist.count - 1)
+                else:
+                    self._controller.load_and_play([uri])
+            elif method_name == "OpenUriWithMetadata":
+                uri, meta = parameters.unpack()
+                self._controller.open_external_stream(uri, _unpack_metadata(meta))
+            elif method_name == "OpenPlaylistWithMetadata":
+                raw_items, start_index = parameters.unpack()
+                items = [
+                    (str(uri), _unpack_metadata(meta))
+                    for uri, meta in raw_items
+                ]
+                self._controller.open_external_playlist(items, int(start_index))
             invocation.return_value(None)
 
         elif interface_name == "org.freedesktop.DBus.Properties":
@@ -207,7 +258,7 @@ class Mpris2Service(QObject):
     def _handle_set_property(self, connection, sender, object_path,
                              interface_name, property_name, value):
         if interface_name == "org.mpris.MediaPlayer2.Player" and property_name == "Volume":
-            self._engine.volume = max(0.0, min(value.get_double(), 1.5))
+            self._engine.volume = max(0.0, min(_as_double(value), 1.5))
 
     def _handle_properties_method(self, method_name, parameters, invocation):
         if method_name == "Get":
@@ -217,12 +268,16 @@ class Mpris2Service(QObject):
         elif method_name == "Set":
             iface, prop, value = parameters.unpack()
             if iface == "org.mpris.MediaPlayer2.Player" and prop == "Volume":
-                self._engine.volume = max(0.0, min(value.get_double(), 1.5))
+                self._engine.volume = max(0.0, min(_as_double(value), 1.5))
             invocation.return_value(None)
         elif method_name == "GetAll":
             iface = parameters.unpack()[0]
             props = self._get_all_properties(iface)
             invocation.return_value(GLib.Variant("(a{sv})", (props,)))
+
+    def set_playlist(self, playlist):
+        """Track the active playlist when local/online context switches."""
+        self._playlist = playlist
 
     # ------------------------------------------------------------------
     #  D-Bus property getters
@@ -249,7 +304,7 @@ class Mpris2Service(QObject):
         if prop == "SupportedMimeTypes":
             return GLib.Variant("as", _SUPPORTED_MIMES)
         if prop == "SupportedUriSchemes":
-            return GLib.Variant("as", ["file"])
+            return GLib.Variant("as", ["file", "http", "https"])
         return GLib.Variant("b", False)
 
     def _get_player_property(self, prop):

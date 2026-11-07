@@ -59,6 +59,42 @@ class _MetaLoader(QThread):
         self.wait(3000)
 
 
+def metadata_from_dict(metadata: dict | None, title: str = "") -> TrackMetadata | None:
+    """Build a TrackMetadata from an external source's metadata dict."""
+    if not metadata:
+        return None
+
+    def _int(key):
+        try:
+            return int(metadata.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    try:
+        duration_s = float(metadata.get("duration_ms") or 0) / 1000.0
+    except (TypeError, ValueError):
+        duration_s = 0.0
+
+    cover = metadata.get("cover_data") or None
+    if isinstance(cover, (list, tuple)):
+        cover = bytes(cover)
+    return TrackMetadata(
+        title=str(metadata.get("title") or title or ""),
+        artist=str(metadata.get("artist") or ""),
+        album=str(metadata.get("album") or ""),
+        album_artist=str(metadata.get("album_artist") or ""),
+        duration_seconds=duration_s,
+        format=str(metadata.get("format") or "Stream"),
+        bitrate=_int("bitrate"),
+        sample_rate=_int("sample_rate"),
+        bits_per_sample=_int("bits_per_sample"),
+        channels=_int("channels"),
+        cover_data=cover,
+        cover_url=str(metadata.get("cover_url") or ""),
+        meta_url=str(metadata.get("meta_url") or ""),
+    )
+
+
 class PlaylistManager(QAbstractListModel):
     TitleRole = Qt.ItemDataRole.UserRole + 1
     ArtistRole = Qt.ItemDataRole.UserRole + 2
@@ -82,6 +118,8 @@ class PlaylistManager(QAbstractListModel):
         self._shuffle_order: list[int] = []
         self._loader = _MetaLoader(self)
         self._loader.loaded.connect(self._on_meta_loaded)
+        from audio_player.player.cover_service import get_cover_service
+        get_cover_service().coverReady.connect(self._on_cover_ready)
 
     def track_metadata(self, index: int):
         """Return cached TrackMetadata for row *index*, or None if not loaded yet."""
@@ -92,6 +130,20 @@ class PlaylistManager(QAbstractListModel):
     def shutdown(self):
         """Stop the metadata loader thread cleanly."""
         self._loader.stop()
+
+    def _on_cover_ready(self, url: str, data: bytes):
+        """Fill lazily loaded thumbnails into every matching row."""
+        changed: list[int] = []
+        for i, track in enumerate(self._tracks):
+            meta = track.get("metadata")
+            if (meta is not None and not meta.cover_data
+                    and getattr(meta, "cover_url", "") == url):
+                meta.cover_data = data
+                track["has_metadata"] = True
+                changed.append(i)
+        for i in changed:
+            index = self.index(i, 0)
+            self.dataChanged.emit(index, index, [self.CoverDataRole])
 
     def _on_meta_loaded(self, row: int, meta):
         """Receive metadata from loader thread, update model."""
@@ -151,7 +203,20 @@ class PlaylistManager(QAbstractListModel):
         if role == self.HasCoverRole:
             return bool(meta and meta.cover_data)
         if role == self.CoverDataRole:
-            return meta.cover_data if meta else None
+            if meta is None:
+                return None
+            if meta.cover_data:
+                return meta.cover_data
+            cover_url = getattr(meta, "cover_url", "")
+            if cover_url:
+                from audio_player.player.cover_service import get_cover_service
+                service = get_cover_service()
+                data = service.get(cover_url)
+                if data:
+                    meta.cover_data = data
+                    return data
+                service.request(cover_url)
+            return None
         if role == self.MetadataReadyRole:
             return track.get("has_metadata", False)
         if role == self.SourceTypeRole:
@@ -174,11 +239,14 @@ class PlaylistManager(QAbstractListModel):
                 if self._tracks[i].get("source_type") != "url":
                     self._loader.enqueue(i, self._tracks[i]["path"])
 
-    def add_url(self, url: str, title: str = None):
-        """Add a single stream URL to the playlist."""
-        row = len(self._tracks)
-        meta = None
-        if title:
+    def add_url(self, url: str, title: str = None, metadata: dict | None = None):
+        """Add a single stream URL to the playlist.
+
+        *metadata* lets external sources (e.g. vbplayer-qqmusic) supply
+        title/artist/album/cover without the player having to probe the URL.
+        """
+        meta = metadata_from_dict(metadata, title or "")
+        if meta is None and title:
             meta = TrackMetadata()
             meta.title = title
         self._tracks.append({"path": url, "source_type": "url", "has_metadata": bool(meta), "metadata": meta})
@@ -195,6 +263,61 @@ class PlaylistManager(QAbstractListModel):
         if len(self._tracks) > start:
             self.beginResetModel()
             self.endResetModel()
+
+    def set_urls(self, items: list[tuple[str, dict | None]]):
+        """Replace the playlist with external stream items (uri, metadata)."""
+        self.beginResetModel()
+        self._tracks.clear()
+        self._shuffle_order.clear()
+        self._current_index = -1
+        for url, metadata in items:
+            meta = metadata_from_dict(metadata)
+            self._tracks.append({
+                "path": url,
+                "source_type": "url",
+                "has_metadata": bool(meta),
+                "metadata": meta,
+            })
+        self.endResetModel()
+
+    def update_metadata(self, index: int, meta: TrackMetadata):
+        """Replace cached metadata for a row (used by lazy sidecar fetches)."""
+        if 0 <= index < len(self._tracks):
+            self._tracks[index]["metadata"] = meta
+            self._tracks[index]["has_metadata"] = True
+            idx = self.index(index, 0)
+            self.dataChanged.emit(idx, idx, [])
+
+    def index_of_path(self, path: str) -> int:
+        for i, track in enumerate(self._tracks):
+            if track.get("path") == path:
+                return i
+        return -1
+
+    def trim_stream_covers(self, keep_indices: set[int]):
+        """Drop large prefetched covers far from the current track.
+
+        Online tracks may carry the original artwork (1–2 MB each); keep only
+        the neighbourhood around the playing row so long playlists don't grow
+        unbounded. Rows can lazily re-fetch their 150×150 thumbnail later.
+        """
+        changed: list[int] = []
+        for i, track in enumerate(self._tracks):
+            if i in keep_indices:
+                continue
+            meta = track.get("metadata")
+            if meta is None or not meta.cover_data:
+                continue
+            if not getattr(meta, "meta_url", ""):
+                continue
+            meta.cover_data = None
+            track["has_metadata"] = True
+            changed.append(i)
+        for i in changed:
+            index = self.index(i, 0)
+            self.dataChanged.emit(
+                index, index, [self.CoverDataRole, self.HasCoverRole]
+            )
 
     def insert_next(self, filepath: str):
         """Insert a single track right after the current playing index."""

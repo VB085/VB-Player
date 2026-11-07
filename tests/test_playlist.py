@@ -8,7 +8,9 @@ from audio_player.player.playlist import PlaylistManager, RepeatMode, AUDIO_EXTE
 
 @pytest.fixture
 def pm(qapp):
-    return PlaylistManager()
+    manager = PlaylistManager()
+    yield manager
+    manager.shutdown()
 
 
 # ---- Basic model ----
@@ -213,8 +215,11 @@ def test_save_load_m3u(pm, tmp_path):
     assert "a.mp3" in content
 
     pm2 = PlaylistManager()
-    pm2.load_m3u(str(m3u_path))
-    assert pm2.count == 2
+    try:
+        pm2.load_m3u(str(m3u_path))
+        assert pm2.count == 2
+    finally:
+        pm2.shutdown()
 
 
 # ---- RepeatMode enum ----
@@ -223,3 +228,59 @@ def test_repeat_modes():
     assert RepeatMode.Off == 0
     assert RepeatMode.All == 1
     assert RepeatMode.One == 2
+
+
+# ---- URL metadata (external sources) ----
+
+def test_add_url_with_metadata(pm):
+    pm.add_url(
+        "http://127.0.0.1:8765/stream/abc",
+        metadata={
+            "title": "晴天",
+            "artist": "周杰伦",
+            "album": "叶惠美",
+            "duration_ms": 269000,
+            "format": "FLAC",
+            "bitrate": 1643,
+            "sample_rate": 44100,
+            "bits_per_sample": 24,
+            "channels": 2,
+            "cover_data": b"fake-jpeg",
+        },
+    )
+    meta = pm.track_metadata(0)
+    assert meta is not None
+    assert meta.title == "晴天"
+    assert meta.artist == "周杰伦"
+    assert meta.album == "叶惠美"
+    assert meta.duration_seconds == 269.0
+    assert meta.format == "FLAC"
+    assert meta.bitrate == 1643
+    assert meta.sample_rate == 44100
+    assert meta.bits_per_sample == 24
+    assert meta.channels == 2
+    assert meta.cover_data == b"fake-jpeg"
+
+
+# ---- External playlist replacement ----
+
+def test_set_urls_and_update_metadata(pm):
+    pm.set_urls([
+        ("http://x/1", {"title": "第一首", "meta_url": "http://m/1"}),
+        ("http://x/2", {"title": "第二首"}),
+    ])
+    assert pm.count == 2
+    assert pm.current_index == -1
+    assert pm.track_metadata(0).title == "第一首"
+    assert pm.index_of_path("http://x/2") == 1
+
+    from audio_player.player.playlist import metadata_from_dict
+    pm.update_metadata(1, metadata_from_dict({
+        "title": "第二首", "artist": "A", "sample_rate": 44100,
+        "bits_per_sample": 24, "bitrate": 1643, "format": "FLAC",
+    }))
+    meta = pm.track_metadata(1)
+    assert meta.artist == "A"
+    assert meta.sample_rate == 44100
+    assert meta.bits_per_sample == 24
+    assert meta.bitrate == 1643

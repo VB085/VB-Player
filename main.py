@@ -134,6 +134,21 @@ def main():
     app = create_app()
     window = MainWindow()
     window.show()
+
+    # Optional source passed on the command line (file path or http(s) URL),
+    # used by external launchers such as vbplayer-qqmusic.
+    initial_source = sys.argv[1] if len(sys.argv) > 1 else ""
+    if initial_source:
+        from PyQt6.QtCore import QTimer
+
+        def _open_initial_source():
+            if initial_source.startswith(("http://", "https://", "smb://")):
+                window._play_stream_url(initial_source)
+            else:
+                window._play_from_paths([initial_source])
+
+        QTimer.singleShot(300, _open_initial_source)
+
     sys.exit(app.exec())
 
 
