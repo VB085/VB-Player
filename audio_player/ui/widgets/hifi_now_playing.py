@@ -392,6 +392,9 @@ class HiFiNowPlayingPage(QWidget):
         self._enter_global_rect: QRect | None = None
         self._exit_done = None
         self._enter_direction = "in"
+        # 切换瞬间的普通界面快照：开场背景从它淡入，退场淡回它，
+        # 消除亮色界面 ↔ 暗色沉浸页之间的一帧硬切（"黑背景突现"）。
+        self._underlay: QPixmap | None = None
         self._enter_helper = _OpacityHelper(self)
         self._enter_helper.opacity = 1.0
         self._enter_anim: QPropertyAnimation | None = None
@@ -470,19 +473,22 @@ class HiFiNowPlayingPage(QWidget):
     # ghosting libraries), so the bar's cover is the only continuity device.
 
     def begin_enter_transition(self, cover_global_rect: QRect,
-                               duration: int = 560):
+                               duration: int = 560, underlay: QPixmap | None = None):
         self._enter_global_rect = QRect(cover_global_rect)
         self._enter_direction = "in"
         self._exit_done = None
+        self._underlay = underlay
         self._set_topbar_buttons_visible(False)
         self._start_enter_anim(0.0, 1.0, duration)
 
     def begin_exit_transition(self, cover_global_rect: QRect,
                               on_done=None,
-                              duration: int = 460):
+                              duration: int = 460,
+                              underlay: QPixmap | None = None):
         self._enter_global_rect = QRect(cover_global_rect)
         self._enter_direction = "out"
         self._exit_done = on_done
+        self._underlay = underlay
         self._lyrics_layer.hide()
         self._set_topbar_buttons_visible(False)
         self._start_enter_anim(1.0, 0.0, duration)
@@ -522,6 +528,7 @@ class HiFiNowPlayingPage(QWidget):
         self._enter_progress = 1.0
         self._enter_global_rect = None
         self._exit_done = None
+        self._underlay = None
         if exiting:
             self._enter_helper.opacity = 1.0
             if done:
@@ -1233,6 +1240,27 @@ class HiFiNowPlayingPage(QWidget):
                self.devicePixelRatioF())
         if self._composed_bg is None or self._composed_bg_key != key:
             self._compose_background()
+        if self._underlay is not None and self._enter_global_rect is not None:
+            # 真交叉淡化：底层是切换瞬间的普通界面快照，沉浸页背景在其上
+            # 淡入/淡出。第一帧看到的是原界面（不是黑色），收尾时切回普通
+            # 界面也无跳变。快照只在过渡的几百毫秒内使用。
+            w_px = max(1, self._underlay.width() // max(1, self._underlay.devicePixelRatio()))
+            h_px = max(1, self._underlay.height() // max(1, self._underlay.devicePixelRatio()))
+            p.drawPixmap(QRect(0, 0, w_px, h_px), self._underlay,
+                         QRect(0, 0, self._underlay.width(), self._underlay.height()))
+            if self._enter_direction == "in":
+                # 背景在前 40% 时间内淡入，与封面起飞同步
+                t = max(0.0, min(1.0, self._enter_time() / 0.4))
+                alpha = t * t * (3.0 - 2.0 * t)
+            else:
+                # 关闭：背景随下降的封面整体淡出，结束时与切回普通界面无缝
+                travel = max(0.0, min(1.0, 1.0 - self._enter_progress))
+                alpha = 1.0 - travel * travel * (3.0 - 2.0 * travel)
+            if alpha > 0.002:
+                p.setOpacity(alpha)
+                p.drawPixmap(0, 0, self._composed_bg)
+                p.setOpacity(1.0)
+            return
         # On the way in the backdrop starts slightly dimmed and brightens over
         # ~150ms. It is never hidden behind a black overlay: a fade from black
         # reads as a black mask flashing over the whole window.

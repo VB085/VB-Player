@@ -1515,17 +1515,33 @@ class MainWindow(FramelessResizeMixin, QMainWindow):
 
     def _show_np_page(self):
         """Open the immersive page: cover flies up from the playback bar."""
+        # 快照必须在 bar 还可见时抓取，且抓的是页面正下方的 _body：
+        # 尺寸与沉浸页一致，它是开场的底层画面，沉浸页背景从它淡入，
+        # 避免亮界面一帧变黑的硬切
+        underlay = self._body.grab()
         cover_rect = self._bar_cover_rect_global()
         self._pill_wrapper.hide()
         self._now_playing_bar.hide()
-        self._hifi_page.begin_enter_transition(cover_rect)
+        self._hifi_page.begin_enter_transition(cover_rect, underlay=underlay)
         self._hifi_overlay.setCurrentWidget(self._hifi_page)
         self._update_screen_inhibit()
 
     def _collapse_hifi(self):
         """Return from overlay to normal view: cover flies back to the bar."""
+        # 先把底栏恢复（在遮罩下不可见）再抓 _body 快照，让退场的淡出
+        # 目标画面带完整界面；动画结束切回普通界面时无跳变
+        s = QSettings("VBPlayer", "VB Player")
+        style = str(s.value("playback_bar_style", "full") or "full")
+        if style == "pill":
+            self._pill_wrapper.show()
+        else:
+            self._now_playing_bar.show()
+        underlay = self._body.grab()
         cover_rect = self._bar_cover_rect_global()
-        self._hifi_page.begin_exit_transition(cover_rect, self._finish_collapse)
+        self._pill_wrapper.hide()
+        self._now_playing_bar.hide()
+        self._hifi_page.begin_exit_transition(cover_rect, self._finish_collapse,
+                                              underlay=underlay)
 
     def _finish_collapse(self):
         s = QSettings("VBPlayer", "VB Player")
