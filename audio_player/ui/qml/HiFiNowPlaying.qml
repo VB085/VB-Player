@@ -3,6 +3,10 @@ import QtQuick.Controls
 
 Rectangle {
     id: root; color: "transparent"
+    // 根元素由 QQmlComponent 手动创建（createWindowContainer 路径），
+    // 没有 QQuickWidget 的 SizeRootObjectToView 自动缩放，必须显式
+    // 锚定到 contentItem，否则 0×0 → 整页只剩窗口底色
+    anchors.fill: parent
 
     property string trackTitle: ""; property string trackArtist: ""; property string trackAlbum: ""
     // cover/bg fade in as they arrive (black → content transitions are jarring)
