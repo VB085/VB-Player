@@ -174,24 +174,37 @@ Rectangle {
     Item { id:progressBar; y:_barTop
         opacity: (1.0 - _p * 0.35) * root._ctrlGate
         x:_ctrX - width/2; width: Math.min(_w*0.5,500) + (_coverW - Math.min(_w*0.5,500))*_p; height:40
+        // 拖动预览：scrub 期间填充/时间标签跟随手指，松手后由引擎位置接管
+        property real _previewRatio: -1.0
         Rectangle { anchors.top:parent.top; width:parent.width; height:12; radius:6
             color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.157) }
         Rectangle { anchors.top:parent.top; height:12; radius:6; color:root.accentColor
-            width: root.durationMs>0 ? parent.width*(root.positionMs/root.durationMs) : 0 }
-        Text { anchors.left:parent.left; y:24; text:formatTime(root.positionMs); font.pointSize:10; color:Qt.lighter(root.accentColor,1.3) }
+            width: root.durationMs>0 ? parent.width*(progressBar._previewRatio >= 0 ? progressBar._previewRatio
+                   : root.positionMs/root.durationMs) : 0 }
+        Text { anchors.left:parent.left; y:24; font.pointSize:10; color:Qt.lighter(root.accentColor,1.3)
+            text: progressBar._previewRatio >= 0 ? formatTime(progressBar._previewRatio*root.durationMs)
+                  : formatTime(root.positionMs) }
         Text { anchors.right:parent.right; y:24; text:formatTime(root.durationMs); font.pointSize:10; color:Qt.lighter(root.accentColor,1.3) }
         // seek on release only — a seek per mouse-move spawns a kill/restart
         // storm of ffmpeg processes (each EOF risked skipping to the next track)
+        // margins:-10 扩大热区但会把 mouse.x 整体右移 10px，映射前必须
+        // 减回并夹到 [0, width] —— 否则 seek 落点恒比手指位置偏右（4.6s/230s）
         MouseArea { anchors.fill:parent; anchors.margins:-10
             cursorShape: root.isPlaying ? Qt.PointingHandCursor : Qt.ArrowCursor
             enabled: root.isPlaying && root.durationMs > 0
             property bool _scrubbing: false
-            property real _scrubX: 0
-            onPressed:(mouse)=>{ _scrubbing = true; _scrubX = mouse.x; mouse.accepted = true }
-            onPositionChanged:(mouse)=>{ if (_scrubbing) { _scrubX = mouse.x; mouse.accepted = true } }
+            function _mappedX(mouse) {
+                return Math.max(0, Math.min(progressBar.width, mouse.x - 10))
+            }
+            onPressed:(mouse)=>{ _scrubbing = true
+                progressBar._previewRatio = _mappedX(mouse) / progressBar.width
+                mouse.accepted = true }
+            onPositionChanged:(mouse)=>{ if (_scrubbing) {
+                progressBar._previewRatio = _mappedX(mouse) / progressBar.width
+                mouse.accepted = true } }
             onReleased:(mouse)=>{ if (_scrubbing) { _scrubbing = false
-                root.seekRequested(_scrubX/parent.width*root.durationMs) } }
-            onClicked:(mouse)=>root.seekRequested(mouse.x/parent.width*root.durationMs) } }
+                progressBar._previewRatio = -1.0
+                root.seekRequested(_mappedX(mouse) / progressBar.width * root.durationMs) } } } }
 
     Item { id:transportRow; anchors.bottom:parent.bottom; anchors.bottomMargin:_btnMargin
         opacity:root.buttonsOpacity * (1.0 - _p * 0.15) * root._ctrlGate; height:_playSz
