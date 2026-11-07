@@ -210,7 +210,7 @@ class PlaylistView(QListView):
     playNext = pyqtSignal(list)            # insert paths after current
     editTags = pyqtSignal(str)             # single file path
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, context_menu_enabled: bool = True):
         super().__init__(parent)
         self.setObjectName("playlistView")
         self.setStyleSheet(STYLE)
@@ -229,7 +229,9 @@ class PlaylistView(QListView):
 
         self.clicked.connect(self._on_click)
         self.doubleClicked.connect(self._on_double_click)
-        self.customContextMenuRequested.connect(self._show_context_menu)
+        self._context_menu_enabled = context_menu_enabled
+        if context_menu_enabled:
+            self.customContextMenuRequested.connect(self._show_context_menu)
 
         # External callbacks for context menu state queries
         self._is_favorite_fn: Callable[[str], bool] | None = None
