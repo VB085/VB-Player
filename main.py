@@ -218,7 +218,11 @@ def main():
         from PyQt6.QtWidgets import QMessageBox
         msg = "".join(traceback.format_exception(typ, val, tb))
         print(msg, file=sys.stderr)
-        QMessageBox.critical(None, "VB Player Error", msg)
+        # PyQt 虚方法回调（如 QThread.run）里的未捕获异常也会走到这里。
+        # 从非 GUI 线程弹 QMessageBox 会直接段错误（整个进程闪退），
+        # 只允许 GUI 线程弹窗，其余线程仅记日志。
+        if threading.current_thread() is threading.main_thread():
+            QMessageBox.critical(None, "VB Player Error", msg)
         _orig_excepthook(typ, val, tb)
 
     sys.excepthook = _excepthook

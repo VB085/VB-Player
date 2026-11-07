@@ -104,6 +104,27 @@ def _blur_pixmap(pix: QPixmap, radius: int = 40) -> QPixmap:
                          Qt.TransformationMode.SmoothTransformation)
 
 
+def _blur_qimage(img: QImage, radius: int = 8) -> QImage:
+    """_blur_pixmap 的 QImage 版本 — 不经 QPixmap，可在工作线程安全使用
+    （QML 沉浸页的 _CoverWorker 后台模糊依赖此函数）。"""
+    if img.isNull():
+        return img
+    img = img.convertToFormat(QImage.Format.Format_RGBA8888)
+    w, h = img.width(), img.height()
+    stride = img.bytesPerLine()
+    buf = np.frombuffer(img.constBits().asstring(stride * h), np.uint8)
+    rgba = buf.reshape(h, stride)[:, :w * 4].reshape(h, w, 4)
+    arr = rgba[:, :, :3].astype(np.float32)
+    for _ in range(3):
+        arr = _box_blur_axis(arr, max(1, radius // 4), axis=1)
+        arr = _box_blur_axis(arr, max(1, radius // 4), axis=0)
+    np.clip(arr, 0, 255, out=arr)
+    out = np.empty((h, w, 4), dtype=np.uint8)
+    out[:, :, :3] = arr.astype(np.uint8)
+    out[:, :, 3] = 255
+    return QImage(out.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
+
+
 class _LyricsLayer(QWidget):
     """Opaque lyrics surface with wrapped, cached text layouts.
 
