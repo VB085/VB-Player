@@ -53,7 +53,9 @@ class TrackMetadata:
     channels: int = 0
     format: str = ""
     cover_data: bytes | None = None
+    cover_url: str = ""  # optional remote thumbnail for lazy loading
     file_size: int = 0
+    meta_url: str = ""  # optional sidecar JSON for external streams
 
 
 def read_stream_metadata(tags: dict) -> TrackMetadata:
@@ -112,11 +114,11 @@ def read_metadata(filepath: str) -> TrackMetadata:
             if mf is not None:
                 _read_mutagen_meta(mf, meta, suffix)
         except ValueError as e:
-            # Python 3.14 incompatibility — mutagen uses APIs that changed
+            # 兜底：mutagen 对个别标签字典抛 ValueError，元数据不完整
             import sys
             if not getattr(read_metadata, '_warned_valueerror', False):
-                print(f"[metadata] mutagen ValueError (Python 3.14 compat issue), "
-                      f"using extension-based fallback: {e}", file=sys.stderr)
+                print(f"[metadata] mutagen ValueError, "
+                      f"metadata may be incomplete: {e}", file=sys.stderr)
                 read_metadata._warned_valueerror = True  # type: ignore
         except Exception as e:
             import sys
@@ -327,7 +329,12 @@ def _read_mutagen_meta(mf, meta: TrackMetadata, suffix: str):
 
 def _tag_str(tags, *keys) -> str:
     for key in keys:
-        val = tags.get(key)
+        try:
+            val = tags.get(key)
+        except ValueError:
+            # mutagen 的 VorbisComment.get() 对非法 key（如 MP4 的 '©day'
+            # 回退名）抛 ValueError 而不是返回 None，跳过即可
+            continue
         if val is None:
             continue
         if isinstance(val, list):
@@ -354,7 +361,10 @@ def _tag_str(tags, *keys) -> str:
 
 def _tag_bytes(tags, *keys) -> bytes | None:
     for key in keys:
-        val = tags.get(key)
+        try:
+            val = tags.get(key)
+        except ValueError:
+            continue
         if val is None:
             continue
         if isinstance(val, list):
