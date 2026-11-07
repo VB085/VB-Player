@@ -1,10 +1,22 @@
 """Shared utility functions used across UI widgets."""
 
 from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QImage, QPainter, QPainterPath
+from PyQt6.QtGui import QImage, QPainter, QPainterPath, QPixmap
 from audio_player.app import current_theme_mode
 
 _cached_cover_radius: int | None = None
+
+
+def center_square(pixmap: QPixmap) -> QPixmap:
+    """居中裁出最大正方形。
+
+    非方形图直接 KeepAspectRatio 缩放进方形/圆形框会留透明边（色带），
+    先居中裁方再缩放即可铺满。"""
+    w, h = pixmap.width(), pixmap.height()
+    side = min(w, h)
+    if side <= 0:
+        return pixmap
+    return pixmap.copy((w - side) // 2, (h - side) // 2, side, side)
 
 
 def fill_cover_image(source: QImage, size: int, radius: int) -> QImage:

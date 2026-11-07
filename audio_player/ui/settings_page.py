@@ -12,7 +12,8 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QIcon
 
 from audio_player.ui.widgets.animated_stack import AnimatedStackedWidget
 from audio_player.i18n import _, set_language, current_lang, languageChanged
-from audio_player.app import current_accent, current_theme_mode
+from audio_player.app import current_accent
+from audio_player.ui.utils import center_square, current_theme_mode
 
 # Reuse helpers from settings_dialog
 from audio_player.ui.settings_dialog import (
@@ -723,16 +724,17 @@ class SettingsPage(QWidget):
                 ba = QByteArray()
                 buf = QBuffer(ba)
                 buf.open(QBuffer.OpenModeFlag.WriteOnly)
-                pix.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio,
-                           Qt.TransformationMode.SmoothTransformation).save(buf, "PNG")
+                center_square(pix).scaled(
+                    128, 128, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation).save(buf, "PNG")
                 self._settings.setValue("account_avatar",
                                         base64.b64encode(ba.data()).decode())
 
     def _apply_avatar(self):
         if hasattr(self, '_avatar_pixmap') and not self._avatar_pixmap.isNull():
-            scaled = self._avatar_pixmap.scaled(88, 88,
-                                                Qt.AspectRatioMode.KeepAspectRatio,
-                                                Qt.TransformationMode.SmoothTransformation)
+            scaled = center_square(self._avatar_pixmap).scaled(
+                88, 88, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
             icon = QIcon(scaled)
             self._avatar_btn.setIcon(icon)
             self._avatar_btn.setIconSize(scaled.size())
