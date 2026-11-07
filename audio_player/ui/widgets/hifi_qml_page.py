@@ -15,7 +15,7 @@ from pathlib import Path
 from PyQt6.QtCore import (Qt, pyqtSignal, QUrl, QThread, QTimer, QObject,
                           QEasingCurve, QPropertyAnimation, QRect,
                           QAbstractAnimation, pyqtProperty)
-from PyQt6.QtGui import QColor, QImage
+from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath
 from PyQt6.QtQml import QQmlComponent, QQmlEngine
 from PyQt6.QtQuick import QQuickWindow
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
@@ -89,13 +89,29 @@ class _CoverWorker(QThread):
                                     Qt.AspectRatioMode.IgnoreAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation)
                 cover_path = os.path.join(tempfile.gettempdir(),
-                                          f"vbplayer_hifi_cover_{gen}.jpg")
+                                          f"vbplayer_hifi_cover_{gen}.png")
                 bg_path = os.path.join(tempfile.gettempdir(),
                                        f"vbplayer_hifi_bg_{gen}.jpg")
-                img.save(cover_path, "JPG", 85)
+                # 封面预圆角：QML Rectangle 的 clip 只裁矩形不裁圆角，
+                # 方形角会在圆角边框外露出（暗色封面即"黑色直角边"）。
+                # 半径按显示比例（显示 ≈380px 时 12px）在源尺寸上等效预圆角，
+                # 缩放显示时圆角比例保持一致。PNG 带 alpha 通道。
+                iw, ih = img.width(), img.height()
+                rr = max(4.0, iw * 12.0 / 380.0)
+                rounded = QImage(iw, ih, QImage.Format.Format_ARGB32)
+                rounded.fill(Qt.GlobalColor.transparent)
+                rp = QPainter(rounded)
+                rp.setRenderHint(QPainter.RenderHint.Antialiasing)
+                rpath = QPainterPath()
+                rpath.addRoundedRect(0.0, 0.0, float(iw), float(ih), rr, rr)
+                rp.setClipPath(rpath)
+                rp.drawImage(0, 0, img)
+                rp.end()
+                rounded.save(cover_path, "PNG")
                 bg.save(bg_path, "JPG", 85)
                 # Best-effort cleanup of the previous generation's files
                 for old in (f"vbplayer_hifi_cover_{gen - 1}.jpg",
+                            f"vbplayer_hifi_cover_{gen - 1}.png",
                             f"vbplayer_hifi_bg_{gen - 1}.jpg"):
                     try:
                         os.unlink(os.path.join(tempfile.gettempdir(), old))

@@ -14,7 +14,7 @@ import threading
 
 
 class _AlbumThumbDecoder(QThread):
-    """Decodes album-cover pixmaps (142px rounded) off the GUI thread and
+    """Decodes album-cover pixmaps (152px rounded) off the GUI thread and
     delivers them via signal — a synchronous loadFromData per album card
     (3-8 ms × 123 albums) was multi-second GUI stall territory."""
 
@@ -49,21 +49,26 @@ class _AlbumThumbDecoder(QThread):
                 ok = img.loadFromData(album.cover_data) if album.cover_data else False
                 if not ok or img.isNull():
                     continue
-                scaled = img.scaled(142, 142, Qt.AspectRatioMode.KeepAspectRatio,
+                size = _ALBUM_COVER_PX
+                # ByExpanding + 居中绘制：封面铺满整个卡片（裁掉溢出），
+                # 否则非 152 的边会露出 cover_bg 底色（暗色主题下即"黑边"）
+                scaled = img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                                     Qt.TransformationMode.SmoothTransformation)
                 radius = 12 if radius_px == "12px" else 2
-                rounded = QImage(142, 142, QImage.Format.Format_ARGB32)
+                rounded = QImage(size, size, QImage.Format.Format_ARGB32)
                 rounded.fill(Qt.GlobalColor.transparent)
                 pt = QPainter(rounded)
                 pt.setRenderHint(QPainter.RenderHint.Antialiasing)
                 path = QPainterPath()
-                path.addRoundedRect(0, 0, 142, 142, radius, radius)
+                path.addRoundedRect(0, 0, size, size, radius, radius)
                 pt.setClipPath(path)
-                pt.drawImage(0, 0, scaled)
+                pt.drawImage((size - scaled.width()) // 2,
+                             (size - scaled.height()) // 2, scaled)
                 pt.end()
                 self.ready.emit(key, rounded)
 
 
+_ALBUM_COVER_PX = 152   # 与封面 QLabel setFixedSize 保持一致
 _album_thumb_decoder = _AlbumThumbDecoder()
 # key → cover QLabel of the live card; the decoder's ready signal looks the
 # label up here on the GUI thread (labels die with their cards — passing
