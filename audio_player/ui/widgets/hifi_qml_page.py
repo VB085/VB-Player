@@ -1,4 +1,10 @@
-"""QML-based HiFi Now Playing page."""
+"""QML-based HiFi Now Playing page.
+
+渲染架构：QQuickWindow + QWidget.createWindowContainer（原生子窗口合成）。
+不用 QQuickWidget——后者每帧把整页 FBO 回读进 backing store 再整体拷贝
+到 X11（DPR2 下极重，实测歌词滚动仅 ~22fps 且 GUI 线程一旦被阻塞渲染
+即停）；原生容器走独立渲染线程 + 真垂直同步，GUI 卡顿不影响渲染节奏。
+"""
 import bisect
 import math
 import os
@@ -10,8 +16,9 @@ from PyQt6.QtCore import (Qt, pyqtSignal, QUrl, QThread, QTimer, QObject,
                           QEasingCurve, QPropertyAnimation, QRect,
                           QAbstractAnimation, pyqtProperty)
 from PyQt6.QtGui import QColor, QImage
-from PyQt6.QtQuickWidgets import QQuickWidget
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtQml import QQmlComponent, QQmlEngine
+from PyQt6.QtQuick import QQuickWindow
+from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 
 class _QmlOpacityHelper(QObject):
@@ -99,7 +106,7 @@ class _CoverWorker(QThread):
                 continue
 
 
-class HiFiQmlPage(QQuickWidget):
+class HiFiQmlPage(QWidget):
     collapseRequested = pyqtSignal()
     fullscreenRequested = pyqtSignal()
     playPauseClicked = pyqtSignal()
@@ -110,12 +117,13 @@ class HiFiQmlPage(QQuickWidget):
     outputDetailRequested = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        QWidget.__init__(self, parent)
         self.setObjectName("hifiQmlPage")
-        self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setStyleSheet("background: transparent;")
-        self.setClearColor(Qt.GlobalColor.transparent)
+
+        # 独立 QQuickWindow + 原生窗口容器：渲染线程 + 垂直同步，
+        # 绕开 QQuickWidget 的 FBO 回读/backing store 逐帧拷贝
+        self._quick_win = QQuickWindow()
+        self._quick_win.setColor(QColor("#0d0d1a"))
 
         # Export icons
         import tempfile
@@ -123,17 +131,36 @@ class HiFiQmlPage(QQuickWidget):
         os.makedirs(self._icon_dir, exist_ok=True)
         self._export_icons()
 
-        # Load QML
+        # Load QML（本地文件同步创建，根对象即最终对象，无重建时序问题）
         qml_path = Path(__file__).resolve().parent.parent / "qml" / "HiFiNowPlaying.qml"
-        self.setSource(QUrl.fromLocalFile(str(qml_path)))
+        self._engine = QQmlEngine(self)
+        self._component = QQmlComponent(self._engine,
+                                        QUrl.fromLocalFile(str(qml_path)))
+        self._root_item = None
+        if self._component.status() == self._component.Status.Error:
+            for err in self._component.errors():
+                print(f"[qml] {err.toString()}", file=sys.stderr)
+        else:
+            item = self._component.create()
+            if item is None:
+                for err in self._component.errors():
+                    print(f"[qml] {err.toString()}", file=sys.stderr)
+            else:
+                item.setParentItem(self._quick_win.contentItem())
+                item.setParent(self._quick_win)
+                self._root_item = item
 
-        # 真实 GPU 管线下 QML 场景可能延迟就绪且根对象可能被整体重建
-        # （实测：Ready 时接线的 root 与构造结束后的 rootObject() 不是同一个，
-        # 且 Ready 投递时机不稳定）。改为自愈式接线：每次访问前校验根对象
-        # 身份，变化/未接即重连信号 + 重设图标；statusChanged + showEvent +
-        # 各属性 setter 都是触发点（播放时 set_position 每 ~500ms 自检）。
+        self._container = QWidget.createWindowContainer(self._quick_win, self)
+        self._container.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._container.setObjectName("hifiQmlContainer")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._container)
+
+        # 自愈式接线：每次访问前校验根对象身份（防御性保留，直接创建的
+        # 根对象是稳定引用，正常情况下只触发一次）
         self._wired_root = None
-        self.statusChanged.connect(self._on_qml_status)
+        self._component.statusChanged.connect(self._on_qml_status)
         self._ensure_root_wired()
 
         self._position_ms = 0
@@ -165,10 +192,25 @@ class HiFiQmlPage(QQuickWidget):
             self._cover_worker.stop()
             self._cover_worker = None
 
+    # ---- QQuickWidget 兼容面 ----
+
+    def rootObject(self):
+        return self._root_item
+
+    def quickWindow(self):
+        return self._quick_win
+
+    def status(self):
+        return self._component.status()
+
+    def errors(self):
+        return self._component.errors()
+
     def _on_qml_status(self, status):
-        if status == QQuickWidget.Status.Ready:
+        Status = self._component.Status
+        if status == Status.Ready:
             self._ensure_root_wired()
-        elif status == QQuickWidget.Status.Error:
+        elif status == Status.Error:
             for err in self.errors():
                 print(f"[qml] {err.toString()}", file=sys.stderr)
 
@@ -204,6 +246,9 @@ class HiFiQmlPage(QQuickWidget):
                   f"rootid={id(root)}, "
                   f"iconPrev={str(root.property('iconPrev'))[:40]!r}",
                   file=sys.stderr, flush=True)
+
+    def sizeHint(self):
+        return self._container.sizeHint() if self._container is not None else super().sizeHint()
 
     def _export_icons(self):
         from audio_player.ui.icons import TRANSPORT_PREV, TRANSPORT_PLAY, TRANSPORT_PAUSE, TRANSPORT_NEXT, _icon

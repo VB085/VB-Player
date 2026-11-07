@@ -207,20 +207,10 @@ Rectangle {
                 width: ListView.view.width
                 height: mainText.height
                         + (modelData.translation ? transText.height + 6 : 0)
-                // 双重淡出：按索引距离（widget 版 fade 公式）× 上下边缘蒙版
-                opacity: {
-                    var vy = y - lyricsView.contentY
-                    var H = lyricsBlock.layerH
-                    var a = 1.0
-                    if (vy < lyricsBlock.fadeTop)
-                        a *= Math.max(0, vy / lyricsBlock.fadeTop)
-                    if (vy + height > H - lyricsBlock.fadeBottom)
-                        a *= Math.max(0, (H - vy - height) / lyricsBlock.fadeBottom)
-                    var dist = Math.abs(index - root.lyricsActiveIdx)
-                    if (index !== root.lyricsActiveIdx)
-                        a *= Math.max(0, 1 - dist / 6 * 0.85) * 0.7
-                    return a
-                }
+                // 仅按索引距离衰减（widget 版 fade 公式）；上下边缘淡出
+                // 由 MultiEffect 蒙版在 GPU 上完成，避免每帧 JS 绑定
+                opacity: index === root.lyricsActiveIdx ? 1.0
+                        : Math.max(0, 1 - Math.abs(index - root.lyricsActiveIdx) / 6 * 0.85) * 0.7
                 Text { id: mainText
                     width: parent.width
                     text: modelData.text || ""
@@ -240,6 +230,21 @@ Rectangle {
                                    root.accentColor.b, 0.55)
                     wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                 }
+            }
+        }
+
+        // 歌词边缘淡出的蒙版源（黑=透明，白=不透明）
+        Rectangle {
+            id: lyricsMask
+            visible: false
+            x: lyricsView.x; y: lyricsView.y
+            width: lyricsView.width; height: lyricsView.height
+            gradient: Gradient {
+                orientation: Gradient.Vertical
+                GradientStop { position: 0; color: "#000" }
+                GradientStop { position: lyricsBlock.fadeTop / Math.max(1, lyricsBlock.layerH); color: "#fff" }
+                GradientStop { position: 1 - lyricsBlock.fadeBottom / Math.max(1, lyricsBlock.layerH); color: "#fff" }
+                GradientStop { position: 1; color: "#000" }
             }
         }
     }
