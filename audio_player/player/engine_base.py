@@ -39,6 +39,7 @@ class _BaseAudioEngine(QObject):
     errorOccurred = pyqtSignal(str)
     volumeChanged = pyqtSignal(float)
     exclusiveModeChanged = pyqtSignal(bool)
+    bitPerfectModeChanged = pyqtSignal(bool)
     outputInfoChanged = pyqtSignal(dict)
     streamMetadataChanged = pyqtSignal(dict)
     bufferingProgress = pyqtSignal(int)
@@ -67,6 +68,7 @@ class _BaseAudioEngine(QObject):
 
         self._exclusive_mode = False
         self._exclusive_device = self._default_exclusive_device()
+        self._bit_perfect = False
 
         self._eq_enabled = False
         self._eq_gains = [0.0] * 10
@@ -182,6 +184,39 @@ class _BaseAudioEngine(QObject):
     def _is_url(source: str) -> bool:
         return source.startswith(("http://", "https://", "smb://"))
 
+    def _bit_perfect_active(self) -> bool:
+        """True when playback can bypass all DSP (EQ, volume, ReplayGain, SRC).
+
+        Bit-perfect requires exclusive output and unity volume. Enabling the
+        mode suspends EQ / ReplayGain, and any later EQ, ReplayGain or volume
+        change exits the mode so user intent always wins.
+        """
+        return bool(
+            self._bit_perfect
+            and self._exclusive_mode
+            and self._volume_level >= 0.999
+        )
+
+    def _reload_current_pipeline(self):
+        """Rebuild the active pipeline, preserving position and play state."""
+        if not self._current_file:
+            return
+        pos = self._position_ms
+        was_playing = self._app_state == PlaybackState.Playing
+        if self._is_url(self._current_file):
+            self._build_url_pipeline(self._current_file)
+        else:
+            self._build_pipeline(self._current_file)
+        if self._pipeline is None:
+            return
+        target = Gst.State.PLAYING if was_playing else Gst.State.PAUSED
+        self._pipeline.set_state(target)
+        if pos > 0:
+            self.seek(pos)
+        if was_playing:
+            self._app_state = PlaybackState.Playing
+            self.stateChanged.emit(PlaybackState.Playing)
+
     # ------------------------------------------------------------------
     #  Pipeline construction
     # ------------------------------------------------------------------
@@ -221,11 +256,26 @@ class _BaseAudioEngine(QObject):
             self._teardown_pipeline()
             self.errorOccurred.emit(str(e))
 
+    def _create_equalizer(self) -> Gst.Element:
+        """Create the 10-band EQ with the current gains applied."""
+        eq = Gst.ElementFactory.make("equalizer-nbands", None)
+        eq.set_property("num-bands", 10)
+        for i, freq in enumerate(BAND_FREQUENCIES):
+            band = eq.get_child_by_index(i)
+            band.set_property("freq", float(freq))
+            band.set_property("gain", self._eq_gains[i] if self._eq_enabled else 0.0)
+        return eq
+
     def _create_audio_pipeline(self, name: str, filepath: str, pad_added_cb):
         """Create a GStreamer audio pipeline with the standard element chain.
 
+        With bit-perfect passthrough active (exclusive output + unity volume)
+        the DSP chain is skipped entirely — EQ and ReplayGain are ignored:
+        filesrc ! decodebin ! queue ! audioconvert ! sink.
+
         Returns (pipeline, (filesrc, decodebin, audio_queue, conv1, resample1,
         rgvolume, volume, eq, conv2, resample2, sink)) or None on failure.
+        Unused elements in the tuple are None.
         Raises RuntimeError if critical plugins are missing.
         """
         pipeline = Gst.Pipeline.new(name)
@@ -243,6 +293,22 @@ class _BaseAudioEngine(QObject):
             audio_queue.set_property("max-size-bytes", 0)
 
         conv1 = Gst.ElementFactory.make("audioconvert", None)
+        sink = self._create_sink()
+        if sink is None:
+            return None
+
+        if self._bit_perfect_active():
+            elems = [filesrc, decodebin, audio_queue, conv1, sink]
+            for elem in elems:
+                if elem is None:
+                    raise RuntimeError(_("engine.gst_plugins_missing"))
+                pipeline.add(elem)
+            filesrc.link(decodebin)
+            audio_queue.link(conv1)
+            conv1.link(sink)
+            return pipeline, (filesrc, decodebin, audio_queue, conv1,
+                              None, None, None, None, None, None, sink)
+
         resample1 = Gst.ElementFactory.make("audioresample", None)
         if resample1 is not None:
             resample1.set_property("quality", 10)
@@ -253,21 +319,12 @@ class _BaseAudioEngine(QObject):
         if self._replaygain_enabled:
             rgvolume = Gst.ElementFactory.make("rgvolume", None)
 
-        eq = Gst.ElementFactory.make("equalizer-nbands", None)
-        eq.set_property("num-bands", 10)
-        for i, freq in enumerate(BAND_FREQUENCIES):
-            band = eq.get_child_by_index(i)
-            band.set_property("freq", float(freq))
-            band.set_property("gain", self._eq_gains[i] if self._eq_enabled else 0.0)
+        eq = self._create_equalizer()
 
         conv2 = Gst.ElementFactory.make("audioconvert", None)
         resample2 = Gst.ElementFactory.make("audioresample", None)
         if resample2 is not None:
             resample2.set_property("quality", 10)
-
-        sink = self._create_sink()
-        if sink is None:
-            return None
 
         elems = [filesrc, decodebin, audio_queue, conv1, resample1]
         if rgvolume is not None:
@@ -295,7 +352,12 @@ class _BaseAudioEngine(QObject):
                           rgvolume, volume, eq, conv2, resample2, sink)
 
     def _build_url_pipeline(self, uri: str):
-        """Build a playbin-based pipeline for HTTP/HLS/ICY streams."""
+        """Build a playbin-based pipeline for HTTP/HLS/ICY streams.
+
+        The sink is created through ``_create_sink()`` so exclusive output and
+        bit-perfect passthrough work for network streams too. EQ is attached
+        via playbin's ``audio-filter`` when enabled.
+        """
         self._teardown_pipeline()
 
         try:
@@ -303,14 +365,29 @@ class _BaseAudioEngine(QObject):
             if playbin is None:
                 raise RuntimeError(_("engine.gst_plugins_missing"))
 
-            playbin.set_property("uri", uri)
-            playbin.set_property("volume", self._volume_level)
+            bit_perfect = self._bit_perfect_active()
+            sink = self._create_sink()
+            if sink is None:
+                raise RuntimeError(_("engine.gst_plugins_missing"))
+            playbin.set_property("audio-sink", sink)
 
-            # Disable video output — audio only
-            playbin.set_property("flags", 0x01)  # GST_PLAY_FLAG_AUDIO
+            playbin.set_property("uri", uri)
+            playbin.set_property("volume", 1.0 if bit_perfect else self._volume_level)
+
+            eq = None
+            if self._eq_enabled and not bit_perfect and playbin.find_property("audio-filter"):
+                eq = self._create_equalizer()
+                if eq is not None:
+                    playbin.set_property("audio-filter", eq)
+
+            # Audio only — GST_PLAY_FLAG_AUDIO is 1 << 1 (0x01 is VIDEO).
+            playbin.set_property("flags", 0x02)
 
             self._pipeline = playbin
             self._playbin = playbin
+            self._sink = sink
+            self._eq_elem = eq
+            self._volume_elem = None
             self._is_stream = True
             self._stream_buffering = False
             self._source_is_dsd = False
@@ -402,11 +479,12 @@ class _BaseAudioEngine(QObject):
                         self._stall_ticks = 0
                         self._last_position_ms = -1
         elif t == Gst.MessageType.ASYNC_DONE:
-            if self._pipeline is not None and not self._is_stream:
+            if self._pipeline is not None:
                 ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
                 if ok:
+                    # Live streams usually report 0; only trust positive values.
                     ms = dur_ns // 1000000
-                    if ms != self._duration_ms:
+                    if ms > 0 and ms != self._duration_ms:
                         self._duration_ms = ms
                         self.durationChanged.emit(ms)
                 rate, fmt_str = self._query_output_caps()
@@ -420,8 +498,11 @@ class _BaseAudioEngine(QObject):
             tags = {}
             for i in range(tag_list.n_tags()):
                 key = tag_list.nth_tag_name(i)
-                ok, val = tag_list.get_value(key, 0)
-                if ok and val is not None:
+                try:
+                    val = tag_list.get_value_index(key, 0)
+                except Exception:
+                    val = None
+                if val is not None:
                     tags[key] = str(val)
             if tags:
                 self.streamMetadataChanged.emit(tags)
@@ -476,14 +557,14 @@ class _BaseAudioEngine(QObject):
                 else:
                     self._stall_ticks = 0
                     self._last_position_ms = ms
-        # Duration query — skip for streams (may return 0 or unreliable values)
-        if not self._is_stream:
-            ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
-            if ok:
-                ms = dur_ns // 1000000
-                if ms != self._duration_ms:
-                    self._duration_ms = ms
-                    self.durationChanged.emit(ms)
+        # Duration query — live streams report 0, HTTP files report a real
+        # value, so only accept positive durations (enables seeking on URL).
+        ok, dur_ns = self._pipeline.query_duration(Gst.Format.TIME)
+        if ok:
+            ms = dur_ns // 1000000
+            if ms > 0 and ms != self._duration_ms:
+                self._duration_ms = ms
+                self.durationChanged.emit(ms)
 
     # ------------------------------------------------------------------
     #  Public API — playback control
@@ -581,8 +662,15 @@ class _BaseAudioEngine(QObject):
 
     @volume.setter
     def volume(self, value: float):
-        self._volume_level = max(0.0, min(1.0, value))
-        if self._playbin is not None:
+        new_level = max(0.0, min(1.0, value))
+        # Any software volume change breaks bit-perfect — leave the mode.
+        exits_bit_perfect = self._bit_perfect and new_level < 0.999
+        self._volume_level = new_level
+        if exits_bit_perfect:
+            self._bit_perfect = False
+            self._reload_current_pipeline()
+            self.bitPerfectModeChanged.emit(False)
+        elif self._playbin is not None:
             self._playbin.set_property("volume", self._volume_level)
         elif self._volume_elem is not None:
             self._volume_elem.set_property("volume", self._volume_level)
@@ -603,6 +691,7 @@ class _BaseAudioEngine(QObject):
         info["pipeline_format"] = self._pipeline_output_format
         info["source_is_dsd"] = self._source_is_dsd
         info["dsd_decode_mode"] = self._dsd_decode_mode
+        info["bit_perfect"] = self._bit_perfect_active()
         return info
 
     @property
@@ -633,15 +722,10 @@ class _BaseAudioEngine(QObject):
         if enabled == self._replaygain_enabled:
             return
         self._replaygain_enabled = enabled
-        if self._current_file:
-            pos = self._position_ms
-            was_playing = self._app_state == PlaybackState.Playing
-            self._build_pipeline(self._current_file)
-            if self._pipeline is not None:
-                target = Gst.State.PLAYING if was_playing else Gst.State.PAUSED
-                self._pipeline.set_state(target)
-                if pos > 0:
-                    self.seek(pos)
+        if enabled and self._bit_perfect:
+            self._bit_perfect = False
+            self.bitPerfectModeChanged.emit(False)
+        self._reload_current_pipeline()
 
     @property
     def gapless_enabled(self) -> bool:
@@ -811,13 +895,10 @@ class _BaseAudioEngine(QObject):
         if enabled == self._exclusive_mode:
             return
         self._exclusive_mode = enabled
-        if self._current_file:
-            pos = self._position_ms
-            self._build_pipeline(self._current_file)
-            if self._pipeline is not None:
-                self._pipeline.set_state(Gst.State.PAUSED)
-                if pos > 0:
-                    self.seek(pos)
+        if not enabled and self._bit_perfect:
+            self._bit_perfect = False
+            self.bitPerfectModeChanged.emit(False)
+        self._reload_current_pipeline()
         self.exclusiveModeChanged.emit(enabled)
 
     @property
@@ -829,13 +910,34 @@ class _BaseAudioEngine(QObject):
         if hw == self._exclusive_device:
             return
         self._exclusive_device = hw
-        if self._exclusive_mode and self._current_file:
-            pos = self._position_ms
-            self._build_pipeline(self._current_file)
-            if self._pipeline is not None:
-                self._pipeline.set_state(Gst.State.PAUSED)
-                if pos > 0:
-                    self.seek(pos)
+        if self._exclusive_mode:
+            self._reload_current_pipeline()
+
+    # ------------------------------------------------------------------
+    #  Bit-perfect passthrough
+    # ------------------------------------------------------------------
+
+    @property
+    def bit_perfect_mode(self) -> bool:
+        return self._bit_perfect
+
+    @bit_perfect_mode.setter
+    def bit_perfect_mode(self, enabled: bool):
+        enabled = bool(enabled)
+        if enabled == self._bit_perfect:
+            return
+        self._bit_perfect = enabled
+        if enabled:
+            # Bit-perfect implies exclusive hardware access and unity volume;
+            # EQ / ReplayGain are skipped by the bypass chain.
+            if not self._exclusive_mode:
+                self._exclusive_mode = True
+                self.exclusiveModeChanged.emit(True)
+            if self._volume_level < 0.999:
+                self._volume_level = 1.0
+                self.volumeChanged.emit(1.0)
+        self._reload_current_pipeline()
+        self.bitPerfectModeChanged.emit(enabled)
 
     # ------------------------------------------------------------------
     #  Equalizer live control
@@ -843,6 +945,16 @@ class _BaseAudioEngine(QObject):
 
     def set_eq_enabled(self, enabled: bool):
         self._eq_enabled = enabled
+        # Enabling EQ is a DSP request: leave bit-perfect and rebuild so the
+        # equalizer is actually inserted (URL pipelines attach it on build).
+        if enabled and self._bit_perfect:
+            self._bit_perfect = False
+            self.bitPerfectModeChanged.emit(False)
+            self._reload_current_pipeline()
+            return
+        if enabled and self._eq_elem is None and self._current_file:
+            self._reload_current_pipeline()
+            return
         if self._eq_elem is not None:
             for i in range(10):
                 band = self._eq_elem.get_child_by_index(i)

@@ -230,6 +230,16 @@ class SettingsController(QObject):
         # Exclusive mode
         exclusive = str(s.value("exclusive_mode", "false")).lower() == "true"
         exclusive_dev = str(s.value("exclusive_device", "hw:0,0") or "hw:0,0")
+        # Drop stale ids (e.g. an old hw:0,0 that no longer exists) so
+        # exclusive / bit-perfect can actually open the device.
+        try:
+            from audio_player.player.engine import enumerate_hw_devices
+            valid_devices = {d["hw"] for d in enumerate_hw_devices()}
+        except Exception:
+            valid_devices = set()
+        if valid_devices and exclusive_dev not in valid_devices:
+            exclusive_dev = self._engine._default_exclusive_device()
+            s.setValue("exclusive_device", exclusive_dev)
         self._engine.exclusive_mode = exclusive
         self._engine.exclusive_device = exclusive_dev
 
@@ -240,3 +250,8 @@ class SettingsController(QObject):
         # Gapless playback
         gapless = str(s.value("gapless_enabled", "false")).lower() == "true"
         self._engine.gapless_enabled = gapless
+
+        # Bit-perfect passthrough (implies exclusive). Restore last so the
+        # ReplayGain restore above cannot silently exit the mode.
+        bit_perfect = str(s.value("bit_perfect_mode", "false")).lower() == "true"
+        self._engine.bit_perfect_mode = bit_perfect

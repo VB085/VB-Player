@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional
 
+from audio_player.platform.linux.alsa_hw import enumerate_alsa_playback_devices
+
 
 @dataclass
 class AudioDevice:
@@ -49,41 +51,16 @@ def get_wired_devices() -> list[AudioDevice]:
 
 
 def get_alsa_hw_devices() -> list[AudioDevice]:
-    """Get ALSA hardware devices for exclusive mode."""
+    """Get ALSA hardware devices with per-PCM names (HDA Analog, HDMI 1, ...)."""
     devices = []
-    try:
-        result = subprocess.run(
-            ["aplay", "-l"], capture_output=True, text=True, timeout=3
-        )
-        for line in result.stdout.split("\n"):
-            if not line.startswith("card"):
-                continue
-            # e.g., "card 0: PCH [HDA Intel PCH], device 0: ALC255 Analog [ALC255 Analog]"
-            parts = line.split(":", 1)
-            if len(parts) < 2:
-                continue
-            card_part = parts[0].strip()  # "card 0"
-            desc_part = parts[1].strip()  # "PCH [HDA Intel PCH], device 0: ..."
-
-            card_num = card_part.replace("card", "").strip()
-
-            # Parse device number and name
-            import re
-            m = re.match(r'(.*?), device (\d+):\s*(.*)', desc_part)
-            if m:
-                card_name = m.group(1).strip()
-                dev_num = m.group(2)
-                dev_desc = m.group(3).strip()
-                hw_id = f"hw:{card_num},{dev_num}"
-                devices.append(AudioDevice(
-                    id=hw_id,
-                    name=f"{card_name} ({hw_id})",
-                    device_type="wired",
-                    description=dev_desc,
-                    available=False,  # only available when exclusive mode on
-                ))
-    except Exception:
-        pass
+    for dev in enumerate_alsa_playback_devices():
+        devices.append(AudioDevice(
+            id=dev["hw"],
+            name=dev["name"],
+            device_type="wired",
+            description=dev.get("description", ""),
+            available=False,  # only available when exclusive mode on
+        ))
     return devices
 
 

@@ -39,6 +39,7 @@ class SettingsPage(QWidget):
     albumCoverRadiusToggled = pyqtSignal(bool)
     replaygainToggled = pyqtSignal(bool)
     gaplessToggled = pyqtSignal(bool)
+    keepScreenOnToggled = pyqtSignal(bool)
     languageChanged = pyqtSignal(str)
     onlineLyricsToggled = pyqtSignal(bool)
     autoSaveLyricsToggled = pyqtSignal(bool)
@@ -552,6 +553,11 @@ class SettingsPage(QWidget):
         self._gapless_cb.toggled.connect(self.gaplessToggled)
         layout.addWidget(self._gapless_cb)
 
+        self._keep_screen_cb = QCheckBox(_("settings.keep_screen_on"))
+        self._keep_screen_cb.setToolTip(_("settings.keep_screen_on_tooltip"))
+        self._keep_screen_cb.toggled.connect(self.keepScreenOnToggled)
+        layout.addWidget(self._keep_screen_cb)
+
         layout.addStretch()
         scroll.setWidget(w)
         return scroll
@@ -980,6 +986,10 @@ class SettingsPage(QWidget):
         gapless = str(s.value("gapless_enabled", "false")).lower() == "true"
         self._gapless_cb.setChecked(gapless)
 
+        # "Keep screen on" defaults to enabled.
+        keep_screen = str(s.value("keep_screen_on", "true")).lower() == "true"
+        self._keep_screen_cb.setChecked(keep_screen)
+
         # Online lyrics custom fields
         self._custom_url_input.textChanged.connect(
             lambda v: s.setValue("lyrics_custom_url", v))
@@ -1105,6 +1115,8 @@ class SettingsPage(QWidget):
         self._rg_cb.setToolTip(_("settings.replaygain_tooltip"))
         self._gapless_cb.setText(_("settings.gapless"))
         self._gapless_cb.setToolTip(_("settings.gapless_tooltip"))
+        self._keep_screen_cb.setText(_("settings.keep_screen_on"))
+        self._keep_screen_cb.setToolTip(_("settings.keep_screen_on_tooltip"))
         # Advanced
         if hasattr(self, '_sidebar_log_cb'):
             self._sidebar_log_cb.setText(_("settings.sidebar_log"))
