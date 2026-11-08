@@ -335,6 +335,11 @@ class HiFiQmlPage(QWidget):
         self._ensure_root_wired()
         root = self.rootObject()
         if root: root.setProperty("positionMs", ms)
+        # 状态脱钩自愈（15Hz）：过渡已结束但飞行覆盖还挂着（任意时序把
+        # finished 弄丢的后遗症）→ 封面会卡在半途位置。不在过渡期时
+        # coverOverrideActive 必须为 False，发现即纠偏
+        if self._transition_direction is None and root and root.property("coverOverrideActive"):
+            root.setProperty("coverOverrideActive", False)
         # seek 保持期：位置没追上目标前不交还显示控制
         if self._seek_hold_target is not None:
             now = time.monotonic()
@@ -488,6 +493,11 @@ class HiFiQmlPage(QWidget):
             # finished 若因异常未触发，强制收尾——overlay 决不能停在沉浸页
             QTimer.singleShot(duration + 600,
                               lambda: self._exit_watchdog(seq))
+        else:
+            # 进场同样兜底：transitionActive/飞行覆盖决不能卡真，
+            # 否则页面停在半途（封面缩略、控件全无）
+            QTimer.singleShot(duration + 600,
+                              lambda: self._enter_watchdog(seq))
 
     def _enter_time(self) -> float:
         """过渡的未缓动墙钟进度（与 widget 版同式）。"""
@@ -602,6 +612,26 @@ class HiFiQmlPage(QWidget):
         self._enter_helper.opacity = 1.0
         if done:
             done()
+
+    def _enter_watchdog(self, seq):
+        """进场 finished 未触发时强制落定——页面决不能停在半途。"""
+        if seq != self._transition_seq or self._transition_direction != "in":
+            return
+        self._transition_direction = None
+        self._enter_progress = 1.0
+        self._enter_global_rect = None
+        root = self.rootObject()
+        if root:
+            root.setProperty("transitionActive", False)
+            root.setProperty("coverOverrideActive", False)
+            root.setProperty("topbarOpacity", 1.0)
+            root.setProperty("underlayPath", "")
+        if self._underlay_path:
+            try:
+                os.unlink(self._underlay_path)
+            except OSError:
+                pass
+            self._underlay_path = None
 
     def toggle_lyrics(self):
         self._ensure_root_wired()
