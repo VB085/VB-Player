@@ -311,7 +311,10 @@ Rectangle {
 
     Timer { id:hideTransportTimer; interval:root.autoHideSeconds*1000; onTriggered:{ if(root.autoHideEnabled)root.buttonsOpacity=0.0 } }
     Timer { id:hideTopbarTimer; interval:3000; onTriggered:{ root.topbarOpacity=0.0 } }
+    // 只悬停不接键：默认 acceptedButtons 会吞掉整页左键 press，
+    // 让所有按钮概率性点不了（真机 XTest 复现实证）
     MouseArea { anchors.fill:parent; hoverEnabled:true; z:-1
+        acceptedButtons: Qt.NoButton
         onPositionChanged:(mouse)=>{ if(mouse.y>_h-212){ if(root.buttonsOpacity<0.9)root.buttonsOpacity=1.0; hideTransportTimer.restart() } if(mouse.x>_w-200&&mouse.y<70){ if(root.topbarOpacity<0.9)root.topbarOpacity=1.0; hideTopbarTimer.restart() } }
         onEntered:{ root.buttonsOpacity=1.0; root.topbarOpacity=1.0; hideTransportTimer.restart(); hideTopbarTimer.restart() } }
 
