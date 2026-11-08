@@ -1,6 +1,6 @@
 # VB Player
 
-[![Version](https://img.shields.io/badge/version-0.7.0-7c3aed)](https://github.com/VB085/VB-Player)
+[![Version](https://img.shields.io/badge/version-0.7.7-7c3aed)](https://github.com/VB085/VB-Player)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-10b981)]()
 
