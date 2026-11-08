@@ -36,6 +36,7 @@ Rectangle {
     property string qualityText: ""; property string qualitySimple: ""
     property var    lyricsModel: []; property int    lyricsActiveIdx: -1
     property real   lyricsDrift: 0.0
+    onLyricsDriftChanged: if (driftSync) driftSync.restart()
     property real   _driftMirror: 0.0   // 调试/外部读取：当前 contentY   // 连续漂移目标（行索引 + 行内进度）
     property real   lyricsLayoutProgress: 0.0
     Behavior on lyricsLayoutProgress { NumberAnimation { duration: 400; easing.type: Easing.InOutCubic } }
@@ -244,22 +245,55 @@ Rectangle {
             clip: true
             model: root.lyricsModel
             spacing: Math.max(10, Math.floor(lyricsBlock.lyricFont * 0.6))
-            // 连续漂移：Python 按播放位置推 lyricsDrift（行索引+行内进度），
-            // contentY 绑定到行锚点插值，Behavior 平滑衔接 —— 恢复 widget 版
-            // 的连续滚动感（逐行 snap 在长间奏时静止、换行时突跳）
-            contentY: {
+            // Apple Music 式弹跳定位：换行 → 欠阻尼弹簧（轻微过冲回弹）；
+            // 大跳（seek）→ 快速缓动不弹。目标仍由 lyricsDrift 推
+            // （整数行锚点 + 1% 行内进度），由 driftSync 节流驱动。
+            function driftTarget() {
                 var drift = Math.max(0, root.lyricsDrift)
                 var i = Math.floor(drift)
                 var frac = drift - i
-                var a = lyricsView.itemAtIndex(i)
-                if (!a) return lyricsBlock.driftY
-                var b = lyricsView.itemAtIndex(i + 1)
+                var a = itemAtIndex(i)
+                if (!a) return Number.NaN   // 目标行未实例化（cacheBuffer 外）
+                var b = itemAtIndex(i + 1)
                 var ya = a.y
-                var yb = (b ? b.y : a.y + a.height + lyricsView.spacing)
+                var yb = (b ? b.y : a.y + a.height + spacing)
                 var lineCenter = ya + (yb - ya) * frac + a.height / 2
                 return lineCenter - (root.height * 0.44 - 64)
             }
-            Behavior on contentY { NumberAnimation { duration: 220; easing.type: Easing.OutQuad } }
+            // 弹簧手感（offscreen 扫参实测）：换行 ~104px 时过冲 ~9px
+            // （≈9%，单次回弹）后落定。想更弹升 spring 或降 damping
+            // （6/0.25 ≈ 23% 过冲；damping ≥0.5 无过冲），想更稳反向调
+            SpringAnimation {
+                id: driftSpring; target: lyricsView; property: "contentY"
+                spring: 3; damping: 0.25; mass: 1.0; epsilon: 0.5
+            }
+            NumberAnimation {
+                id: driftGlide; target: lyricsView; property: "contentY"
+                duration: 380; easing.type: Easing.OutCubic
+            }
+            Timer {
+                id: driftSync; interval: 25; repeat: false
+                onTriggered: {
+                    var t = lyricsView.driftTarget()
+                    if (t !== t) return          // NaN：目标行未就绪，等下个 tick
+                    var d = t - lyricsView.contentY
+                    if (d < 0.5 && d > -0.5) return
+                    // 行内微调（<0.5 行）：只更新进行中动画的终点，不重启——
+                    // 重启会清零速度，380ms 缓动被反复打断变成渐近爬行
+                    var wiggle = Math.abs(lyricsView.lastKick - root.lyricsDrift) < 0.5
+                    lyricsView.lastKick = root.lyricsDrift
+                    if (wiggle && driftSpring.running) { driftSpring.to = t; return }
+                    if (wiggle && driftGlide.running) { driftGlide.to = t; return }
+                    if (d > 260 || d < -260) {   // seek 大跳：快滑不弹
+                        driftSpring.stop()
+                        driftGlide.to = t; driftGlide.restart()
+                    } else {                     // 换行：弹簧过冲回弹
+                        driftGlide.stop()
+                        driftSpring.to = t; driftSpring.restart()
+                    }
+                }
+            }
+            property real lastKick: -1
             onContentYChanged: { lyricsBlock.driftY = contentY; root._driftMirror = contentY }
             interactive: false
             cacheBuffer: 2000
