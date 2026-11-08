@@ -16,3 +16,4 @@ dist_old/
 *.exe
 !main.py
 .backup/
+vbplayer.log
