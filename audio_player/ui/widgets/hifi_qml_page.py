@@ -383,8 +383,13 @@ class HiFiQmlPage(QWidget):
             root.setProperty("lyricsModel", dict_lines)
 
     def set_lyrics_position(self, ms: int):
-        """定位歌词：二分查当前行（高亮样式）+ 行内线性插值出连续漂移
-        目标（恢复 widget 版的连续滚动感，替代逐行跳变）。"""
+        """定位歌词：二分查当前行（高亮样式），推「整数行锚点 + 微量行内进度」。
+
+        行内进度此前全量插值，行间隔 3-10s 时歌词页永远匀速缓慢上移
+        （「匀速滚动」观感）。现仅保留 1% 行内进度：视觉上行间静止
+        （全程位移 <1px）、换行由 QML contentY 的 220ms Behavior 平滑
+        滑入；微量 frac 同时保持绑定每 tick 重算——大幅 seek 后目标行
+        初次实例化时视图能即时跟上，不会停在旧位置。"""
         if not self._lyrics_times:
             return
         new_idx = bisect.bisect_right(self._lyrics_times, ms) - 1
@@ -399,7 +404,7 @@ class HiFiQmlPage(QWidget):
         t0 = self._lyrics_times[i]
         t1 = self._lyrics_times[i + 1] if i + 1 < len(self._lyrics_times) else t0 + 1
         frac = 0.0 if t1 <= t0 else max(0.0, min(1.0, (ms - t0) / (t1 - t0)))
-        root.setProperty("lyricsDrift", float(i) + frac)
+        root.setProperty("lyricsDrift", i + frac * 0.01)
 
     def refresh_accent(self):
         from audio_player.app import current_accent
