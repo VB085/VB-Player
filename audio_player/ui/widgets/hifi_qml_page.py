@@ -198,6 +198,10 @@ class HiFiQmlPage(QWidget):
         self._enter_progress = 1.0
         self._enter_global_rect: QRect | None = None
         self._enter_direction = "in"
+        # 过渡状态机：方向显式跟踪 + 序号防串（双击 ✕ / 退出中重进等
+        # 时序曾让收尾回调被吞，overlay 停在透明沉浸页上=按钮全死）
+        self._transition_direction: str | None = None
+        self._transition_seq = 0
         self._exit_done = None
         self._underlay_path: str | None = None
         self._enter_easing: QEasingCurve.Type | None = None
@@ -421,6 +425,11 @@ class HiFiQmlPage(QWidget):
 
     def begin_exit_transition(self, cover_global_rect: QRect,
                               on_done=None, duration: int = 460, underlay=None):
+        # 退出已在进行（双击 ✕）：忽略重复触发——否则 stop() 触发的
+        # finished 会把本次回调当"非退出完成"吞掉，_finish_collapse
+        # 永远不跑，overlay 停在透明沉浸页上（按钮全死）
+        if self._transition_direction == "out" and _anim_running(self._enter_anim):
+            return
         self._exit_done = on_done
         self._begin_transition(cover_global_rect, "out", duration, underlay)
 
@@ -433,8 +442,19 @@ class HiFiQmlPage(QWidget):
                 done, self._exit_done = self._exit_done, None
                 done()
             return
+        # 旧动画 stop() 会触发 finished → 误跑收尾逻辑（吞回调/误判方向），
+        # 先摘掉它的 finished 再停；新动画自行连接
         if _anim_running(self._enter_anim):
+            try:
+                self._enter_anim.finished.disconnect(self._on_enter_finished)
+            except (TypeError, RuntimeError):
+                pass
             self._enter_anim.stop()
+        self._transition_seq += 1
+        seq = self._transition_seq
+        self._transition_direction = direction
+        if direction == "in":
+            self._exit_done = None  # 重新进入：被打断的退出不再收尾
         self._enter_global_rect = QRect(cover_global_rect)
         self._enter_direction = direction
         self._enter_easing = (QEasingCurve.Type.OutExpo if direction == "in"
@@ -464,6 +484,10 @@ class HiFiQmlPage(QWidget):
         anim.start()
         self._enter_anim = anim
         self._push_transition_props()
+        if direction == "out":
+            # finished 若因异常未触发，强制收尾——overlay 决不能停在沉浸页
+            QTimer.singleShot(duration + 600,
+                              lambda: self._exit_watchdog(seq))
 
     def _enter_time(self) -> float:
         """过渡的未缓动墙钟进度（与 widget 版同式）。"""
@@ -537,11 +561,11 @@ class HiFiQmlPage(QWidget):
         self._push_transition_props()
 
     def _on_enter_finished(self):
-        done = self._exit_done
-        exiting = self._enter_helper.opacity <= 0.001
+        # 方向显式判定，不再猜 opacity（中途被打断的动画 opacity 不为 0）
+        finishing_out = self._enter_direction == "out"
+        done, self._exit_done = self._exit_done, None
         self._enter_progress = 1.0
         self._enter_global_rect = None
-        self._exit_done = None
         self._ensure_root_wired()
         root = self.rootObject()
         if root:
@@ -556,10 +580,28 @@ class HiFiQmlPage(QWidget):
             self._underlay_path = None
             if root:
                 root.setProperty("underlayPath", "")
-        if exiting:
+        if finishing_out:
+            self._transition_direction = None
             self._enter_helper.opacity = 1.0
             if done:
                 done()
+
+    def _exit_watchdog(self, seq):
+        """finished 因异常未触发时强制收尾——overlay 决不能停在沉浸页。"""
+        if seq != self._transition_seq or self._transition_direction != "out":
+            return  # 已被更新的过渡取代或已正常收尾
+        done, self._exit_done = self._exit_done, None
+        self._transition_direction = None
+        root = self.rootObject()
+        if root:
+            root.setProperty("transitionActive", False)
+            root.setProperty("coverOverrideActive", False)
+            root.setProperty("topbarOpacity", 1.0)
+            root.setProperty("underlayPath", "")
+        self._underlay_path = None
+        self._enter_helper.opacity = 1.0
+        if done:
+            done()
 
     def toggle_lyrics(self):
         self._ensure_root_wired()
